@@ -1,0 +1,40 @@
+name: ci
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+jobs:
+  build-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install client deps
+        run: npm ci --prefix client
+      - name: Build client
+        run: npm run build --prefix client
+      - name: Enforce gzipped size
+        run: node scripts/benchmark_sdk.js
+      - name: Run client tests
+        run: npm test --prefix client -- --ci
+  build-server:
+    needs: build-client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install python deps
+        run: pip install -r server/requirements.txt
+      - name: Run pytest
+        run: pytest -q server
+      - name: Cypress e2e
+        run: |
+          npm ci --prefix dashboard
+          npx cypress run --prefix dashboard
+      - name: Docker build
+        run: docker build -t zeroaccess/server:ci server

@@ -1,0 +1,37 @@
+openapi: 3.1.0
+info:
+  title: Zero-Access Analytics API
+  version: "1.0.0"
+paths:
+  /api/upload-token:
+    post:
+      summary: Issue short-lived upload token
+      responses:
+        "200":
+          description: Issued
+  /api/shuffle:
+    post:
+      summary: Validate token, rate limit, random delay, forward to /api/collect
+      responses:
+        "200":
+          description: Accepted
+  /api/collect:
+    post:
+      summary: Collect privatized batch
+      responses:
+        "200":
+          description: OK
+  /api/metrics:
+    get:
+      summary: KPI snapshot with variance and confidence intervals
+      responses:
+        "200":
+          description: OK
+  /health/liveness:
+    get:
+      responses:
+        "200": { description: OK }
+  /health/readiness:
+    get:
+      responses:
+        "200": { description: OK }
