@@ -1,0 +1,10 @@
+{
+  "loading": "Loading…",
+  "privacy": {
+    "title": "Privacy Controls",
+    "description": "We enforce local differential privacy with daily epsilon caps and randomized response.",
+    "epsilon": "Epsilon",
+    "effect": "Effect",
+    "footer": "Metrics are only published when MIN_REPORTS_PER_WINDOW and SNR > 1.5 are satisfied."
+  }
+}

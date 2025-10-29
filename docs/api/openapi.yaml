@@ -1,37 +1,489 @@
 openapi: 3.1.0
 info:
-  title: Zero-Access Analytics API
+  title: Marketing Analytics API
   version: "1.0.0"
+  description: >
+    Local differential privacy marketing analytics API. Tokens scope uploads per site
+    and origin, and all reports are shuffled, delayed, and aggregated before publication.
+servers:
+  - url: https://api.localdp.example.com
 paths:
   /api/upload-token:
     post:
-      summary: Issue short-lived upload token
+      summary: Issue a short-lived upload token
+      operationId: issueUploadToken
+      tags: [tokens]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadTokenRequest'
       responses:
-        "200":
-          description: Issued
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/admin/revoke-token:
+    post:
+      summary: Revoke a single upload token by jti or hash
+      operationId: revokeToken
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeTokenRequest'
+      responses:
+        '204':
+          description: Token revoked
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/admin/revoke-tokens:
+    post:
+      summary: Bulk revoke tokens for a site
+      operationId: revokeTokens
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeTokensRequest'
+      responses:
+        '204':
+          description: All matching tokens revoked
   /api/shuffle:
     post:
-      summary: Validate token, rate limit, random delay, forward to /api/collect
+      summary: Accept shuffled, locally privatized batches
+      operationId: shuffleIngest
+      tags: [ingest]
+      parameters:
+        - in: header
+          name: Origin
+          schema:
+            type: string
+          required: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShuffleRequest'
       responses:
-        "200":
-          description: Accepted
+        '202':
+          description: Accepted for delayed ingestion
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /api/collect:
     post:
-      summary: Collect privatized batch
+      summary: Internal collector endpoint for shuffled payloads
+      operationId: collectReports
+      tags: [ingest]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CollectRequest'
       responses:
-        "200":
-          description: OK
+        '202':
+          description: Batch persisted
+        '409':
+          description: Payload rejected because it is stale
   /api/metrics:
     get:
-      summary: KPI snapshot with variance and confidence intervals
+      summary: Retrieve KPIs with variance, SE, and confidence intervals
+      operationId: getMetrics
+      tags: [metrics]
+      parameters:
+        - in: query
+          name: site_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: start
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: end
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: metrics
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/MetricKind'
       responses:
-        "200":
-          description: OK
+        '200':
+          description: Aggregated KPIs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+  /api/aggregate:
+    get:
+      summary: Return DP windows for a metric
+      operationId: getAggregates
+      tags: [metrics]
+      parameters:
+        - in: query
+          name: site_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: metric
+          required: true
+          schema:
+            $ref: '#/components/schemas/MetricKind'
+        - in: query
+          name: window
+          schema:
+            type: string
+            enum: [live, standard]
+            default: standard
+      responses:
+        '200':
+          description: Windowed aggregates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AggregateResponse'
+  /api/forecast/{metric}:
+    get:
+      summary: Retrieve forecast bands and anomaly flags
+      operationId: getForecast
+      tags: [forecast]
+      parameters:
+        - in: path
+          name: metric
+          required: true
+          schema:
+            $ref: '#/components/schemas/MetricKind'
+        - in: query
+          name: site_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Forecast available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForecastResponse'
+        '204':
+          description: Not enough history to forecast
+  /api/alert/webhook:
+    post:
+      summary: Generic alert webhook receiver
+      operationId: postAlert
+      tags: [alerts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertWebhookPayload'
+      responses:
+        '202':
+          description: Alert queued
   /health/liveness:
     get:
+      summary: Liveness probe
+      operationId: liveness
+      tags: [health]
       responses:
-        "200": { description: OK }
+        '200':
+          description: Service is live
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
   /health/readiness:
     get:
+      summary: Readiness probe
+      operationId: readiness
+      tags: [health]
       responses:
-        "200": { description: OK }
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+components:
+  schemas:
+    UploadTokenRequest:
+      type: object
+      required: [site_id, allowed_origin, epsilon_budget, sampling_rate]
+      properties:
+        site_id:
+          type: string
+        allowed_origin:
+          type: string
+          description: Exact origin or fnmatch-compatible wildcard
+        epsilon_budget:
+          type: number
+          format: float
+          minimum: 0.01
+        sampling_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+        ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+    UploadTokenResponse:
+      type: object
+      required: [token, expires_at, jti]
+      properties:
+        token:
+          type: string
+          description: Signed token string for Authorization header
+        expires_at:
+          type: string
+          format: date-time
+        jti:
+          type: string
+    RevokeTokenRequest:
+      type: object
+      properties:
+        jti:
+          type: string
+        token_hash:
+          type: string
+      oneOf:
+        - required: [jti]
+        - required: [token_hash]
+    RevokeTokensRequest:
+      type: object
+      required: [site_id]
+      properties:
+        site_id:
+          type: string
+    ShuffleRequest:
+      type: object
+      required: [token, nonce, batch]
+      properties:
+        token:
+          type: string
+          description: Upload token (Authorization bearer token is preferred)
+        nonce:
+          type: string
+          description: Unique per batch nonce (jti)
+        batch:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PrivatizedEvent'
+    PrivatizedEvent:
+      type: object
+      required:
+        - site_id
+        - kind
+        - payload
+        - epsilon_used
+        - sampling_rate
+        - client_timestamp
+      properties:
+        site_id:
+          type: string
+        kind:
+          $ref: '#/components/schemas/MetricKind'
+        payload:
+          type: object
+          additionalProperties: true
+        epsilon_used:
+          type: number
+        sampling_rate:
+          type: number
+        client_timestamp:
+          type: string
+          format: date-time
+    CollectRequest:
+      type: object
+      required: [site_id, server_received_at, reports]
+      properties:
+        site_id:
+          type: string
+        server_received_at:
+          type: string
+          format: date-time
+        reports:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrivatizedEvent'
+    MetricsResponse:
+      type: object
+      required: [site_id, metrics]
+      properties:
+        site_id:
+          type: string
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricStatistic'
+    MetricStatistic:
+      type: object
+      required:
+        - metric
+        - value
+        - variance
+        - standard_error
+        - ci80
+        - ci95
+        - has_anomaly
+      properties:
+        metric:
+          $ref: '#/components/schemas/MetricKind'
+        value:
+          type: number
+        variance:
+          type: number
+        standard_error:
+          type: number
+        ci80:
+          $ref: '#/components/schemas/ConfidenceInterval'
+        ci95:
+          $ref: '#/components/schemas/ConfidenceInterval'
+        has_anomaly:
+          type: boolean
+          default: false
+    ConfidenceInterval:
+      type: object
+      required: [low, high]
+      properties:
+        low:
+          type: number
+        high:
+          type: number
+    AggregateResponse:
+      type: object
+      required: [site_id, metric, windows]
+      properties:
+        site_id:
+          type: string
+        metric:
+          $ref: '#/components/schemas/MetricKind'
+        windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/WindowAggregate'
+    WindowAggregate:
+      type: object
+      required:
+        - window_start
+        - window_end
+        - value
+        - variance
+        - ci80
+        - ci95
+      properties:
+        window_start:
+          type: string
+          format: date-time
+        window_end:
+          type: string
+          format: date-time
+        value:
+          type: number
+        variance:
+          type: number
+        ci80:
+          $ref: '#/components/schemas/ConfidenceInterval'
+        ci95:
+          $ref: '#/components/schemas/ConfidenceInterval'
+    ForecastResponse:
+      type: object
+      required:
+        - site_id
+        - metric
+        - forecast
+        - mape
+        - has_anomaly
+        - z_score
+      properties:
+        site_id:
+          type: string
+        metric:
+          $ref: '#/components/schemas/MetricKind'
+        forecast:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForecastPoint'
+        mape:
+          type: number
+        has_anomaly:
+          type: boolean
+        z_score:
+          type: number
+    ForecastPoint:
+      type: object
+      required:
+        - day
+        - yhat
+        - yhat_lower
+        - yhat_upper
+      properties:
+        day:
+          type: string
+          format: date
+        yhat:
+          type: number
+        yhat_lower:
+          type: number
+        yhat_upper:
+          type: number
+    AlertWebhookPayload:
+      type: object
+      required: [source, severity, message, metadata]
+      properties:
+        source:
+          type: string
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        message:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    MetricKind:
+      type: string
+      enum:
+        - uniques
+        - pageviews
+        - sessions
+        - conversions
+        - bounce_rate
+        - avg_time_on_site
+  responses:
+    BadRequest:
+      description: Invalid request
+    Unauthorized:
+      description: Authorization failed
+    NotFound:
+      description: Resource not found
+    RateLimited:
+      description: Request was throttled by the unified token bucket

@@ -1,0 +1,33 @@
+# Zero Access Local DP Marketing Analytics
+
+This project provides a zero-access marketing analytics SaaS that enforces **local differential privacy (LDP)**. Signals are privatized on the client, shuffled with extra delay, and only published when the signal-to-noise ratio exceeds 1.5 and enough reports exist.
+
+## Highlights
+
+- **Client SDK** (`client/`): TypeScript package that performs randomized response, enforces daily epsilon caps, buffers events for three minutes, and flushes to `/api/shuffle` using short-lived upload tokens.
+- **Backend** (`server/`): FastAPI service with shuffle relay, collectors, nightly reducers, Prophet-based forecasting, EWMA anomaly detection, and Prometheus metrics (`events_received_total`, `events_dropped_late_total`, `tokens_revoked_total`, `requests_rate_limited_total`, `forecast_mape_gauge`, `anomaly_flagged_total`).
+- **Dashboard** (`dashboard/`): Vite + React frontend with KPIs, live gauge, forecast visualization, alerts, and privacy controls.
+- **Alerts** (`alerts/`): Lightweight Slack notifier sidecar with retry and dead-letter persistence.
+- **Infrastructure** (`infra/terraform` & Dockerfiles): Managed Postgres, Fly.io apps, DNS CNAMEs, docker-compose for local dev, and optional mock shuffle relay.
+- **Scripts** (`scripts/`): Seed data, bundle budget checks, privacy budget validation, epsilon calculator, deployment verification, and database backups.
+
+## Development
+
+```bash
+# Client SDK
+cd client
+npm install
+npm run lint
+npm test
+npm run build
+
+# Server
+cd server
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+pytest
+
+# Dashboard
+cd dashboard
+npm install
+npm run dev

@@ -1,105 +1,149 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
-from starlette.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime, timezone, timedelta
-from jose import jwt, JWTError
-from argon2 import PasswordHasher
-from fnmatch import fnmatch
-import os
+from __future__ import annotations
+
 import asyncio
-from ..config import settings
-from ..models import UploadToken, TokenNonce
-from ..db import get_db  # project-provided
-from sqlalchemy import select, update, insert
+import base64
+import datetime as dt
+import hashlib
+import hmac
+import json
+import secrets
+from collections import defaultdict
+from fnmatch import fnmatch
+from typing import DefaultDict
 
-router = APIRouter()
-ph = PasswordHasher()
+from argon2 import PasswordHasher, exceptions as argon_exceptions
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-# in-memory token bucket: {key: (tokens, refreshed_at)}
-_buckets = {}
+from ..config import TokenClaims, get_settings
+from ..models import LdpReport, TokenNonce, UploadToken, get_session
+from ..schemas import CollectRequest, ShuffleRequest
 
-def _bucket_ok(key: str, capacity: int, per_min: int) -> bool:
-    now = datetime.now(timezone.utc)
-    tokens, ts = _buckets.get(key, (capacity, now))
-    # refill
-    elapsed = (now - ts).total_seconds()
-    refill = per_min * (elapsed / 60.0)
-    tokens = min(capacity, tokens + refill)
-    if tokens >= 1.0:
-        tokens -= 1.0
-        _buckets[key] = (tokens, now)
-        return True
-    _buckets[key] = (tokens, now)
-    return False
+router = APIRouter(tags=["ingest"])
+rate_limiter: DefaultDict[tuple[str, str], list[float]] = defaultdict(list)
+password_hasher = PasswordHasher()
+settings = get_settings()
 
-async def _forward(body: bytes, content_type: str):
-    import httpx
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        r = await client.post(
-            os.environ.get('INTERNAL_COLLECT_URL', 'http://localhost:8000/api/collect'),
-            content=body,
-            headers={'Content-Type': content_type}
-        )
-        r.raise_for_status()
 
-@router.post('/api/shuffle')
-async def shuffle(request: Request, db: AsyncSession = Depends(get_db)):
-    auth = request.headers.get('authorization', '')
-    if not auth.startswith('Bearer '):
-        raise HTTPException(status_code=401, detail='missing bearer token')
-    token = auth.replace('Bearer ', '').strip()
-    origin = request.headers.get('origin', '') or request.headers.get('x-origin', '')
-    site_id = request.headers.get('x-site-id', '')
-
-    # Rate limit combined on site and ip
-    ip = request.client.host if request.client else 'unknown'
-    key = f'{site_id}:{ip}'
-    if not _bucket_ok(key, settings.RATE_LIMIT_BUCKET_PER_MIN, settings.RATE_LIMIT_BUCKET_PER_MIN):
-        raise HTTPException(status_code=429, detail='rate limited')
-
-    # Validate JWT
+def decode_token(token: str) -> TokenClaims:
     try:
-        claims = jwt.decode(token, settings.UPLOAD_TOKEN_SECRET, algorithms=['HS256'])
-    except JWTError:
-        raise HTTPException(status_code=401, detail='invalid token')
+        serialized, signature = token.split(".", 1)
+        message = base64.urlsafe_b64decode(serialized + "=" * (-len(serialized) % 4))
+        provided_sig = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+        expected_sig = hmac.new(
+            settings.UPLOAD_TOKEN_SECRET.encode("utf-8"), message, hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(provided_sig, expected_sig):
+            raise ValueError("Invalid token signature")
+        claims = json.loads(message)
+        return TokenClaims(**claims)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
-    if claims.get('site_id') != site_id:
-        raise HTTPException(status_code=401, detail='site mismatch')
 
-    allowed = claims.get('allowed_origin') or ''
-    if not allowed or not fnmatch(origin, allowed):
-        raise HTTPException(status_code=401, detail='origin not allowed')
+async def validate_token(claims: TokenClaims, token: str, session: AsyncSession):
+    now = dt.datetime.now(dt.timezone.utc)
+    if now.timestamp() > claims.exp:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
 
-    exp = datetime.fromtimestamp(claims['exp'], tz=timezone.utc)
-    if datetime.now(timezone.utc) >= exp:
-        raise HTTPException(status_code=401, detail='token expired')
+    stmt = select(UploadToken).where(UploadToken.site_id == claims.site_id)
+    tokens = (await session.execute(stmt)).scalars().all()
+    if not tokens:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token not registered")
+    verified = False
+    for record in tokens:
+        if record.revoked_at:
+            continue
+        try:
+            password_hasher.verify(record.token_hash, token)
+            verified = True
+            break
+        except argon_exceptions.VerifyMismatchError:
+            continue
+    if not verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
 
-    # Revocation check
-    token_id = claims.get('tid')
-    if not token_id:
-        raise HTTPException(status_code=401, detail='missing token id')
 
-    result = await db.execute(select(UploadToken).where(UploadToken.id == int(token_id)))
-    rec = result.scalar_one_or_none()
-    if not rec or rec.revoked_at is not None:
-        raise HTTPException(status_code=401, detail='token revoked')
+def apply_rate_limit(site_id: str, ip: str, request: Request):
+    now = dt.datetime.now(dt.timezone.utc).timestamp()
+    key = (site_id, ip)
+    events = rate_limiter[key]
+    events.append(now)
+    one_minute = now - 60
+    rate_limiter[key] = [ts for ts in events if ts >= one_minute]
+    if len(rate_limiter[key]) > settings.RATE_LIMIT_BUCKET_PER_MIN:
+        counters = request.app.state.prometheus_counters
+        counters["requests_rate_limited_total"].labels(site_id=site_id, ip=ip).inc()
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limited")
 
-    # Replay protection via nonce
-    jti = claims.get('jti')
-    if not jti:
-        raise HTTPException(status_code=401, detail='missing nonce')
-    exists = await db.execute(select(TokenNonce).where(TokenNonce.site_id == site_id, TokenNonce.jti == jti))
-    if exists.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=401, detail='replay detected')
-    await db.execute(insert(TokenNonce).values(site_id=site_id, jti=jti))
-    await db.commit()
 
-    # Random hold 0..120 s
-    delay_ms = int.from_bytes(os.urandom(2), 'big') % 120_001
-    await asyncio.sleep(delay_ms / 1000.0)
+@router.post("/shuffle", status_code=status.HTTP_202_ACCEPTED)
+async def shuffle_ingest(
+    payload: ShuffleRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    claims = decode_token(payload.token)
+    origin = request.headers.get("Origin")
+    if origin and not fnmatch(origin, claims.allowed_origin):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin mismatch")
+    await validate_token(claims, payload.token, session)
+    apply_rate_limit(claims.site_id, request.client.host if request.client else "unknown", request)
 
-    body = await request.body()
-    ct = request.headers.get('content-type', 'application/json')
-    await _forward(body, ct)
+    nonce_exists = await session.execute(
+        select(TokenNonce).where(TokenNonce.jti == payload.nonce)
+    )
+    if nonce_exists.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replay detected")
 
-    return JSONResponse({'status': 'accepted', 'delay_ms': delay_ms, 'site_id': site_id})
+    session.add(
+        TokenNonce(
+            site_id=claims.site_id,
+            jti=payload.nonce,
+        )
+    )
+    await session.commit()
+
+    delay = secrets.randbelow(121)
+    if not request.headers.get("X-Bypass-Delay"):
+        await asyncio.sleep(delay)
+
+    server_received_at = dt.datetime.now(dt.timezone.utc)
+    collect_payload = CollectRequest(
+        site_id=claims.site_id,
+        server_received_at=server_received_at,
+        reports=payload.batch,
+    )
+    await ingest_reports(collect_payload, request, session)
+    await purge_old_nonces(session)
+
+
+async def ingest_reports(collect: CollectRequest, request: Request, session: AsyncSession):
+    counters = request.app.state.prometheus_counters
+    for report in collect.reports:
+        if report.site_id != collect.site_id:
+            continue
+        payload_time = report.client_timestamp
+        delta = (collect.server_received_at - payload_time).total_seconds()
+        if delta > settings.MAX_OUT_OF_ORDER_SECONDS:
+            counters["events_dropped_late_total"].labels(site_id=collect.site_id).inc()
+            continue
+        record = LdpReport(
+            site_id=collect.site_id,
+            kind=report.kind,
+            day=payload_time.date(),
+            payload=report.payload,
+            epsilon_used=report.epsilon_used,
+            sampling_rate=report.sampling_rate,
+            server_received_at=collect.server_received_at,
+        )
+        session.add(record)
+        counters["events_received_total"].labels(site_id=collect.site_id).inc()
+    await session.commit()
+
+
+async def purge_old_nonces(session: AsyncSession):
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=15)
+    await session.execute(delete(TokenNonce).where(TokenNonce.seen_at < cutoff))
+    await session.commit()

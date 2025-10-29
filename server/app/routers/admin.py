@@ -1,37 +1,49 @@
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from __future__ import annotations
+
+import datetime as dt
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update
-from datetime import datetime, timezone
-from ..models import UploadToken
-from ..db import get_db
 
-router = APIRouter()
+from ..models import UploadToken, get_session
+from ..schemas import RevokeTokenRequest, RevokeTokensRequest
 
-class RevokeById(BaseModel):
-    token_id: int
+router = APIRouter(tags=["admin"])
 
-class RevokeBySite(BaseModel):
-    site_id: str
 
-@router.post('/api/admin/revoke-token')
-async def revoke_token(body: RevokeById, db: AsyncSession = Depends(get_db)):
-    now = datetime.now(timezone.utc)
-    await db.execute(
+@router.post("/admin/revoke-token", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_token(
+    payload: RevokeTokenRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    stmt = select(UploadToken)
+    if payload.jti:
+        stmt = stmt.where(UploadToken.jti == payload.jti)
+    elif payload.token_hash:
+        stmt = stmt.where(UploadToken.token_hash == payload.token_hash)
+    token = (await session.execute(stmt)).scalar_one_or_none()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Token not found")
+    token.revoked_at = dt.datetime.now(dt.timezone.utc)
+    await session.commit()
+    counters = request.app.state.prometheus_counters
+    counters["tokens_revoked_total"].labels(site_id=token.site_id).inc()
+
+
+@router.post("/admin/revoke-tokens", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_tokens(
+    payload: RevokeTokensRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    await session.execute(
         update(UploadToken)
-        .where(UploadToken.id == body.token_id)
+        .where(UploadToken.site_id == payload.site_id)
         .values(revoked_at=now)
     )
-    await db.commit()
-    return {'ok': True}
-
-@router.post('/api/admin/revoke-tokens')
-async def revoke_tokens(body: RevokeBySite, db: AsyncSession = Depends(get_db)):
-    now = datetime.now(timezone.utc)
-    await db.execute(
-        update(UploadToken)
-        .where(UploadToken.site_id == body.site_id)
-        .values(revoked_at=now)
-    )
-    await db.commit()
-    return {'ok': True}
+    await session.commit()
+    counters = request.app.state.prometheus_counters
+    counters["tokens_revoked_total"].labels(site_id=payload.site_id).inc()

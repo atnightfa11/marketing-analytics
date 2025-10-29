@@ -1,41 +1,45 @@
-// Boolean Randomized Response utilities for Local DP
-// Uses crypto.getRandomValues for all randomness
+import { getRandomFloat } from "../utils/crypto";
 
-// p = exp(eps) / (1 + exp(eps))
-// q = 1 - p
-export function probTrue(eps: number): number {
-    const e = Math.exp(eps)
-    return e / (1 + e)
-  }
-  
-  // Adjust RR when client-side sampling s in [0,1] is used
-  // Returns effective p', q' to keep server-side estimator unbiased
-  export function adjustedP(eps: number, s: number): { p: number; q: number } {
-    const p = probTrue(eps)
-    const q = 1 - p
-    const sClamped = Math.max(0, Math.min(1, s))
-    // If a report is dropped with prob 1-s, the server must decode with
-    // the mixture that includes "missing as random" only via counts n
-    // We keep the RR channel the same and let the server pass sampling_rate along
-    // For client code, we just return p and q and ship s separately
-    return { p, q }
-  }
-  
-  // Cryptographically secure coin flip that returns true with probability p
-  export function flip(p: number): boolean {
-    if (p <= 0) return false
-    if (p >= 1) return true
-    const u32 = new Uint32Array(1)
-    crypto.getRandomValues(u32)
-    const x = u32[0] / 2 ** 32
-    return x < p
-  }
-  
-  // RR over a bit t in {0,1}
-  export function rrBit(t: 0 | 1, eps: number): 0 | 1 {
-    const p = probTrue(eps)
-    const q = 1 - p
-    if (t === 1) return flip(p) ? 1 : 0
-    return flip(q) ? 1 : 0
-  }
-  
+export interface RandomizedResponseResult {
+  bit: 0 | 1;
+  p: number;
+  q: number;
+  variance: number;
+}
+
+export function probTrue(epsilon: number): { p: number; q: number } {
+  const exp = Math.exp(epsilon);
+  const p = exp / (1 + exp);
+  const q = 1 - p;
+  return { p, q };
+}
+
+export function adjustedProbability(epsilon: number, samplingRate: number): { p: number; q: number } {
+  const { p, q } = probTrue(epsilon);
+  const baseline = 0.5;
+  const adjustedP = samplingRate * p + (1 - samplingRate) * baseline;
+  const adjustedQ = samplingRate * q + (1 - samplingRate) * baseline;
+  return { p: adjustedP, q: adjustedQ };
+}
+
+export function flip(probability: number): 0 | 1 {
+  const draw = getRandomFloat();
+  return draw < probability ? 1 : 0;
+}
+
+export function rrBit(
+  value: boolean,
+  epsilon: number,
+  samplingRate: number
+): RandomizedResponseResult {
+  const { p, q } = adjustedProbability(epsilon, samplingRate);
+  const probability = value ? p : q;
+  const bit = flip(probability);
+  const variance = probability * (1 - probability);
+  return {
+    bit: bit as 0 | 1,
+    p,
+    q,
+    variance,
+  };
+}

@@ -1,65 +1,56 @@
-// One privatized presence-today bit per UTC day, with memoization
-// and a simple in-memory daily epsilon cap
+import { rrBit } from "./rr";
+import { PresenceReport } from "../types";
 
-import { rrBit } from './rr'
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
-export type PresenceEnvelope = {
-  kind: 'presence_day'
-  site_id: string
-  day: string         // YYYY-MM-DD in UTC
-  bit: 0 | 1          // randomized response outcome
-  epsilon_used: number
-  sampling_rate: number
-  ts_client: number   // ms since epoch
+interface MemoizedPresence {
+  epsilonTotal: number;
+  report: PresenceReport;
 }
 
-const memo = new Map<string, 0 | 1>()
-let epsSpentToday = 0
-let memoDay = utcDay()
+export class DailyPresenceMemo {
+  private memo = new Map<string, MemoizedPresence>();
 
-function utcDay(d = new Date()): string {
-  const y = d.getUTCFullYear()
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(d.getUTCDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
+  constructor(private epsilonCap: number = 1.5) {}
 
-function rotateIfNewDay() {
-  const d = utcDay()
-  if (d !== memoDay) {
-    memo.clear()
-    epsSpentToday = 0
-    memoDay = d
-  }
-}
-
-export function sendDailyPresence(
-  siteId: string,
-  epsPerPresence: number,
-  samplingRate: number,
-  maxDailyEps: number,
-  transport: (env: PresenceEnvelope) => void
-) {
-  rotateIfNewDay()
-  if (epsSpentToday + epsPerPresence > maxDailyEps) return
-
-  const key = `presence:${memoDay}`
-  let bit: 0 | 1
-  if (memo.has(key)) {
-    bit = memo.get(key)!
-  } else {
-    bit = rrBit(1, epsPerPresence)
-    memo.set(key, bit)
-    epsSpentToday += epsPerPresence
+  private currentDayKey(): string {
+    const now = new Date();
+    const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    return midnight.toISOString();
   }
 
-  transport({
-    kind: 'presence_day',
-    site_id: siteId,
-    day: memoDay,
-    bit,
-    epsilon_used: epsPerPresence,
-    sampling_rate: Math.max(0, Math.min(1, samplingRate)),
-    ts_client: Date.now()
-  })
+  getDailyPresence(epsilon: number, samplingRate: number): PresenceReport | null {
+    const key = this.currentDayKey();
+    const entry = this.memo.get(key);
+    if (!entry) {
+      const rr = rrBit(true, epsilon, samplingRate);
+      const report: PresenceReport = {
+        bit: rr.bit,
+        epsilon,
+        p: rr.p,
+        q: rr.q,
+        variance: rr.variance,
+      };
+      this.memo.set(key, { epsilonTotal: epsilon, report });
+      this.trimOld();
+      return report;
+    }
+
+    if (entry.epsilonTotal + epsilon > this.epsilonCap) {
+      return null;
+    }
+
+    entry.epsilonTotal += epsilon;
+    this.memo.set(key, entry);
+    return entry.report;
+  }
+
+  private trimOld(): void {
+    const now = Date.now();
+    for (const [key] of this.memo) {
+      if (now - Date.parse(key) > MILLISECONDS_PER_DAY) {
+        this.memo.delete(key);
+      }
+    }
+  }
 }

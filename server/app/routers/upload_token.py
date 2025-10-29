@@ -1,54 +1,77 @@
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import insert
-from datetime import datetime, timezone, timedelta
-from jose import jwt
+from __future__ import annotations
+
+import base64
+import datetime as dt
+import hashlib
+import hmac
+import json
+import secrets
+from fnmatch import fnmatch
+
 from argon2 import PasswordHasher
-from ..config import settings
-from ..models import UploadToken
-from ..db import get_db  # project-provided
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter()
-ph = PasswordHasher()
+from ..config import Settings, TokenClaims, get_settings
+from ..models import UploadToken, get_session
+from ..schemas import UploadTokenRequest, UploadTokenResponse
 
-class IssueTokenReq(BaseModel):
-    site_id: str
-    allowed_origin: str  # supports wildcards like *.example.com
-    ttl_seconds: int | None = None
+router = APIRouter(tags=["tokens"])
+password_hasher = PasswordHasher()
+settings: Settings = get_settings()
 
-class IssueTokenRes(BaseModel):
-    token: str
-    token_id: int
-    exp: int
 
-@router.post('/api/upload-token', response_model=IssueTokenRes)
-async def issue_token(req: IssueTokenReq, db: AsyncSession = Depends(get_db)):
-    ttl = req.ttl_seconds or settings.UPLOAD_TOKEN_TTL_SECONDS
-    now = datetime.now(timezone.utc)
-    exp = now + timedelta(seconds=ttl)
-    # Create DB record first to get id for tid
-    result = await db.execute(insert(UploadToken).values(
-        site_id=req.site_id,
-        token_hash='placeholder',  # will update after signing
-        iat=now,
-        exp=exp
-    ).returning(UploadToken.id))
-    token_id = result.scalar_one()
-    claims = {
-        'tid': token_id,
-        'site_id': req.site_id,
-        'allowed_origin': req.allowed_origin,
-        'iat': int(now.timestamp()),
-        'exp': int(exp.timestamp()),
-        'jti': ph.hash(f'{req.site_id}:{now.timestamp()}')[:32]  # short nonce seed
-    }
-    token = jwt.encode(claims, settings.UPLOAD_TOKEN_SECRET, algorithm='HS256')
-    # Store hash
-    await db.execute(
-        UploadToken.__table__.update()
-        .where(UploadToken.id == token_id)
-        .values(token_hash=ph.hash(token))
+def sign_claims(claims: dict[str, str | float | int]) -> str:
+    message = json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = hmac.new(
+        settings.UPLOAD_TOKEN_SECRET.encode("utf-8"),
+        message,
+        hashlib.sha256,
+    ).digest()
+    return f"{base64.urlsafe_b64encode(message).decode().rstrip('=')}.{base64.urlsafe_b64encode(signature).decode().rstrip('=')}"
+
+
+@router.post("/upload-token", response_model=UploadTokenResponse, status_code=status.HTTP_200_OK)
+async def create_upload_token(
+    payload: UploadTokenRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    ttl = payload.ttl_seconds or settings.UPLOAD_TOKEN_TTL_SECONDS
+    now = dt.datetime.now(dt.timezone.utc)
+    exp = now + dt.timedelta(seconds=ttl)
+    if ttl > settings.UPLOAD_TOKEN_TTL_SECONDS * 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TTL exceeds policy")
+
+    user_origin = request.headers.get("Origin", payload.allowed_origin)
+    if user_origin and not fnmatch(user_origin, payload.allowed_origin):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Origin does not match allowed pattern")
+
+    claims = TokenClaims(
+        site_id=payload.site_id,
+        allowed_origin=payload.allowed_origin,
+        iat=int(now.timestamp()),
+        exp=int(exp.timestamp()),
+        jti=secrets.token_hex(16),
+        sampling_rate=payload.sampling_rate,
+        epsilon_budget=payload.epsilon_budget,
     )
-    await db.commit()
-    return IssueTokenRes(token=token, token_id=token_id, exp=claims['exp'])
+
+    token = sign_claims(claims.model_dump())
+    hashed = password_hasher.hash(token)
+
+    record = UploadToken(
+        site_id=payload.site_id,
+        jti=claims.jti,
+        token_hash=hashed,
+        iat=now,
+        exp=exp,
+        allowed_origin=payload.allowed_origin,
+        sampling_rate=payload.sampling_rate,
+        epsilon_budget=payload.epsilon_budget,
+    )
+    session.add(record)
+    await session.commit()
+
+    return UploadTokenResponse(token=token, expires_at=exp, jti=claims.jti)

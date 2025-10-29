@@ -1,0 +1,37 @@
+# Node
+node_modules
+dist
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv
+.env
+*.sqlite
+*.db
+
+# Build artifacts
+coverage/
+build/
+reports/
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+
+# Cypress
+cypress/videos
+cypress/screenshots
+
+# Env & secrets
+.env
+*.env
+*.env.local
+server/.env
+dashboard/.env
+infra/*.tfstate
+infra/.terraform/

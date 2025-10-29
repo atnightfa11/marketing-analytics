@@ -1,0 +1,2 @@
+"""Alerts service package root."""
+

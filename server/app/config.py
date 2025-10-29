@@ -1,20 +1,46 @@
-from pydantic_settings import BaseSettings
-from pydantic import AnyHttpUrl, Field
+from __future__ import annotations
+
+from functools import lru_cache
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
-    DATABASE_URL: str
-    UPLOAD_TOKEN_SECRET: str
-    UPLOAD_TOKEN_TTL_SECONDS: int = 900
-    MIN_REPORTS_PER_WINDOW: int = 25
-    LIVE_WATERMARK_SECONDS: int = 120
-    MAX_OUT_OF_ORDER_SECONDS: int = 300
-    RATE_LIMIT_BUCKET_PER_MIN: int = 200
-    ALPHA_SMOOTHING: float = 0.5
-    MAX_EVENTS_PER_MINUTE: int = 60
-    ALLOWED_ORIGINS_REGEX: str = r".*"
-    PROMETHEUS_ENABLED: bool = True
+  DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./marketing.db")
+  UPLOAD_TOKEN_SECRET: str = Field(default="change-me")
+  UPLOAD_TOKEN_TTL_SECONDS: int = Field(default=900)
+  MIN_REPORTS_PER_WINDOW: int = Field(default=40)
+  LIVE_WATERMARK_SECONDS: int = Field(default=120)
+  MAX_OUT_OF_ORDER_SECONDS: int = Field(default=300)
+  RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=200)
+  ALPHA_SMOOTHING: float = Field(default=0.5)
+  MAX_EVENTS_PER_MINUTE: int = Field(default=60)
+  MODEL_ARTIFACT_BUCKET: str | None = None
+  expose_docs: bool = False
+  cors_origins: list[str] = Field(
+      default_factory=lambda: [
+          "https://dashboard.localdp.example.com",
+          "http://localhost:5173",
+          "http://127.0.0.1:5173",
+      ]
+  )
+  csp_policy: str = Field(
+      default="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+  )
 
-    class Config:
-        env_file = ".env"
+  model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-settings = Settings()
+
+@lru_cache(1)
+def get_settings() -> Settings:
+  return Settings()
+
+
+class TokenClaims(BaseModel):
+  site_id: str
+  allowed_origin: str
+  iat: int
+  exp: int
+  jti: str
+  sampling_rate: float
+  epsilon_budget: float

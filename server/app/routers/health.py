@@ -1,15 +1,17 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
-from ..db import get_db
+from __future__ import annotations
 
-router = APIRouter()
+from fastapi import APIRouter, status
 
-@router.get("/health/liveness")
+from ..schemas import HealthResponse
+
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health/liveness", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 async def liveness():
-    return {"ok": True}
+    return HealthResponse(status="ok")
 
-@router.get("/health/readiness")
-async def readiness(db: AsyncSession = Depends(get_db)):
-    await db.execute(text("SELECT 1"))
-    return {"ok": True}
+
+@router.get("/health/readiness", response_model=HealthResponse, status_code=status.HTTP_200_OK)
+async def readiness():
+    return HealthResponse(status="ok")

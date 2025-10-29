@@ -1,50 +1,54 @@
-# Randomized Response decoding helpers with optional Bayesian smoothing and
-# sampling-aware parameters
+from __future__ import annotations
 
 import math
 from typing import Tuple
 
-def prob_true(eps: float) -> float:
-  e = math.exp(eps)
-  return e / (1.0 + e)
+from ..config import get_settings
 
-def adjusted_p(eps: float, sampling: float) -> Tuple[float, float]:
-  """
-  Return effective (p, q) under client-side sampling s in [0,1].
-  We keep the RR channel parameters and pass sampling separately to the estimator.
-  The estimator should use n_effective = n * s for rate calculations where appropriate.
-  """
-  p = prob_true(eps)
-  q = 1.0 - p
-  s = min(1.0, max(0.0, sampling))
-  return p, q
+settings = get_settings()
+
+
+def prob_true(epsilon: float) -> Tuple[float, float]:
+    exp = math.exp(epsilon)
+    p = exp / (1 + exp)
+    q = 1 - p
+    return p, q
+
+
+def adjusted_probability(epsilon: float, sampling_rate: float) -> Tuple[float, float]:
+    p, q = prob_true(epsilon)
+    baseline = 0.5
+    p_adj = sampling_rate * p + (1 - sampling_rate) * baseline
+    q_adj = sampling_rate * q + (1 - sampling_rate) * baseline
+    return p_adj, q_adj
+
 
 def rr_unbiased_estimate(
-  s_ones: int,
-  n_reports: int,
-  eps: float,
-  alpha: float = 0.5
-) -> Tuple[float, float, float]:
-  """
-  Returns (estimate, variance, std_error) for count of true 1s
-  with optional Bayesian smoothing alpha.
-  Clamps estimate to [0, n_reports].
-  """
-  if n_reports <= 0:
-    return 0.0, 0.0, 0.0
+    ones: float,
+    total: float,
+    epsilon: float,
+    sampling_rate: float,
+    alpha: float | None = None,
+) -> Tuple[float, float]:
+    alpha = alpha if alpha is not None else settings.ALPHA_SMOOTHING
+    p_adj, q_adj = adjusted_probability(epsilon, sampling_rate)
+    denominator = p_adj - q_adj
+    if denominator == 0:
+        return 0.0, 0.0
+    estimate = (ones - total * q_adj) / denominator
+    estimate += alpha
+    estimate = max(0.0, min(total / max(sampling_rate, 1e-9), estimate))
+    variance = (
+        total * (1 - p_adj) * p_adj + (max(total, 1.0) - total) * (1 - q_adj) * q_adj
+    ) / (denominator**2)
+    return estimate, variance
 
-  p = prob_true(eps)
-  q = 1.0 - p
-  denom = p - q
-  if denom == 0.0:
-    return 0.0, 0.0, 0.0
 
-  # Smoothed estimator
-  est = (s_ones + alpha - n_reports * q) / (denom + 2.0 * alpha / max(1.0, n_reports))
-  est = max(0.0, min(float(n_reports), est))
+def standard_error(variance: float) -> float:
+    return math.sqrt(max(variance, 0.0))
 
-  # Variance using RR channel moments
-  var_num = s_ones * (1 - p) * p + (n_reports - s_ones) * (1 - q) * q
-  var = var_num / (denom ** 2)
-  se = math.sqrt(max(0.0, var))
-  return est, var, se
+
+def confidence_interval(estimate: float, se: float, z: float) -> Tuple[float, float]:
+    if math.isnan(se):
+        se = 0.0
+    return estimate - z * se, estimate + z * se

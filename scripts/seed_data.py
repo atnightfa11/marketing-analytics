@@ -1,39 +1,58 @@
-# Minimal synthetic sender that hits /api/shuffle with privatized presence bits
-import os, json, time, random, requests, datetime as dt
+#!/usr/bin/env python3
+import asyncio
+import datetime as dt
+import json
+import os
+from typing import Any, Dict
 
-API = os.environ.get("API_URL", "http://localhost:8000")
-TOKEN = os.environ.get("UPLOAD_TOKEN", "DEV_TOKEN")
-SITE = os.environ.get("SITE_ID", "dev-site")
-ORIGIN = os.environ.get("ORIGIN", "http://localhost:5173")
+import httpx
 
-def main(n_users=50, eps=0.5):
-    day = dt.datetime.utcnow().strftime("%Y-%m-%d")
+SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://localhost:8000/api/shuffle")
+UPLOAD_TOKEN = os.environ.get("UPLOAD_TOKEN")
+SITE_ID = os.environ.get("SITE_ID", "demo")
+
+
+def rr_bit(epsilon: float) -> Dict[str, Any]:
+    import secrets
+    import math
+
+    exp = math.exp(epsilon)
+    p = exp / (1 + exp)
+    bit = 1 if secrets.randbelow(10_000) / 10_000 < p else 0
+    return {
+        "randomized_bit": bit,
+        "probability_true": p,
+        "probability_false": 1 - p,
+        "variance": p * (1 - p),
+    }
+
+
+async def send_batch():
+    if not UPLOAD_TOKEN:
+        raise RuntimeError("UPLOAD_TOKEN is required")
     batch = []
-    for _ in range(n_users):
-        bit = 1 if random.random() < 0.7 else 0  # 70 percent show up
-        # client already privatizes in real flow; we fake it here
-        rr = 1 if random.random() < 0.65 else 0
-        batch.append({
-            "kind": "presence_day",
-            "site_id": SITE,
-            "day": day,
-            "bit": rr,
-            "epsilon_used": eps,
-            "sampling_rate": 1.0,
-            "ts_client": int(time.time() * 1000)
-        })
-    r = requests.post(
-        f"{API}/api/shuffle",
-        headers={
-            "Authorization": f"Bearer {TOKEN}",
-            "Content-Type": "application/json",
-            "X-Site-ID": SITE,
-            "X-Origin": ORIGIN
-        },
-        data=json.dumps(batch),
-        timeout=10
-    )
-    print("status", r.status_code, r.text)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    for _ in range(20):
+        payload = rr_bit(0.5)
+        batch.append(
+            {
+                "site_id": SITE_ID,
+                "kind": "pageviews",
+                "payload": payload,
+                "epsilon_used": 0.5,
+                "sampling_rate": 1.0,
+                "client_timestamp": now,
+            }
+        )
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            SHUFFLE_URL,
+            headers={"Origin": "https://example.com"},
+            json={"token": UPLOAD_TOKEN, "nonce": dt.datetime.now().isoformat(), "batch": batch},
+        )
+        resp.raise_for_status()
+        print("Seed batch sent")
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(send_batch())

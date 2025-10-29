@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: marketing_analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    build:
+      context: ../server
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://analytics:analytics@postgres:5432/marketing_analytics
+      UPLOAD_TOKEN_SECRET: local-dev-secret
+      MIN_REPORTS_PER_WINDOW: 3
+      LIVE_WATERMARK_SECONDS: 120
+      MAX_OUT_OF_ORDER_SECONDS: 300
+      RATE_LIMIT_BUCKET_PER_MIN: 200
+      ALPHA_SMOOTHING: 0.5
+      MAX_EVENTS_PER_MINUTE: 60
+      ENABLE_DEV_SCHEDULER: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../server:/app
+    depends_on:
+      - postgres
+
+  dashboard:
+    image: node:20
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../dashboard:/app
+      - dashboard_node_modules:/app/node_modules
+    depends_on:
+      - server
+
+  alerts:
+    build:
+      context: ../alerts
+    command: python -m src.slack_notifier
+    volumes:
+      - ../alerts/src:/app/src:ro
+      - ./alerts/data:/app/data
+
+  mock-shuffle:
+    build:
+      context: ../mock-shuffle
+    environment:
+      COLLECT_URL: http://server:8000/api/collect
+    ports:
+      - "8787:8787"
+    volumes:
+      - ../mock-shuffle:/app
+    depends_on:
+      - server
+
+volumes:
+  pgdata:
+  dashboard_node_modules:

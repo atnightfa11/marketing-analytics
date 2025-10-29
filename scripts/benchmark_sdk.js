@@ -1,20 +1,20 @@
-// Build-size gate used by CI. Exits non-zero if gzipped dist exceeds 30 KB.
-const fs = require('fs')
-const zlib = require('zlib')
-const path = require('path')
+#!/usr/bin/env node
+import fs from "node:fs";
+import zlib from "node:zlib";
 
-const TARGET = path.join(__dirname, '..', 'client', 'dist', 'ldp.min.js')
+const [, , bundlePath] = process.argv;
 
-if (!fs.existsSync(TARGET)) {
-  console.error(`Missing bundle at ${TARGET}. Did you run the client build?`)
-  process.exit(2)
+if (!bundlePath) {
+  console.error("Usage: node scripts/benchmark_sdk.js <dist/index.js>");
+  process.exit(1);
 }
 
-const buf = fs.readFileSync(TARGET)
-const gz = zlib.gzipSync(buf, { level: zlib.constants.Z_BEST_COMPRESSION })
-const kb = gz.length / 1024
-console.log(`gzipped size: ${kb.toFixed(2)} KB`)
-if (kb > 30.0) {
-  console.error('SDK exceeds 30 KB gzipped limit')
-  process.exit(1)
+const code = fs.readFileSync(bundlePath);
+const gzipped = zlib.gzipSync(code);
+const kb = gzipped.byteLength / 1024;
+
+console.log(`Bundle gzipped size: ${kb.toFixed(2)} KB`);
+if (kb > 30) {
+  console.error("Client SDK exceeds 30 KB gzipped.");
+  process.exit(1);
 }

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SDK smoke</title></head>
+  <body>
+    <h1>SDK test</h1>
+    <button id="pageview">Send pageview</button>
+    <button id="session">Send session</button>
+    <button id="conversion">Send conversion</button>
+    <script type="module">
+      import * as sdk from "/sdk/ldp.js";
+      const token = "eyJhbGxvd2VkX29yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3Q6NTE3MyIsImVwc2lsb25fYnVkZ2V0IjoxLjAsImV4cCI6MTc2MTc3NDk3NCwiaWF0IjoxNzYxNzc0MDc0LCJqdGkiOiI1NjE2NDBkM2FjYjlhODUzMjlmNDY0N2Q5MjdlN2Q0NiIsInNhbXBsaW5nX3JhdGUiOjEuMCwic2l0ZV9pZCI6ImRldi1zaXRlIn0.u-ruiJg_3GfsJFvFvT0THn2Ln-tZGi7EbKYDsBKZJ0s";
+      sdk.configure({
+        siteId: "dev-site",
+        shuffleUrl: "http://127.0.0.1:8000/api/shuffle",
+        uploadToken: token,
+        samplingRate: 1.0,
+        epsilon: {
+          presence: 0.5,
+          pageview: 0.5,
+          session: 0.5,
+          conversion: 0.5
+        }
+      });
+      document.getElementById("pageview").addEventListener("click", () => {
+        sdk.sendPageview("/test-sdk");
+        sdk.reportPresence();
+      });
+      document.getElementById("session").addEventListener("click", () => {
+        sdk.sendSessionStart({ referrerBucket: "direct", engagementBucket: "low" });
+      });
+      document.getElementById("conversion").addEventListener("click", () => {
+        sdk.sendConversion({ conversionType: "signup" });
+      });
+    </script>
+  </body>
+</html>
+

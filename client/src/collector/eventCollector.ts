@@ -1,72 +1,122 @@
-// 3-minute window buffer, graceful no-op if backend unreachable,
-// exponential backoff, circuit breaker, and POST to /api/shuffle
+import { ClientConfig, EventEnvelope } from "../types";
+import { Logger } from "../utils/logger";
 
-import type { PresenceEnvelope } from '../ldp/dailyPresence'
+const JITTER_RANGE_MS = 250;
 
-type Config = {
-  siteId: string
-  origin: string
-  uploadToken: string
-  endpoint: string            // e.g., https://api.yourdomain.com/api/shuffle
-  backoffBaseMs?: number
-}
+export class EventCollector {
+  private buffer: EventEnvelope[] = [];
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private backoffMs = 1000;
+  private readonly maxBackoffMs = 60000;
+  private readonly visibilityListener: (() => void) | null = null;
 
-const state = {
-  queue: [] as PresenceEnvelope[],
-  sending: false,
-  failures: 0,
-  breakerOpenUntil: 0
-}
+  constructor(
+    private readonly config: ClientConfig,
+    private readonly logger: Logger,
+    private readonly onFailure: () => void,
+    private readonly onSuccess: () => void
+  ) {
+    this.visibilityListener = this.setupVisibilityObservers();
+  }
 
-const BACKOFF_BASE = 500
+  enqueue(event: EventEnvelope): void {
+    this.buffer.push(event);
+    this.logger.debug(`Enqueued ${event.kind}. buffer=${this.buffer.length}`);
+    if (this.buffer.length >= this.config.maxBatchSize!) {
+      void this.flush("max-batch");
+      return;
+    }
+    this.scheduleFlush();
+  }
 
-export function enqueue(env: PresenceEnvelope) {
-  state.queue.push(env)
-}
-
-export function setupFlush(config: Config) {
-  const backoffBase = config.backoffBaseMs ?? BACKOFF_BASE
-
-  async function flush() {
-    if (state.sending) return
-    if (Date.now() < state.breakerOpenUntil) return
-    if (state.queue.length === 0) return
-
-    state.sending = true
-    const batch = state.queue.splice(0, state.queue.length)
+  async flush(reason: string): Promise<void> {
+    if (this.buffer.length === 0) {
+      return;
+    }
+    const batch = this.buffer.splice(0, this.buffer.length);
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.logger.debug(`Flushing ${batch.length} events because ${reason}`);
     try {
-      const res = await fetch(config.endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.uploadToken}`,
-          'X-Site-ID': config.siteId,
-          'X-Origin': config.origin
-        },
-        body: JSON.stringify(batch)
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      state.failures = 0
-    } catch {
-      // Put back into the head of the queue
-      state.queue = batch.concat(state.queue)
-      state.failures += 1
-      if (state.failures >= 10) {
-        state.breakerOpenUntil = Date.now() + 5 * 60 * 1000
-      }
-      const wait = backoffBase * 2 ** Math.min(6, state.failures - 1)
-      setTimeout(flush, wait)
-    } finally {
-      state.sending = false
+      await this.postBatch(batch);
+      this.backoffMs = 1000;
+      this.onSuccess();
+    } catch (error) {
+      this.logger.error("Failed to flush batch", error as Error);
+      this.onFailure();
+      this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
+      this.buffer.unshift(...batch.slice(0, this.config.maxBatchSize!));
     }
   }
 
-  // Windowed flush every 3 minutes
-  setInterval(flush, 3 * 60 * 1000)
-  // Flush on tab hide or unload
-  const go = () => flush()
-  document.addEventListener('visibilitychange', go)
-  window.addEventListener('beforeunload', go)
+  private scheduleFlush(): void {
+    if (this.flushTimer) {
+      return;
+    }
+    const jitter = Math.floor(Math.random() * JITTER_RANGE_MS);
+    this.flushTimer = setTimeout(() => {
+      void this.flush("interval");
+    }, this.config.flushIntervalMs! + jitter);
+  }
 
-  return { flush }
+  private async postBatch(batch: EventEnvelope[]): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(this.config.shuffleUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.config.uploadToken}`,
+        },
+        body: JSON.stringify({
+          token: this.config.uploadToken,
+          nonce: batch[0]?.nonce,
+          batch,
+        }),
+        signal: controller.signal,
+        keepalive: true,
+      });
+      if (!response.ok) {
+        throw new Error(`Shuffle endpoint responded with ${response.status}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private setupVisibilityObservers(): (() => void) | null {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return null;
+    }
+
+    const visibilityHandler = () => {
+      if (document.visibilityState === "hidden") {
+        void this.flush("visibilitychange");
+      }
+    };
+    const unloadHandler = () => {
+      void this.flush("beforeunload");
+    };
+
+    document.addEventListener("visibilitychange", visibilityHandler);
+    window.addEventListener("beforeunload", unloadHandler);
+
+    return () => {
+      document.removeEventListener("visibilitychange", visibilityHandler);
+      window.removeEventListener("beforeunload", unloadHandler);
+    };
+  }
+
+  destroy(): void {
+    if (this.visibilityListener) {
+      this.visibilityListener();
+    }
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+  }
 }

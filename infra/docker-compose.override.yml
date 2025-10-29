@@ -1,0 +1,4 @@
+services:
+  mock-shuffle:
+    environment:
+      BYPASS_DELAY: "true"
