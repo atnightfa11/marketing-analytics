@@ -9,15 +9,33 @@ const sources = [
 ];
 
 export const TopSources: React.FC = () => (
-  <div className="rounded border border-slate-200 bg-white p-4 shadow-sm">
-    <div className="mb-2 text-sm font-semibold text-slate-600">Top Sources</div>
-    <ul className="space-y-2 text-sm">
+  <div className="border border-gray-200 bg-white p-4">
+    <div
+      className="mb-3 text-xs uppercase tracking-[0.2em] text-gray-500"
+      style={{ fontFamily: '"Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif' }}
+    >
+      Top Sources
+    </div>
+    <div className="divide-y divide-gray-100 text-sm">
       {sources.map((row) => (
-        <li key={row.source} className="flex items-center justify-between">
-          <span>{row.source}</span>
-          <span className="font-semibold">{row.share}%</span>
-        </li>
+        <div key={row.source} className="py-2">
+          <div className="flex items-center justify-between text-gray-700">
+            <span>{row.source}</span>
+            <span
+              className="text-gray-900"
+              style={{
+                fontFamily:
+                  '"Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              }}
+            >
+              {row.share}%
+            </span>
+          </div>
+          <div className="mt-1 h-1 w-full bg-gray-100">
+            <div className="h-1 bg-gray-400" style={{ width: `${row.share}%` }} />
+          </div>
+        </div>
       ))}
-    </ul>
+    </div>
   </div>
 );
