@@ -82,11 +82,12 @@ Publishing guards
 Forecasting & anomalies
 
 - Train Prophet when ≥ 60 days of history; otherwise HTTP 204
+- Production scheduler can run daily reduce + forecast jobs with `ENABLE_PROD_SCHEDULER=true` and `PROD_SCHEDULER_HOUR_UTC`
 - Store and version models; promote only if MAPE improves ≥ 5%
 - Anomalies: flag when outside Prophet bounds or by z-score on EWMA baseline; expose has_anomaly, z_score
 - Forecast horizon is configurable for all tiers.
-  - **Current**: 14-day horizon written by the Prophet job.
-  - **Planned**: 30/60/90/365-day horizons. With sufficient data, MAPE should remain stable even as horizon increases, but it will vary by site and seasonality.
+  - **Current**: Configurable horizon written by the Prophet job (default 90 days via `FORECAST_HORIZON_DAYS`, UI defaults to 30-day view).
+  - **Planned**: Extend to longer user-defined horizons (for example full-quarter and annual planning windows) with guardrails and coverage checks. With sufficient data, MAPE should remain stable even as horizon increases, but it will vary by site and seasonality.
 
 Plan-aware serving
 

@@ -14,6 +14,7 @@ from .config import Settings, get_settings
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .models import async_session_factory
 from .scheduler.nightly_reduce import reduce_reports
+from .scheduler.prophet_job import train_prophet
 from .models import Base, async_engine, init_db
 from .routers import (
     admin,
@@ -90,6 +91,25 @@ app.state.prometheus_counters = prometheus_counters
 app.state.prometheus_gauges = prometheus_gauges
 
 
+async def run_forecast_training_once():
+    metrics = ("pageviews", "sessions", "uniques", "conversions", "revenue")
+    async with async_session_factory() as session:
+        from sqlalchemy import select
+        from .models import DpWindow
+
+        site_ids = (
+            await session.execute(select(DpWindow.site_id).distinct())
+        ).scalars().all()
+
+        for site_id in site_ids:
+            for metric in metrics:
+                try:
+                    await train_prophet(session, site_id=site_id, metric=metric)
+                except Exception:
+                    logger.exception("Forecast training failed", extra={"site_id": site_id, "metric": metric})
+
+
+
 @app.on_event("startup")
 async def on_startup():
     logger.info("Creating database metadata if missing")
@@ -100,9 +120,11 @@ async def on_startup():
     if os.environ.get("ENABLE_DEV_SCHEDULER", "").lower() in {"1", "true", "yes"}:
         try:
             scheduler = AsyncIOScheduler()
+
             async def job():
                 async with async_session_factory() as session:
                     await reduce_reports(session)
+
             scheduler.add_job(job, "interval", seconds=60, id="dev_reducer", replace_existing=True)
             scheduler.start()
             app.state.dev_scheduler = scheduler
@@ -110,12 +132,49 @@ async def on_startup():
         except Exception:
             logger.exception("Failed to start dev reducer scheduler")
 
+    # Production scheduler for daily reduction and forecast training
+    if settings.ENABLE_PROD_SCHEDULER:
+        try:
+            prod_scheduler = AsyncIOScheduler(timezone="UTC")
+
+            async def reduce_job():
+                async with async_session_factory() as session:
+                    await reduce_reports(session)
+
+            prod_scheduler.add_job(
+                reduce_job,
+                "cron",
+                hour=settings.PROD_SCHEDULER_HOUR_UTC,
+                minute=0,
+                id="prod_reducer_daily",
+                replace_existing=True,
+            )
+            prod_scheduler.add_job(
+                run_forecast_training_once,
+                "cron",
+                hour=settings.PROD_SCHEDULER_HOUR_UTC,
+                minute=15,
+                id="prod_forecast_daily",
+                replace_existing=True,
+            )
+            prod_scheduler.start()
+            app.state.prod_scheduler = prod_scheduler
+            logger.info(
+                "Started production scheduler (daily reducer + forecast)",
+                extra={"hour_utc": settings.PROD_SCHEDULER_HOUR_UTC},
+            )
+        except Exception:
+            logger.exception("Failed to start production scheduler")
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
     scheduler = getattr(app.state, "dev_scheduler", None)
     if scheduler:
         scheduler.shutdown(wait=False)
+    prod_scheduler = getattr(app.state, "prod_scheduler", None)
+    if prod_scheduler:
+        prod_scheduler.shutdown(wait=False)
     await async_engine.dispose()
 
 

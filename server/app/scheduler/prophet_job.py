@@ -52,7 +52,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str):
     if prior and mape > prior.mape_cv * 0.95:
         return None
 
-    future = model.make_future_dataframe(periods=14, freq="D")
+    future = model.make_future_dataframe(periods=max(1, settings.FORECAST_HORIZON_DAYS), freq="D")
     forecast_df = model.predict(future)
 
     with tempfile.NamedTemporaryFile(prefix=f"{site_id}-{metric}-", suffix=".json", delete=False) as tmp:
@@ -74,7 +74,8 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str):
     await session.flush()
 
     forecasts = []
-    for _, row in forecast_df.tail(14).iterrows():
+    horizon = max(1, settings.FORECAST_HORIZON_DAYS)
+    for _, row in forecast_df.tail(horizon).iterrows():
         forecasts.append(
             Forecast(
                 site_id=site_id,

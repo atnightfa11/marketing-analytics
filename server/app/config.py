@@ -15,6 +15,9 @@ class Settings(BaseSettings):
   RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=200)
   ALPHA_SMOOTHING: float = Field(default=0.5)
   MAX_EVENTS_PER_MINUTE: int = Field(default=60)
+  FORECAST_HORIZON_DAYS: int = Field(default=90)
+  ENABLE_PROD_SCHEDULER: bool = Field(default=False)
+  PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
   MODEL_ARTIFACT_BUCKET: str | None = None
   expose_docs: bool = False
   cors_origins: list[str] = Field(
