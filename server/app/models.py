@@ -155,6 +155,22 @@ class SiteConfig(Base):
     experimental_metrics: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class SitePlan(Base):
+    __tablename__ = "site_plan"
+    __table_args__ = (Index("ix_site_plan_plan", "plan"),)
+
+    site_id: Mapped[str] = mapped_column(String, primary_key=True)
+    plan: Mapped[str] = mapped_column(String, nullable=False, default="free")
+    stripe_customer_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class ModelStore(Base):
     __tablename__ = "model_store"
     __table_args__ = (Index("ix_model_store_site_metric", "site_id", "engine"),)

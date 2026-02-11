@@ -35,6 +35,16 @@ class RevokeTokensRequest(BaseModel):
     site_id: str
 
 
+class CheckoutSessionRequest(BaseModel):
+    site_id: str
+    plan: Literal["standard", "pro"]
+
+
+class CheckoutSessionResponse(BaseModel):
+    checkout_url: str
+    session_id: str
+
+
 class PrivatizedEvent(BaseModel):
     site_id: str
     kind: Literal["uniques", "pageviews", "sessions", "conversions"]

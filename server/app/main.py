@@ -25,6 +25,7 @@ from .routers import (
     ingest,
     metrics as metrics_router,
     shuffle,
+    stripe_billing,
     upload_token,
 )
 
@@ -185,5 +186,6 @@ app.include_router(ingest.router, prefix="/api")
 app.include_router(metrics_router.router, prefix="/api")
 app.include_router(aggregates.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
+app.include_router(stripe_billing.router, prefix="/api")
 app.include_router(alert_webhook.router, prefix="/api")
 app.include_router(health.router)

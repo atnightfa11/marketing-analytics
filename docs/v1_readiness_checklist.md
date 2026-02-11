@@ -20,7 +20,7 @@ This checklist reflects the **current repository state** and the shortest path t
 ## 2) Launch-blocking engineering tasks
 
 ### A. Tier data model and ingest branching
-- [ ] Add/verify `site_plan` model and migrations.
+- [x] Add/verify `site_plan` model and migrations.
 - [ ] Add `raw_reports` model + migration.
 - [ ] Branch ingest:
   - Free/Standard -> store in `raw_reports`
@@ -69,7 +69,7 @@ This checklist reflects the **current repository state** and the shortest path t
 ### Billing (can land after technical go-live prep)
 - [ ] Stripe keys and webhook secret.
 - [ ] Price IDs for Standard (launch) and Pro (waitlist).
-- [ ] Webhook -> update `site_plan`.
+- [x] Webhook -> update `site_plan`.
 
 ---
 

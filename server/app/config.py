@@ -8,6 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
   DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./marketing.db")
   UPLOAD_TOKEN_SECRET: str = Field(default="change-me")
+  STRIPE_SECRET_KEY: str | None = None
+  STRIPE_WEBHOOK_SECRET: str | None = None
+  STRIPE_STANDARD_PRICE_ID: str | None = None
+  STRIPE_PRO_PRICE_ID: str | None = None
+  STRIPE_CHECKOUT_SUCCESS_URL: str = Field(default="https://app.validanalytics.io/billing/success")
+  STRIPE_CHECKOUT_CANCEL_URL: str = Field(default="https://app.validanalytics.io/billing/cancel")
   UPLOAD_TOKEN_TTL_SECONDS: int = Field(default=900)
   MIN_REPORTS_PER_WINDOW: int = Field(default=40)
   LIVE_WATERMARK_SECONDS: int = Field(default=120)

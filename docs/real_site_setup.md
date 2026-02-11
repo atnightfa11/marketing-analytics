@@ -53,6 +53,32 @@ Optional tuning:
 - `RATE_LIMIT_BUCKET_PER_MIN=200`
 - `LIVE_WATERMARK_SECONDS=120`
 
+Stripe billing env vars:
+
+- `STRIPE_SECRET_KEY=sk_test_...`
+- `STRIPE_WEBHOOK_SECRET=whsec_...` (from the Dashboard webhook endpoint, not Stripe CLI `listen`)
+- `STRIPE_STANDARD_PRICE_ID=price_...`
+- `STRIPE_PRO_PRICE_ID=price_...` (optional if Pro is hidden in UI)
+- `STRIPE_CHECKOUT_SUCCESS_URL=https://app.validanalytics.io/billing/success`
+- `STRIPE_CHECKOUT_CANCEL_URL=https://app.validanalytics.io/billing/cancel`
+
+Webhook endpoint:
+
+- `POST https://api.validanalytics.io/api/stripe/webhook`
+- Subscribe to:
+  - `checkout.session.completed`
+  - `customer.subscription.created`
+  - `customer.subscription.updated`
+  - `customer.subscription.deleted`
+  - `invoice.payment_failed`
+
+Checkout endpoint:
+
+- `POST /api/checkout/session`
+- Request body:
+  - `site_id` (your internal site key, for example `live-validanalytics-io`)
+  - `plan` (`standard` or `pro`)
+
 Domain routing:
 
 1. Add `api.validanalytics.io` in Railway Domains.
