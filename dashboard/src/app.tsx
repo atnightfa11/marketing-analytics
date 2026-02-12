@@ -1,5 +1,5 @@
 import React, { Suspense, useEffect, useMemo, useState } from "react";
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
 import {
   CartesianGrid,
   Line,
@@ -1342,6 +1342,84 @@ const Settings: React.FC = () => (
   </div>
 );
 
+const BillingSuccess: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const sessionId = searchParams.get("session_id");
+
+  return (
+    <div className="min-h-screen bg-[#F3F4F6] print-bg">
+      <header className="border-b border-gray-200 bg-white">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+          <a href="/" className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+            Valid
+          </a>
+        </div>
+      </header>
+      <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
+        <section className="border border-gray-200 bg-white p-6">
+          <h1 className="text-2xl text-[#111827]" style={fontHeading}>
+            Billing Confirmed
+          </h1>
+          <p className="mt-3 text-sm text-gray-700" style={fontBody}>
+            Your subscription update was accepted. We have received the Stripe session and are syncing your site plan.
+          </p>
+          {sessionId ? (
+            <p className="mt-3 text-xs text-gray-500" style={fontBody}>
+              Session ID: <span style={fontNumeric}>{sessionId}</span>
+            </p>
+          ) : null}
+          <div className="mt-6 flex flex-wrap gap-3">
+            <a
+              href="/"
+              className="inline-flex items-center border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white"
+              style={fontBody}
+            >
+              Open Dashboard
+            </a>
+            <a href="/settings" className="inline-flex items-center border border-gray-300 px-4 py-2 text-sm" style={fontBody}>
+              Billing Settings
+            </a>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+};
+
+const BillingCancel: React.FC = () => (
+  <div className="min-h-screen bg-[#F3F4F6] print-bg">
+    <header className="border-b border-gray-200 bg-white">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+        <a href="/" className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+          Valid
+        </a>
+      </div>
+    </header>
+    <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
+      <section className="border border-gray-200 bg-white p-6">
+        <h1 className="text-2xl text-[#111827]" style={fontHeading}>
+          Billing Update Canceled
+        </h1>
+        <p className="mt-3 text-sm text-gray-700" style={fontBody}>
+          No change was made to your subscription. You can return anytime to retry checkout.
+        </p>
+        <div className="mt-6 flex flex-wrap gap-3">
+          <a
+            href="/"
+            className="inline-flex items-center border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white"
+            style={fontBody}
+          >
+            Back to Dashboard
+          </a>
+          <a href="/settings" className="inline-flex items-center border border-gray-300 px-4 py-2 text-sm" style={fontBody}>
+            Review Billing
+          </a>
+        </div>
+      </section>
+    </main>
+  </div>
+);
+
 export const App: React.FC = () => {
   const { token, login } = useAuth();
 
@@ -1359,6 +1437,8 @@ export const App: React.FC = () => {
           <Route path="/charts" element={<Charts />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/billing/success" element={<BillingSuccess />} />
+          <Route path="/billing/cancel" element={<BillingCancel />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>
