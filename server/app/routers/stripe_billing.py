@@ -54,6 +54,15 @@ def _plan_for_price_id(price_id: str | None) -> str:
     return "free"
 
 
+def _normalize_plan(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    plan = raw.strip().lower()
+    if plan in {"free", "standard", "pro"}:
+        return plan
+    return None
+
+
 async def _upsert_site_plan(
     session: AsyncSession,
     *,
@@ -161,12 +170,14 @@ async def stripe_webhook(request: Request, session: AsyncSession = Depends(get_s
         if items and items[0].get("price"):
             price_id = items[0]["price"].get("id")
         metadata = data_object.get("metadata") or {}
+        plan_from_metadata = _normalize_plan(metadata.get("plan"))
+        resolved_plan = plan_from_metadata or _plan_for_price_id(price_id)
         await _upsert_site_plan(
             session,
             site_id=metadata.get("site_id"),
             customer_id=data_object.get("customer"),
             subscription_id=data_object.get("id"),
-            plan=_plan_for_price_id(price_id),
+            plan=resolved_plan,
         )
     elif event_type == "customer.subscription.deleted":
         metadata = data_object.get("metadata") or {}
