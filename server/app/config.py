@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,8 @@ class Settings(BaseSettings):
   expose_docs: bool = False
   cors_origins: list[str] = Field(
       default_factory=lambda: [
+          "https://app.validanalytics.io",
+          "https://validanalytics.io",
           "https://dashboard.localdp.example.com",
           "http://localhost:5173",
           "http://127.0.0.1:5173",
@@ -38,6 +40,18 @@ class Settings(BaseSettings):
   )
 
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+  @model_validator(mode="after")
+  def ensure_required_cors_origins(self):
+    required = ("https://app.validanalytics.io", "https://validanalytics.io")
+    normalized = [origin.rstrip("/") for origin in self.cors_origins if origin]
+    seen = set(normalized)
+    for origin in required:
+      if origin not in seen:
+        normalized.append(origin)
+        seen.add(origin)
+    self.cors_origins = normalized
+    return self
 
 
 @lru_cache(1)
