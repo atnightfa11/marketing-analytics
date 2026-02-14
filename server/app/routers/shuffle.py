@@ -17,7 +17,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import TokenClaims, get_settings
-from ..models import LdpReport, TokenNonce, UploadToken, get_session
+from ..models import LdpReport, RawReport, SitePlan, TokenNonce, UploadToken, get_session
 from ..schemas import CollectRequest, ShuffleRequest
 
 router = APIRouter(tags=["ingest"])
@@ -65,14 +65,34 @@ async def validate_token(claims: TokenClaims, token: str, session: AsyncSession)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
 
 
-def apply_rate_limit(site_id: str, ip: str, request: Request):
+async def resolve_plan(site_id: str, claims_plan: str, session: AsyncSession) -> str:
+    record = await session.get(SitePlan, site_id)
+    db_plan = record.plan if record else "free"
+    token_plan = claims_plan or db_plan
+    if token_plan != db_plan:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token plan mismatch")
+    if db_plan == "pro" and not settings.ENABLE_PRO_INGEST:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pro tier is not enabled")
+    return db_plan
+
+
+def _rate_limit_bucket_for_plan(plan: str) -> int:
+    if plan == "standard":
+        return settings.STANDARD_RATE_LIMIT_BUCKET_PER_MIN
+    if plan == "pro":
+        return settings.RATE_LIMIT_BUCKET_PER_MIN
+    return settings.FREE_RATE_LIMIT_BUCKET_PER_MIN
+
+
+def apply_rate_limit(site_id: str, ip: str, request: Request, plan: str):
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     key = (site_id, ip)
     events = rate_limiter[key]
     events.append(now)
     one_minute = now - 60
     rate_limiter[key] = [ts for ts in events if ts >= one_minute]
-    if len(rate_limiter[key]) > settings.RATE_LIMIT_BUCKET_PER_MIN:
+    bucket_size = _rate_limit_bucket_for_plan(plan)
+    if len(rate_limiter[key]) > bucket_size:
         counters = request.app.state.prometheus_counters
         counters["requests_rate_limited_total"].labels(site_id=site_id, ip=ip).inc()
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Rate limited")
@@ -89,7 +109,8 @@ async def shuffle_ingest(
     if origin and not fnmatch(origin, claims.allowed_origin):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin mismatch")
     await validate_token(claims, payload.token, session)
-    apply_rate_limit(claims.site_id, request.client.host if request.client else "unknown", request)
+    plan = await resolve_plan(claims.site_id, claims.plan, session)
+    apply_rate_limit(claims.site_id, request.client.host if request.client else "unknown", request, plan)
 
     nonce_exists = await session.execute(
         select(TokenNonce).where(TokenNonce.jti == payload.nonce)
@@ -115,12 +136,19 @@ async def shuffle_ingest(
         server_received_at=server_received_at,
         reports=payload.batch,
     )
-    await ingest_reports(collect_payload, request, session)
+    await ingest_reports(collect_payload, request, session, plan)
     await purge_old_nonces(session)
 
 
-async def ingest_reports(collect: CollectRequest, request: Request, session: AsyncSession):
+async def ingest_reports(collect: CollectRequest, request: Request, session: AsyncSession, plan: str | None = None):
     counters = request.app.state.prometheus_counters
+    effective_plan = plan
+    if effective_plan is None:
+        record = await session.get(SitePlan, collect.site_id)
+        effective_plan = record.plan if record else "free"
+    if effective_plan == "pro" and not settings.ENABLE_PRO_INGEST:
+        effective_plan = "standard"
+
     for report in collect.reports:
         if report.site_id != collect.site_id:
             continue
@@ -129,15 +157,27 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
         if delta > settings.MAX_OUT_OF_ORDER_SECONDS:
             counters["events_dropped_late_total"].labels(site_id=collect.site_id).inc()
             continue
-        record = LdpReport(
-            site_id=collect.site_id,
-            kind=report.kind,
-            day=payload_time.date(),
-            payload=report.payload,
-            epsilon_used=report.epsilon_used,
-            sampling_rate=report.sampling_rate,
-            server_received_at=collect.server_received_at,
-        )
+
+        if effective_plan == "pro":
+            record = LdpReport(
+                site_id=collect.site_id,
+                kind=report.kind,
+                day=payload_time.date(),
+                payload=report.payload,
+                epsilon_used=report.epsilon_used,
+                sampling_rate=report.sampling_rate,
+                server_received_at=collect.server_received_at,
+            )
+        else:
+            record = RawReport(
+                site_id=collect.site_id,
+                kind=report.kind,
+                day=payload_time.date(),
+                payload=report.payload,
+                epsilon_used=report.epsilon_used,
+                sampling_rate=report.sampling_rate,
+                server_received_at=collect.server_received_at,
+            )
         session.add(record)
         counters["events_received_total"].labels(site_id=collect.site_id).inc()
     await session.commit()

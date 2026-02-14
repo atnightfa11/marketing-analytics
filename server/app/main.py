@@ -22,6 +22,7 @@ from .routers import (
     aggregates,
     forecast,
     health,
+    imports,
     ingest,
     metrics as metrics_router,
     shuffle,
@@ -98,16 +99,19 @@ async def run_forecast_training_once():
         from sqlalchemy import select
         from .models import DpWindow
 
-        site_ids = (
-            await session.execute(select(DpWindow.site_id).distinct())
-        ).scalars().all()
+        site_plan_rows = (
+            await session.execute(select(DpWindow.site_id, DpWindow.plan).distinct())
+        ).all()
 
-        for site_id in site_ids:
+        for site_id, plan in site_plan_rows:
             for metric in metrics:
                 try:
-                    await train_prophet(session, site_id=site_id, metric=metric)
+                    await train_prophet(session, site_id=site_id, metric=metric, plan=plan)
                 except Exception:
-                    logger.exception("Forecast training failed", extra={"site_id": site_id, "metric": metric})
+                    logger.exception(
+                        "Forecast training failed",
+                        extra={"site_id": site_id, "metric": metric, "plan": plan},
+                    )
 
 
 
@@ -186,6 +190,7 @@ app.include_router(ingest.router, prefix="/api")
 app.include_router(metrics_router.router, prefix="/api")
 app.include_router(aggregates.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
+app.include_router(imports.router, prefix="/api")
 app.include_router(stripe_billing.router, prefix="/api")
 app.include_router(alert_webhook.router, prefix="/api")
 app.include_router(health.router)

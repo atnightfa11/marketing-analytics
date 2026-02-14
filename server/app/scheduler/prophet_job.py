@@ -12,15 +12,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..models import DpWindow, Forecast, ModelStore
+from ..models import DpWindow, Forecast, ModelStore, SitePlan
 
 settings = get_settings()
 
 
-async def train_prophet(session: AsyncSession, site_id: str, metric: str):
+async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: str = "free"):
     stmt = (
         select(DpWindow)
-        .where(DpWindow.site_id == site_id, DpWindow.metric == metric)
+        .where(DpWindow.site_id == site_id, DpWindow.metric == metric, DpWindow.plan == plan)
         .order_by(DpWindow.window_start.asc())
     )
     rows = (await session.execute(stmt)).scalars().all()
@@ -44,7 +44,12 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str):
     prior = (
         await session.execute(
             select(ModelStore)
-            .where(ModelStore.site_id == site_id, ModelStore.engine == "prophet", ModelStore.metric == metric)
+            .where(
+                ModelStore.site_id == site_id,
+                ModelStore.engine == "prophet",
+                ModelStore.metric == metric,
+                ModelStore.plan == plan,
+            )
             .order_by(ModelStore.created_at.desc())
         )
     ).scalar_one_or_none()
@@ -65,6 +70,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str):
 
     model_record = ModelStore(
         site_id=site_id,
+        plan=plan,
         engine="prophet",
         metric=metric,
         uri=str(artifact_path),
@@ -79,6 +85,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str):
         forecasts.append(
             Forecast(
                 site_id=site_id,
+                plan=plan,
                 metric=metric,
                 day=row["ds"].date(),
                 yhat=row["yhat"],

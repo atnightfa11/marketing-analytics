@@ -50,6 +50,7 @@ async def create_upload_token(
 
     claims = TokenClaims(
         site_id=payload.site_id,
+        plan=payload.plan,
         allowed_origin=payload.allowed_origin,
         iat=int(now.timestamp()),
         exp=int(exp.timestamp()),

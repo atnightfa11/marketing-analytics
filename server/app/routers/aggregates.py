@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import DpWindow, get_session
+from ..dependencies import get_site_plan
 from ..schemas import AggregateResponse, WindowAggregate
 
 router = APIRouter(tags=["metrics"])
@@ -17,9 +18,10 @@ async def aggregate(
     site_id: str,
     metric: str,
     window: str = Query(default="standard", regex="^(live|standard)$"),
+    plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.metric == metric)
+    stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.metric == metric, DpWindow.plan == plan)
     if window == "live":
         cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=3)
         stmt = stmt.where(DpWindow.window_start >= cutoff)

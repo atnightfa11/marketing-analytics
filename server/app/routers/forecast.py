@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..dependencies import get_site_plan
 from ..models import Forecast, ModelStore, get_session
 from ..schemas import ForecastResponse, ForecastPoint
 
@@ -14,9 +15,10 @@ router = APIRouter(tags=["forecast"])
 
 @router.get("/forecast/{metric}", response_model=ForecastResponse, status_code=status.HTTP_200_OK)
 async def forecast(metric: str, site_id: str, request: Request, session: AsyncSession = Depends(get_session)):
+    plan = await get_site_plan(site_id, session)
     stmt = (
         select(Forecast)
-        .where(Forecast.site_id == site_id, Forecast.metric == metric)
+        .where(Forecast.site_id == site_id, Forecast.metric == metric, Forecast.plan == plan)
         .order_by(Forecast.day.asc())
     )
     rows = (await session.execute(stmt)).scalars().all()

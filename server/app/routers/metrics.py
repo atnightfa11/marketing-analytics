@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..dependencies import get_site_plan
 from ..ldp.rr_decoder import confidence_interval, standard_error
 from ..models import DailyUnique, DpWindow, get_session
 from ..schemas import MetricsResponse, MetricStatistic
@@ -21,9 +22,10 @@ async def get_metrics(
     start: str | None = None,
     end: str | None = None,
     metrics: list[str] | None = Query(default=None),
+    plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(DpWindow).where(DpWindow.site_id == site_id)
+    stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.plan == plan)
     if start:
         stmt = stmt.where(DpWindow.window_start >= start)
     if end:

@@ -56,15 +56,37 @@ class LdpReport(Base):
     )
 
 
+class RawReport(Base):
+    __tablename__ = "raw_reports"
+    __table_args__ = (Index("ix_raw_reports_site_kind_day", "site_id", "kind", "day"),)
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        *IDENTITY_ARGS,
+        primary_key=True,
+        autoincrement=True,
+    )
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    epsilon_used: Mapped[float] = mapped_column(Float, nullable=False)
+    sampling_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    server_received_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class DpWindow(Base):
     __tablename__ = "dp_windows"
     __table_args__ = (
-        UniqueConstraint("site_id", "window_start", "metric", name="uq_window"),
-        Index("ix_dp_windows_site_metric", "site_id", "metric"),
+        UniqueConstraint("site_id", "window_start", "metric", "plan", name="uq_window"),
+        Index("ix_dp_windows_site_metric", "site_id", "metric", "plan"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False, default="free")
     window_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_end: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     metric: Mapped[str] = mapped_column(String, nullable=False)
@@ -92,10 +114,11 @@ class DailyUnique(Base):
 
 class Forecast(Base):
     __tablename__ = "forecasts"
-    __table_args__ = (Index("ix_forecasts_site_metric_day", "site_id", "metric", "day"),)
+    __table_args__ = (Index("ix_forecasts_site_metric_day", "site_id", "metric", "day", "plan"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False, default="free")
     metric: Mapped[str] = mapped_column(String, nullable=False)
     day: Mapped[dt.date] = mapped_column(Date, nullable=False)
     yhat: Mapped[float] = mapped_column(Float, nullable=False)
@@ -139,11 +162,12 @@ class TokenNonce(Base):
 
 class SiteEpsilonLog(Base):
     __tablename__ = "site_epsilon_log"
-    __table_args__ = (UniqueConstraint("site_id", "day", name="uq_site_epsilon"),)
+    __table_args__ = (UniqueConstraint("site_id", "day", "plan", name="uq_site_epsilon"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)
     day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False, default="standard")
     epsilon_total: Mapped[float] = mapped_column(Float, nullable=False)
 
 
@@ -173,11 +197,13 @@ class SitePlan(Base):
 
 class ModelStore(Base):
     __tablename__ = "model_store"
-    __table_args__ = (Index("ix_model_store_site_metric", "site_id", "engine"),)
+    __table_args__ = (Index("ix_model_store_site_metric", "site_id", "engine", "metric", "plan"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False, default="free")
     engine: Mapped[str] = mapped_column(String, nullable=False)
+    metric: Mapped[str] = mapped_column(String, nullable=False, default="pageviews")
     uri: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")

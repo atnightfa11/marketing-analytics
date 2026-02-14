@@ -10,10 +10,8 @@ This checklist reflects the **current repository state** and the shortest path t
 - Dashboard supports metric/range selection and forecast display controls.
 
 ### Still pending for true Free + Standard launch
-- Plan-aware ingest split is not implemented yet in code (no `raw_reports` ingestion path).
-- Data model does not yet include plan-partitioned serving for aggregates/forecasts.
-- Integration tests for Free/Standard tier behavior are not complete.
-- Historical import pipeline for customer migration is not implemented.
+- Pro ingest/reduce path remains feature-flagged off (`ENABLE_PRO_INGEST=false` for launch).
+- Historical import currently supports daily aggregate CSV/JSON rows (`day, metric, value`) and should be expanded for richer dimension imports post-v1.
 
 ---
 
@@ -21,19 +19,19 @@ This checklist reflects the **current repository state** and the shortest path t
 
 ### A. Tier data model and ingest branching
 - [x] Add/verify `site_plan` model and migrations.
-- [ ] Add `raw_reports` model + migration.
-- [ ] Branch ingest:
+- [x] Add `raw_reports` model + migration.
+- [x] Branch ingest:
   - Free/Standard -> store in `raw_reports`
   - Pro (waitlist) -> keep LDP path behind feature flag.
-- [ ] Add plan-aware rate limits:
+- [x] Add plan-aware rate limits:
   - Free: 500 daily visits / lower API bucket
   - Standard: 5,000 daily visits / higher bucket.
 
 ### B. Reducer and serving
-- [ ] Add Free path: raw aggregate publishing.
-- [ ] Add Standard path: aggregate-noise DP + epsilon log.
-- [ ] Make `/api/metrics`, `/api/aggregate`, `/api/forecast` resolve by site plan.
-- [ ] Keep forecast enabled for Standard by default.
+- [x] Add Free path: raw aggregate publishing.
+- [x] Add Standard path: aggregate-noise DP + epsilon log.
+- [x] Make `/api/metrics`, `/api/aggregate`, `/api/forecast` resolve by site plan.
+- [x] Keep forecast enabled for Standard by default.
 
 ### C. Forecast operations
 - [ ] Keep default dashboard forecast view at 30 days.
@@ -42,13 +40,13 @@ This checklist reflects the **current repository state** and the shortest path t
 - [ ] Add job-health logging/alerting.
 
 ### D. Imports (required for customer migration)
-- [ ] Create CSV import format (date, metric, value minimum).
-- [ ] Build import endpoint/script + validation.
-- [ ] Re-run reducer/forecast after import.
+- [x] Create CSV import format (date, metric, value minimum).
+- [x] Build import endpoint/script + validation.
+- [x] Re-run reducer/forecast after import.
 
 ### E. Tests and release checks
-- [ ] Add integration tests for Free + Standard flows.
-- [ ] Add scheduler smoke test (daily reduce + forecast).
+- [x] Add integration tests for Free + Standard flows.
+- [x] Add scheduler smoke test (daily reduce + forecast).
 - [ ] Validate dashboard against both demo site and live site IDs.
 
 ---

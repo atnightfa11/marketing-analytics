@@ -21,6 +21,10 @@ class Settings(BaseSettings):
   RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=200)
   ALPHA_SMOOTHING: float = Field(default=0.5)
   MAX_EVENTS_PER_MINUTE: int = Field(default=60)
+  AGGREGATE_DP_EPSILON: float = Field(default=1.0)
+  ENABLE_PRO_INGEST: bool = Field(default=False)
+  FREE_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=60)
+  STANDARD_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=240)
   FORECAST_HORIZON_DAYS: int = Field(default=90)
   ENABLE_PROD_SCHEDULER: bool = Field(default=False)
   PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
@@ -61,6 +65,7 @@ def get_settings() -> Settings:
 
 class TokenClaims(BaseModel):
   site_id: str
+  plan: str = "free"
   allowed_origin: str
   iat: int
   exp: int

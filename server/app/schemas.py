@@ -12,6 +12,7 @@ class UploadTokenRequest(BaseModel):
     epsilon_budget: float = Field(gt=0)
     sampling_rate: float = Field(ge=0, le=1)
     ttl_seconds: int | None = Field(default=None, ge=60, le=3600)
+    plan: Literal["free", "standard", "pro"] = "free"
 
 
 class UploadTokenResponse(BaseModel):
@@ -47,7 +48,7 @@ class CheckoutSessionResponse(BaseModel):
 
 class PrivatizedEvent(BaseModel):
     site_id: str
-    kind: Literal["uniques", "pageviews", "sessions", "conversions"]
+    kind: Literal["uniques", "pageviews", "sessions", "conversions", "revenue"]
     payload: dict[str, Any]
     epsilon_used: float
     sampling_rate: float
@@ -64,6 +65,28 @@ class CollectRequest(BaseModel):
     site_id: str
     server_received_at: dt.datetime
     reports: list[PrivatizedEvent]
+
+
+class HistoricalImportRow(BaseModel):
+    day: dt.date
+    metric: Literal["uniques", "pageviews", "sessions", "conversions", "revenue"]
+    value: float = Field(ge=0)
+
+
+class HistoricalImportRequest(BaseModel):
+    site_id: str
+    rows: list[HistoricalImportRow]
+
+
+class HistoricalImportResponse(BaseModel):
+    site_id: str
+    imported_rows: int
+    reduced_days: int
+
+
+class HistoricalCsvImportRequest(BaseModel):
+    site_id: str
+    csv_text: str
 
 
 class ConfidenceInterval(BaseModel):
