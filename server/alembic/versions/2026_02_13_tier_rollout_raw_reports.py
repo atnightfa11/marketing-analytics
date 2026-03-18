@@ -74,6 +74,11 @@ def upgrade():
         op.drop_index("ix_forecasts_site_metric_day", table_name="forecasts")
     op.create_index("ix_forecasts_site_metric_day", "forecasts", ["site_id", "metric", "day", "plan"])
 
+    if not _has_column(inspector, "model_store", "metric"):
+        op.add_column(
+            "model_store",
+            sa.Column("metric", sa.Text(), nullable=False, server_default="pageviews"),
+        )
     if not _has_column(inspector, "model_store", "plan"):
         op.add_column("model_store", sa.Column("plan", sa.Text(), nullable=False, server_default="free"))
     if _has_index(inspector, "model_store", "ix_model_store_site_metric"):
