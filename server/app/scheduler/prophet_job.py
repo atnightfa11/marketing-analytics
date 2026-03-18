@@ -74,9 +74,13 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
     forecast_df = model.predict(future)
 
     with tempfile.NamedTemporaryFile(prefix=f"{site_id}-{metric}-", suffix=".json", delete=False) as tmp:
+        history_records = [
+            {"ds": str(record["ds"]), "y": float(record["y"])}
+            for record in df.to_dict(orient="records")
+        ]
         payload = {
-            "params": model.params,
-            "history": df.to_dict(orient="records"),
+            "params": _json_compatible(model.params),
+            "history": history_records,
         }
         tmp.write(json.dumps(payload).encode("utf-8"))
         artifact_path = Path(tmp.name)
@@ -125,6 +129,17 @@ def _distinct_by_day(rows: Iterable[dict]):
 
     data = list(seen.values())
     return pd.DataFrame(data)
+
+
+def _json_compatible(value):
+    if isinstance(value, dict):
+        return {k: _json_compatible(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(v) for v in value]
+    to_list = getattr(value, "tolist", None)
+    if callable(to_list):
+        return _json_compatible(to_list())
+    return value
 
 
 def _try_set_bundled_cmdstan() -> None:
