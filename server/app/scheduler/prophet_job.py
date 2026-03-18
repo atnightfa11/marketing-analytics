@@ -159,13 +159,6 @@ def _try_set_bundled_cmdstan() -> None:
     stan_model_dir = Path(prophet_pkg.__file__).resolve().parent / "stan_model"
     for candidate in sorted(stan_model_dir.glob("cmdstan-*")):
         if (candidate / "bin").exists():
-            makefile = candidate / "makefile"
-            if not makefile.exists():
-                try:
-                    makefile.write_text("# generated for cmdstanpy validation\n", encoding="utf-8")
-                except OSError:
-                    # If write fails, we still try set_cmdstan_path and let fallback handle errors.
-                    pass
             try:
                 set_cmdstan_path(str(candidate))
                 return
