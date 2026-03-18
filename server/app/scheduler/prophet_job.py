@@ -41,7 +41,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
 
     _try_set_bundled_cmdstan()
     try:
-        model = Prophet(interval_width=0.8)
+        model = Prophet(interval_width=0.8, stan_backend="CMDSTANPY")
         model.fit(df)
 
         cv = cross_validation(model, initial="45 days", period="7 days", horizon="15 days")
@@ -144,6 +144,13 @@ def _try_set_bundled_cmdstan() -> None:
     stan_model_dir = Path(prophet_pkg.__file__).resolve().parent / "stan_model"
     for candidate in sorted(stan_model_dir.glob("cmdstan-*")):
         if (candidate / "bin").exists():
+            makefile = candidate / "makefile"
+            if not makefile.exists():
+                try:
+                    makefile.write_text("# generated for cmdstanpy validation\n", encoding="utf-8")
+                except OSError:
+                    # If write fails, we still try set_cmdstan_path and let fallback handle errors.
+                    pass
             try:
                 set_cmdstan_path(str(candidate))
                 return
