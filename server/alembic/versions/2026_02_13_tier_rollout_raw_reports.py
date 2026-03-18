@@ -34,6 +34,11 @@ def upgrade():
     bind = op.get_bind()
     inspector = sa.inspect(bind)
 
+    # Older databases can have alembic_version.version_num as varchar(32).
+    # This revision id is longer, so widen it before Alembic writes the new head.
+    if bind.dialect.name == "postgresql":
+        op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE TEXT")
+
     existing_tables = set(inspector.get_table_names())
 
     if "raw_reports" not in existing_tables:
