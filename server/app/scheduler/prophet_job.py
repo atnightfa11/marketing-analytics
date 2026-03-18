@@ -111,7 +111,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
             )
         )
     for forecast in forecasts:
-        session.merge(forecast)
+        await session.merge(forecast)
     await session.commit()
     return forecasts
 
@@ -223,6 +223,6 @@ async def _train_ewma_fallback(
             )
         )
     for forecast in forecasts:
-        session.merge(forecast)
+        await session.merge(forecast)
     await session.commit()
     return forecasts
