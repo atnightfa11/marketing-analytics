@@ -195,6 +195,29 @@ class SitePlan(Base):
     )
 
 
+class SiteApiKey(Base):
+    __tablename__ = "site_api_keys"
+    __table_args__ = (
+        Index("ix_site_api_keys_site_active", "site_id", "is_active"),
+        Index("ix_site_api_keys_key_id", "key_id", unique=True),
+        Index("ix_site_api_keys_key_prefix", "key_prefix"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String, nullable=False)
+    allowed_origin_pattern: Mapped[str] = mapped_column(String, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class ModelStore(Base):
     __tablename__ = "model_store"
     __table_args__ = (Index("ix_model_store_site_metric", "site_id", "engine", "metric", "plan"),)

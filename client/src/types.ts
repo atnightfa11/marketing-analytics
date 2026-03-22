@@ -7,7 +7,9 @@ export type EventKind =
 export interface ClientConfig {
   siteId: string;
   shuffleUrl: string;
-  uploadToken: string;
+  uploadToken?: string;
+  siteKey?: string;
+  apiBase?: string;
   samplingRate: number;
   epsilon: {
     presence: number;
@@ -19,6 +21,11 @@ export interface ClientConfig {
   flushIntervalMs?: number;
   debug?: boolean;
   presenceEpsilonCap?: number;
+  includeQueryInPath?: boolean;
+  stripHashInPath?: boolean;
+  autoRefreshSkewSeconds?: number;
+  refreshEndpoint?: string;
+  bootstrapEndpoint?: string;
 }
 
 export interface EventEnvelope<T = Record<string, unknown>> {
@@ -46,4 +53,11 @@ export interface SessionEventPayload {
 
 export interface ConversionEventPayload {
   conversionType: string;
+}
+
+export interface AutoeventsConfig {
+  conversionSelector?: string;
+  sessionInactivityMs?: number;
+  includeQueryInPath?: boolean;
+  stripHashInPath?: boolean;
 }

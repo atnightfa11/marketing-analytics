@@ -2,10 +2,11 @@
 
 ## Color Palette
 
-- Primary: #7A6AE6
+- Primary: #1b7f8e
 - Neutral Dark: #111827
 - Neutral Light: #F3F4F6
 - White: #FFFFFF
+- Accent: #7d2331
 
 Usage notes:
 - Use Primary sparingly for emphasis (e.g., key chart lines, active states).

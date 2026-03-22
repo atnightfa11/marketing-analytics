@@ -13,6 +13,12 @@ export default {
       file: "dist/index.js",
       format: "esm",
       sourcemap: true
+    },
+    {
+      file: "dist/validanalytics.global.js",
+      format: "iife",
+      name: "ValidAnalytics",
+      sourcemap: true
     }
   ],
   treeshake: true,

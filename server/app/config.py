@@ -23,6 +23,9 @@ class Settings(BaseSettings):
   MAX_EVENTS_PER_MINUTE: int = Field(default=60)
   AGGREGATE_DP_EPSILON: float = Field(default=1.0)
   ENABLE_PRO_INGEST: bool = Field(default=False)
+  SDK_BOOTSTRAP_RATE_LIMIT_PER_MINUTE: int = Field(default=60)
+  SDK_SITE_KEY_PREFIX: str = Field(default="vsk")
+  SDK_ALLOW_WILDCARD_ORIGIN_KEYS: bool = Field(default=False)
   FREE_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=60)
   STANDARD_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=240)
   FORECAST_HORIZON_DAYS: int = Field(default=90)
@@ -42,11 +45,18 @@ class Settings(BaseSettings):
   csp_policy: str = Field(
       default="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
   )
+  cors_origins_csv: str | None = None
+  cors_allow_all: bool = False
+  cors_origin_regex: str | None = None
 
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
   @model_validator(mode="after")
   def ensure_required_cors_origins(self):
+    if self.cors_origins_csv:
+      extras = [item.strip() for item in self.cors_origins_csv.split(",") if item.strip()]
+      self.cors_origins = [*self.cors_origins, *extras]
+
     required = ("https://app.validanalytics.io", "https://validanalytics.io")
     normalized = [origin.rstrip("/") for origin in self.cors_origins if origin]
     seen = set(normalized)

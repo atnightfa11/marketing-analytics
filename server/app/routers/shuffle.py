@@ -47,22 +47,27 @@ async def validate_token(claims: TokenClaims, token: str, session: AsyncSession)
     if now.timestamp() > claims.exp:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
 
-    stmt = select(UploadToken).where(UploadToken.site_id == claims.site_id)
-    tokens = (await session.execute(stmt)).scalars().all()
-    if not tokens:
+    stmt = select(UploadToken).where(
+        UploadToken.site_id == claims.site_id,
+        UploadToken.jti == claims.jti,
+    )
+    record = (await session.execute(stmt)).scalar_one_or_none()
+    if not record:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token not registered")
-    verified = False
-    for record in tokens:
-        if record.revoked_at:
-            continue
-        try:
-            password_hasher.verify(record.token_hash, token)
-            verified = True
-            break
-        except argon_exceptions.VerifyMismatchError:
-            continue
-    if not verified:
+    if record.revoked_at:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked")
+    record_exp = record.exp
+    if record_exp.tzinfo is None:
+        record_exp = record_exp.replace(tzinfo=dt.timezone.utc)
+    if now > record_exp:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+
+    try:
+        password_hasher.verify(record.token_hash, token)
+    except argon_exceptions.VerifyMismatchError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token revoked") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalid") from exc
 
 
 async def resolve_plan(site_id: str, claims_plan: str, session: AsyncSession) -> str:
@@ -106,7 +111,9 @@ async def shuffle_ingest(
 ):
     claims = decode_token(payload.token)
     origin = request.headers.get("Origin")
-    if origin and not fnmatch(origin, claims.allowed_origin):
+    if not origin:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin header is required")
+    if not fnmatch(origin, claims.allowed_origin):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin mismatch")
     await validate_token(claims, payload.token, session)
     plan = await resolve_plan(claims.site_id, claims.plan, session)

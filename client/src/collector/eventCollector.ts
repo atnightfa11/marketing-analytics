@@ -14,7 +14,9 @@ export class EventCollector {
     private readonly config: ClientConfig,
     private readonly logger: Logger,
     private readonly onFailure: () => void,
-    private readonly onSuccess: () => void
+    private readonly onSuccess: () => void,
+    private readonly getUploadToken: () => string | null,
+    private readonly refreshUploadToken: () => Promise<string | null>
   ) {
     this.visibilityListener = this.setupVisibilityObservers();
   }
@@ -65,26 +67,44 @@ export class EventCollector {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
     try {
-      const response = await fetch(this.config.shuffleUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.uploadToken}`,
-        },
-        body: JSON.stringify({
-          token: this.config.uploadToken,
-          nonce: batch[0]?.nonce,
-          batch,
-        }),
-        signal: controller.signal,
-        keepalive: true,
-      });
+      const token = this.getUploadToken();
+      if (!token) {
+        throw new Error("Upload token unavailable");
+      }
+      const response = await this.sendBatch(batch, token, controller.signal);
+      if (response.status === 401) {
+        const refreshed = await this.refreshUploadToken();
+        if (refreshed) {
+          const retry = await this.sendBatch(batch, refreshed, controller.signal);
+          if (retry.ok) {
+            return;
+          }
+          throw new Error(`Shuffle endpoint responded with ${retry.status} after refresh`);
+        }
+      }
       if (!response.ok) {
         throw new Error(`Shuffle endpoint responded with ${response.status}`);
       }
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private sendBatch(batch: EventEnvelope[], token: string, signal: AbortSignal): Promise<Response> {
+    return fetch(this.config.shuffleUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        token,
+        nonce: batch[0]?.nonce,
+        batch,
+      }),
+      signal,
+      keepalive: true,
+    });
   }
 
   private setupVisibilityObservers(): (() => void) | null {

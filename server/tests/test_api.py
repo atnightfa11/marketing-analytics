@@ -16,7 +16,9 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB_PATH}"
 from app.main import app  # noqa: E402
 from sqlalchemy import select
 
-from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SitePlan, async_engine, async_session_factory  # noqa: E402
+from argon2 import PasswordHasher
+
+from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
 
 
 async def _prepare_database() -> None:
@@ -45,6 +47,21 @@ async def _count_reports(site_id: str) -> tuple[int, int]:
         raw_count = len((await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all())
         ldp_count = len((await session.execute(select(LdpReport).where(LdpReport.site_id == site_id))).scalars().all())
         return raw_count, ldp_count
+
+
+async def _create_site_api_key(site_id: str, key_id: str, full_key: str, allowed_origin: str, active: bool = True) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            SiteApiKey(
+                site_id=site_id,
+                key_id=key_id,
+                key_prefix=f"vsk_{key_id}",
+                key_hash=PasswordHasher().hash(full_key),
+                allowed_origin_pattern=allowed_origin,
+                is_active=active,
+            )
+        )
+        await session.commit()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -126,6 +143,37 @@ async def test_nonce_replay_rejected(client):
         headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
     )
     assert second.status_code in (401, 409)
+
+
+@pytest.mark.asyncio
+async def test_shuffle_requires_origin_header(client):
+    token_resp = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": "site-origin-required",
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+        },
+    )
+    token = token_resp.json()["token"]
+
+    batch = [
+        {
+            "site_id": "site-origin-required",
+            "kind": "pageviews",
+            "payload": {"randomized_bit": 1},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
+    resp = client.post(
+        "/api/shuffle",
+        json={"token": token, "nonce": "nonce-origin-required", "batch": batch},
+        headers={"X-Bypass-Delay": "true"},
+    )
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -266,3 +314,55 @@ async def test_historical_import_requires_token_and_uses_row_value(client):
         ).scalars().all()
         assert rows, "Expected at least one reduced window for imported historical data"
         assert any(abs(row.value - 42.0) < 1e-6 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_sdk_bootstrap_success_and_origin_failure(client):
+    await _set_site_plan("site-bootstrap", "standard")
+    site_key = "vsk_bootstrapid_secretvalue"
+    await _create_site_api_key("site-bootstrap", "bootstrapid", site_key, "https://example.com")
+
+    denied = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "https://evil.example.com"},
+    )
+    assert denied.status_code == 403
+
+    ok = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "https://example.com"},
+    )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["upload_token"]
+    assert body["config"]["site_id"] == "site-bootstrap"
+
+
+@pytest.mark.asyncio
+async def test_sdk_bootstrap_rejects_site_id_mismatch(client):
+    await _set_site_plan("site-bootstrap-mismatch", "standard")
+    site_key = "vsk_bootstrapmismatch_secretvalue"
+    await _create_site_api_key("site-bootstrap-mismatch", "bootstrapmismatch", site_key, "https://example.com")
+
+    resp = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key, "site_id": "another-site"},
+        headers={"Origin": "https://example.com"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sdk_bootstrap_rejects_inactive_site_key(client):
+    await _set_site_plan("site-inactive-key", "free")
+    site_key = "vsk_inactiveid_secretvalue"
+    await _create_site_api_key("site-inactive-key", "inactiveid", site_key, "https://example.com", active=False)
+
+    resp = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "https://example.com"},
+    )
+    assert resp.status_code == 401

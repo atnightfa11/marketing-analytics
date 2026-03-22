@@ -12,6 +12,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from .config import Settings, get_settings
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from .job_status import mark_job_error, mark_job_run, mark_job_success
 from .models import async_session_factory
 from .scheduler.nightly_reduce import reduce_reports
 from .scheduler.prophet_job import train_prophet
@@ -24,7 +25,9 @@ from .routers import (
     health,
     imports,
     ingest,
+    job_status,
     metrics as metrics_router,
+    sdk_bootstrap,
     shuffle,
     stripe_billing,
     upload_token,
@@ -42,9 +45,12 @@ app = FastAPI(
 )
 Instrumentator().instrument(app).expose(app)
 
+cors_allow_origins = ["*"] if settings.cors_allow_all else settings.cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=cors_allow_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=False,
@@ -94,7 +100,9 @@ app.state.prometheus_gauges = prometheus_gauges
 
 
 async def run_forecast_training_once():
+    mark_job_run("forecast")
     metrics = ("pageviews", "sessions", "uniques", "conversions", "revenue")
+    had_error = False
     async with async_session_factory() as session:
         from sqlalchemy import select
         from .models import DpWindow
@@ -107,11 +115,15 @@ async def run_forecast_training_once():
             for metric in metrics:
                 try:
                     await train_prophet(session, site_id=site_id, metric=metric, plan=plan)
-                except Exception:
+                except Exception as exc:
+                    had_error = True
+                    mark_job_error("forecast", RuntimeError(f"site={site_id} metric={metric} plan={plan}: {exc}"))
                     logger.exception(
                         "Forecast training failed",
                         extra={"site_id": site_id, "metric": metric, "plan": plan},
                     )
+    if not had_error:
+        mark_job_success("forecast")
 
 
 
@@ -127,8 +139,14 @@ async def on_startup():
             scheduler = AsyncIOScheduler()
 
             async def job():
+                mark_job_run("reduce")
                 async with async_session_factory() as session:
-                    await reduce_reports(session)
+                    try:
+                        await reduce_reports(session)
+                        mark_job_success("reduce")
+                    except Exception as exc:
+                        mark_job_error("reduce", exc)
+                        raise
 
             scheduler.add_job(job, "interval", seconds=60, id="dev_reducer", replace_existing=True)
             scheduler.start()
@@ -143,8 +161,14 @@ async def on_startup():
             prod_scheduler = AsyncIOScheduler(timezone="UTC")
 
             async def reduce_job():
+                mark_job_run("reduce")
                 async with async_session_factory() as session:
-                    await reduce_reports(session)
+                    try:
+                        await reduce_reports(session)
+                        mark_job_success("reduce")
+                    except Exception as exc:
+                        mark_job_error("reduce", exc)
+                        raise
 
             prod_scheduler.add_job(
                 reduce_job,
@@ -192,5 +216,7 @@ app.include_router(aggregates.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(stripe_billing.router, prefix="/api")
+app.include_router(sdk_bootstrap.router, prefix="/api")
+app.include_router(job_status.router, prefix="/api")
 app.include_router(alert_webhook.router, prefix="/api")
 app.include_router(health.router)

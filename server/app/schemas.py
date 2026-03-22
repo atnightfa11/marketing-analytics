@@ -46,6 +46,25 @@ class CheckoutSessionResponse(BaseModel):
     session_id: str
 
 
+class SdkBootstrapRequest(BaseModel):
+    site_key: str = Field(min_length=12)
+    site_id: str | None = None
+
+
+class SdkBootstrapConfig(BaseModel):
+    site_id: str
+    sampling_rate: float
+    epsilon_budget: float
+    shuffle_url: str
+    token_ttl_seconds: int
+
+
+class SdkBootstrapResponse(BaseModel):
+    upload_token: str
+    expires_at: dt.datetime
+    config: SdkBootstrapConfig
+
+
 class PrivatizedEvent(BaseModel):
     site_id: str
     kind: Literal["uniques", "pageviews", "sessions", "conversions", "revenue"]
