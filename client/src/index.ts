@@ -9,6 +9,7 @@ const CIRCUIT_BREAKER_LIMIT = 10;
 const CIRCUIT_BREAKER_DURATION_MS = 5 * 60 * 1000;
 const THREE_MINUTES_MS = 3 * 60 * 1000;
 const DEFAULT_SESSION_INACTIVITY_MS = 30 * 60 * 1000;
+const DEFAULT_CONVERSION_DEDUPE_MS = 10 * 1000;
 
 let config: ClientConfig | null = null;
 let collector: EventCollector | null = null;
@@ -25,6 +26,7 @@ let lastPageviewRouteAction = "";
 let lastPageviewAt = 0;
 let lastActivityAt = 0;
 let autoeventsCleanup: Array<() => void> = [];
+let conversionDedupCache = new Map<string, number>();
 
 type EnsureResult = { config: ClientConfig; collector: EventCollector };
 
@@ -207,6 +209,41 @@ function resetAutoevents(): void {
     dispose();
   }
   autoeventsCleanup = [];
+  conversionDedupCache = new Map();
+}
+
+function sanitizeConversionHint(value: string | null | undefined): string {
+  if (!value) return "";
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return "";
+  return trimmed.replace(/[^a-z0-9_-]/g, "_").slice(0, 64);
+}
+
+export function normalizeAutoConversionType(value: string | null | undefined): string {
+  return sanitizeConversionHint(value);
+}
+
+function dedupeConversionEvent(key: string, dedupeWindowMs: number): boolean {
+  const now = Date.now();
+  const last = conversionDedupCache.get(key);
+  if (typeof last === "number" && now - last < dedupeWindowMs) {
+    return false;
+  }
+  conversionDedupCache.set(key, now);
+  if (conversionDedupCache.size > 1000) {
+    const cutoff = now - dedupeWindowMs;
+    for (const [entryKey, ts] of conversionDedupCache.entries()) {
+      if (ts < cutoff) conversionDedupCache.delete(entryKey);
+    }
+  }
+  return true;
+}
+
+export function shouldEmitAutoConversion(
+  key: string,
+  dedupeWindowMs: number = DEFAULT_CONVERSION_DEDUPE_MS
+): boolean {
+  return dedupeConversionEvent(key, dedupeWindowMs);
 }
 
 export async function configure(userConfig: ClientConfig): Promise<void> {
@@ -285,17 +322,76 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
     });
   }
 
-  const selector = autoConfig.conversionSelector ?? "[data-valid-conversion]";
-  const onClick = (event: Event) => {
-    const target = event.target as HTMLElement | null;
-    const node = target?.closest(selector) as HTMLElement | null;
-    if (!node) return;
-    const conversionType = node.getAttribute("data-valid-conversion");
-    if (!conversionType) return;
-    sendConversion({ conversionType });
-  };
-  document.addEventListener("click", onClick, true);
-  autoeventsCleanup.push(() => document.removeEventListener("click", onClick, true));
+  const autoConversionsEnabled = autoConfig.autoConversions ?? true;
+  if (autoConversionsEnabled) {
+    const dedupeWindowMs = Math.max(5000, Math.min(30000, autoConfig.conversionDedupeWindowMs ?? DEFAULT_CONVERSION_DEDUPE_MS));
+    const selector = autoConfig.conversionSelector ?? "[data-valid-conversion]";
+
+    const emitConversion = (type: string, signature: string) => {
+      const cleanType = sanitizeConversionHint(type);
+      if (!cleanType) return;
+      const dedupeKey = `${cleanType}:${signature}`;
+      if (!dedupeConversionEvent(dedupeKey, dedupeWindowMs)) {
+        return;
+      }
+      sendConversion({ conversionType: cleanType });
+    };
+
+    const onClick = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      const node = target?.closest(selector) as HTMLElement | null;
+      if (node) {
+        const conversionType = sanitizeConversionHint(node.getAttribute("data-valid-conversion"));
+        if (conversionType) {
+          emitConversion(conversionType, `attr:${node.tagName}`);
+          return;
+        }
+      }
+
+      const link = target?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!link) return;
+      const rawHref = link.getAttribute("href") ?? "";
+      const href = rawHref.trim();
+      if (!href) return;
+      if (href.toLowerCase().startsWith("mailto:")) {
+        emitConversion("mailto_click", "mailto");
+        return;
+      }
+      if (href.toLowerCase().startsWith("tel:")) {
+        emitConversion("tel_click", "tel");
+        return;
+      }
+      try {
+        const resolved = new URL(href, window.location.origin);
+        const isExternal = resolved.host !== window.location.host;
+        if (isExternal && (resolved.protocol === "http:" || resolved.protocol === "https:")) {
+          emitConversion("outbound_click", `outbound:${resolved.host}${resolved.pathname}`);
+        }
+      } catch {
+        // ignore invalid URLs
+      }
+    };
+    document.addEventListener("click", onClick, true);
+    autoeventsCleanup.push(() => document.removeEventListener("click", onClick, true));
+
+    const onSubmit = (event: Event) => {
+      const form = event.target as HTMLFormElement | null;
+      if (!form) return;
+      const markedElement = form.closest(selector) as HTMLElement | null;
+      const explicitType = sanitizeConversionHint(markedElement?.getAttribute("data-valid-conversion"));
+      if (explicitType) {
+        emitConversion(explicitType, `form:${form.getAttribute("id") ?? form.getAttribute("name") ?? "anon"}`);
+        return;
+      }
+
+      emitConversion(
+        "form_submit",
+        `form:${form.getAttribute("id") ?? form.getAttribute("name") ?? "anon"}:${window.location.pathname}`
+      );
+    };
+    document.addEventListener("submit", onSubmit, true);
+    autoeventsCleanup.push(() => document.removeEventListener("submit", onSubmit, true));
+  }
 }
 
 export function enableDebug(): void {
@@ -462,6 +558,8 @@ if (typeof window !== "undefined") {
     const siteId = currentScript.dataset.validSiteId ?? "pending-site";
     const sampleRate = Number(currentScript.dataset.validSampleRate ?? "1");
     const debug = currentScript.dataset.validDebug === "true";
+    const autoConversions = currentScript.dataset.validAutoconversions !== "false";
+    const conversionSelector = currentScript.dataset.validConversionSelector;
     void init({
       siteId,
       apiBase,
@@ -475,6 +573,9 @@ if (typeof window !== "undefined") {
         conversion: 0.5,
       },
       debug,
+    }, {
+      autoConversions,
+      conversionSelector,
     });
   }
 }

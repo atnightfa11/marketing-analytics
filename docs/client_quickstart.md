@@ -12,10 +12,11 @@ python server/scripts/create_site_key.py --site-id live-validanalytics-io --orig
 
 ```html
 <script
-  src="https://cdn.validanalytics.io/validanalytics.global.js"
+  src="https://app.validanalytics.io/validanalytics.global.js"
   data-valid-site-key="vsk_xxxxx_xxxxx"
   data-valid-api-base="https://api.validanalytics.io"
   data-valid-sample-rate="1"
+  data-valid-autoconversions="true"
 ></script>
 ```
 
