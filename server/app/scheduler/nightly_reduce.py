@@ -162,6 +162,9 @@ async def reduce_reports(
             centered = (seed / 1000.0) - 0.5
             noise = centered * 2.0 * _laplace_scale(settings.AGGREGATE_DP_EPSILON)
             value = max(0.0, base_value + noise)
+            if metric == "sessions":
+                # Keep standard sessions bounded by deduped session keys for replay resistance.
+                value = min(value, base_value)
             variance = _laplace_scale(settings.AGGREGATE_DP_EPSILON) ** 2
         else:
             value = base_value
