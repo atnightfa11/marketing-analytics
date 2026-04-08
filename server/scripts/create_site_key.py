@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import secrets
+import sys
 from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
+
+# Ensure `app` imports work regardless of current working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models import SiteApiKey, async_session_factory
 
