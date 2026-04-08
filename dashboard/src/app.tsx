@@ -18,6 +18,7 @@ import {
   ForecastEntry,
   ForecastResponse,
   MetricStatistic,
+  resolveActiveSiteId,
 } from "./api";
 import { AlertsPanel } from "./components/AlertsPanel";
 import { DeviceBreakdown } from "./components/DeviceBreakdown";
@@ -47,8 +48,6 @@ const metricLabels: Record<string, string> = {
   avg_time_on_site: "Visit Duration",
   revenue: "Revenue",
 };
-
-const siteId = import.meta.env.VITE_SITE_ID ?? "demo";
 
 const metricOptions = [
   { key: "pageviews", label: "Pageviews" },
@@ -267,6 +266,8 @@ const TableBlock: React.FC<{
 
 const Overview: React.FC = () => {
   const { token } = useAuth();
+  const [searchParams] = useSearchParams();
+  const siteId = useMemo(() => resolveActiveSiteId(searchParams.get("site_id") ?? undefined), [searchParams]);
   const [selectedMetric, setSelectedMetric] = useState("pageviews");
   const [range, setRange] = useState<RangeOption>("Last 30");
   const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>("90d");
@@ -284,11 +285,11 @@ const Overview: React.FC = () => {
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
   useEffect(() => {
     if (!token) return;
-    fetchMetrics(token).then(setMetrics).catch(console.error);
+    fetchMetrics(token, siteId).then(setMetrics).catch(console.error);
     const metricsToFetch = metricOptions.map((metric) => metric.key);
     Promise.all(
       metricsToFetch.map((metric) =>
-        fetchAggregate(metric, "standard").then((data) => ({
+        fetchAggregate(metric, "standard", siteId).then((data) => ({
           metric,
           data,
         }))
@@ -302,25 +303,25 @@ const Overview: React.FC = () => {
         setAggregateMap(next);
       })
       .catch(console.error);
-  }, [token]);
+  }, [token, siteId]);
 
   useEffect(() => {
     if (!token) return;
-    fetchForecast(token, selectedMetric)
+    fetchForecast(token, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
         setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly });
       })
       .catch(console.error);
-  }, [token, selectedMetric]);
+  }, [token, selectedMetric, siteId]);
 
   useEffect(() => {
     if (!token) return;
-    const loadLive = () => fetchAggregate("uniques", "live").then(setLiveWindows).catch(console.error);
+    const loadLive = () => fetchAggregate("uniques", "live", siteId).then(setLiveWindows).catch(console.error);
     loadLive();
     const interval = setInterval(loadLive, 30000);
     return () => clearInterval(interval);
-  }, [token]);
+  }, [token, siteId]);
 
   const toDaily = (windows: AggregateWindow[]) => {
     const bucket: Record<string, number> = {};
@@ -671,7 +672,7 @@ const Overview: React.FC = () => {
           return { metric, forecast };
         }
         try {
-          const response = await fetchForecast(token, metric);
+          const response = await fetchForecast(token, metric, siteId);
           return { metric, forecast: response.forecast };
         } catch (error) {
           console.error(error);
@@ -1434,6 +1435,7 @@ export const App: React.FC = () => {
       <Suspense fallback={<div>{en.loading}</div>}>
         <Routes>
           <Route path="/" element={<Overview />} />
+          <Route path="/site/:siteId" element={<Overview />} />
           <Route path="/charts" element={<Charts />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/settings" element={<Settings />} />

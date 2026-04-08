@@ -38,7 +38,24 @@ const api = axios.create({
   withCredentials: false,
 });
 
-const siteId = import.meta.env.VITE_SITE_ID ?? "demo";
+const defaultSiteId = import.meta.env.VITE_SITE_ID ?? "demo";
+
+export function resolveActiveSiteId(explicitSiteId?: string): string {
+  if (explicitSiteId?.trim()) {
+    return explicitSiteId.trim();
+  }
+  if (typeof window !== "undefined") {
+    const querySiteId = new URLSearchParams(window.location.search).get("site_id")?.trim();
+    if (querySiteId) {
+      return querySiteId;
+    }
+    const pathMatch = window.location.pathname.match(/^\/site\/([^/?#]+)/);
+    if (pathMatch?.[1]) {
+      return decodeURIComponent(pathMatch[1]).trim();
+    }
+  }
+  return defaultSiteId;
+}
 
 api.interceptors.response.use(
   (res) => res,
@@ -51,18 +68,20 @@ api.interceptors.response.use(
   }
 );
 
-export async function fetchMetrics(token: string): Promise<MetricStatistic[]> {
+export async function fetchMetrics(token: string, siteId?: string): Promise<MetricStatistic[]> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/metrics", {
     headers: { Authorization: `Bearer ${token}` },
-    params: { site_id: siteId },
+    params: { site_id: resolvedSiteId },
   });
   return response.data.metrics;
 }
 
-export async function fetchForecast(token: string, metric: string): Promise<ForecastResponse> {
+export async function fetchForecast(token: string, metric: string, siteId?: string): Promise<ForecastResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get(`/api/forecast/${metric}`, {
     headers: { Authorization: `Bearer ${token}` },
-    params: { site_id: siteId },
+    params: { site_id: resolvedSiteId },
   });
   if (response.status === 204) {
     return { forecast: [], mape: Number.NaN, has_anomaly: false, z_score: 0 };
@@ -70,9 +89,14 @@ export async function fetchForecast(token: string, metric: string): Promise<Fore
   return response.data;
 }
 
-export async function fetchAggregate(metric: string, window: "live" | "standard"): Promise<AggregateWindow[]> {
+export async function fetchAggregate(
+  metric: string,
+  window: "live" | "standard",
+  siteId?: string
+): Promise<AggregateWindow[]> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/aggregate", {
-    params: { site_id: siteId, metric, window },
+    params: { site_id: resolvedSiteId, metric, window },
   });
   return response.data.windows ?? [];
 }
