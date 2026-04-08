@@ -113,6 +113,7 @@ async def reduce_reports(
         await session.execute(select(RawReport).where(RawReport.day >= start, RawReport.day <= end))
     ).scalars().all()
     raw_buckets: dict[tuple[str, str, dt.datetime], list[RawReport]] = defaultdict(list)
+    standard_session_keys: dict[tuple[str, dt.datetime], set[str]] = defaultdict(set)
     epsilon_totals: dict[tuple[str, dt.date], float] = defaultdict(float)
 
     for report in raw_reports:
@@ -122,9 +123,20 @@ async def reduce_reports(
         window_start = report.server_received_at.replace(second=0, microsecond=0)
         raw_buckets[(report.site_id, report.kind, window_start)].append(report)
         if plan == "standard":
+            payload = report.payload if isinstance(report.payload, dict) else {}
+            session_hmac = payload.get("_session_hmac")
+            if isinstance(session_hmac, str) and session_hmac:
+                standard_session_keys[(report.site_id, window_start)].add(session_hmac)
+        if plan == "standard":
             epsilon_totals[(report.site_id, report.day)] += min(
                 settings.AGGREGATE_DP_EPSILON, max(0.0, report.epsilon_used)
             )
+
+    pageview_counts: dict[tuple[str, dt.datetime], float] = {}
+    for (site_id, metric, window_start), items in raw_buckets.items():
+        if metric != "pageviews":
+            continue
+        pageview_counts[(site_id, window_start)] = sum(_raw_report_value(item) for item in items)
 
     for (site_id, metric, window_start), items in raw_buckets.items():
         historical_bucket = any(
@@ -135,6 +147,12 @@ async def reduce_reports(
         plan = plan_map.get(site_id, "free")
         window_end = window_start + dt.timedelta(minutes=3 if metric == "uniques" else 15)
         base_value = sum(_raw_report_value(item) for item in items)
+        if plan == "standard" and metric == "sessions":
+            key = (site_id, window_start)
+            deduped_sessions = float(len(standard_session_keys.get(key, set())))
+            if (site_id, window_start) in pageview_counts:
+                deduped_sessions = min(deduped_sessions, pageview_counts[(site_id, window_start)])
+            base_value = deduped_sessions
         if base_value <= 0:
             continue
         if plan == "standard":

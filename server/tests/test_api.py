@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 TEST_DB_PATH = Path(__file__).parent / "test.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB_PATH}"
+os.environ["SESSION_HMAC_SECRET"] = "test-session-hmac-secret"
 
 from app.main import app  # noqa: E402
 from sqlalchemy import select
@@ -19,6 +20,8 @@ from sqlalchemy import select
 from argon2 import PasswordHasher
 
 from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
+from app.routers.shuffle import derive_standard_session_key  # noqa: E402
+from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
 
 
 async def _prepare_database() -> None:
@@ -265,10 +268,102 @@ async def test_plan_aware_ingest_paths(client):
 
 @pytest.mark.asyncio
 async def test_scheduler_smoke(client):
-    from app.scheduler.nightly_reduce import reduce_reports
-
     async with async_session_factory() as session:
         await reduce_reports(session, days=1)
+
+
+def test_standard_hmac_session_key_stability_and_rollover():
+    base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
+    stable_key_1 = derive_standard_session_key(
+        site_id="site-hmac",
+        server_received_at=base_time,
+        ip_value="203.0.113.44",
+        user_agent="Mozilla/5.0",
+    )
+    stable_key_2 = derive_standard_session_key(
+        site_id="site-hmac",
+        server_received_at=base_time + timedelta(minutes=5),
+        ip_value="203.0.113.44",
+        user_agent="Mozilla/5.0",
+    )
+    rollover_key = derive_standard_session_key(
+        site_id="site-hmac",
+        server_received_at=base_time + timedelta(minutes=35),
+        ip_value="203.0.113.44",
+        user_agent="Mozilla/5.0",
+    )
+
+    assert stable_key_1 == stable_key_2
+    assert stable_key_1 != rollover_key
+
+
+@pytest.mark.asyncio
+async def test_standard_session_dedup_replay_resistance(client):
+    await _set_site_plan("site-session-dedupe", "standard")
+
+    token_resp = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": "site-session-dedupe",
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+            "plan": "standard",
+        },
+    )
+    token = token_resp.json()["token"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    batch = [
+        {
+            "site_id": "site-session-dedupe",
+            "kind": "sessions",
+            "payload": {"randomized_bit": 1},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": now_iso,
+        },
+        {
+            "site_id": "site-session-dedupe",
+            "kind": "sessions",
+            "payload": {"randomized_bit": 1},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": now_iso,
+        },
+    ]
+
+    first = client.post(
+        "/api/shuffle",
+        json={"token": token, "nonce": "session-dedupe-nonce", "batch": batch},
+        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+    )
+    assert first.status_code == 202
+
+    replay = client.post(
+        "/api/shuffle",
+        json={"token": token, "nonce": "session-dedupe-nonce", "batch": batch},
+        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+    )
+    assert replay.status_code in (401, 409)
+
+    async with async_session_factory() as session:
+        original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+        reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+        try:
+            await reduce_reports(session, days=1)
+        finally:
+            reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+        rows = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == "site-session-dedupe",
+                    DpWindow.plan == "standard",
+                    DpWindow.metric == "sessions",
+                )
+            )
+        ).scalars().all()
+        assert rows
+        assert max(row.value for row in rows) <= 1.0
 
 
 @pytest.mark.asyncio

@@ -45,3 +45,22 @@
    python server/run_scheduler.py --days 1
    ```
 3. Confirm dashboard `VITE_SITE_ID` matches your `site_id`.
+
+## I see pageviews but no sessions
+
+- For Standard tier, sessions are derived from server-side HMAC session keys.
+- Ensure `SESSION_HMAC_SECRET` is configured.
+- Ensure events are flowing to `/api/shuffle` with `Origin` allowed and reducer has run.
+
+## Auto-conversions not firing
+
+- Confirm `data-valid-autoconversions` is not set to `false`.
+- Confirm `data-valid-conversion-selector` matches your explicit conversion nodes.
+- For forms, ensure submit event is not prevented before capture.
+- Validate in DevTools that conversion events hit `/api/shuffle`.
+
+## CSP blocks SDK
+
+- Allow script source `https://app.validanalytics.io` (or your SDK host) in `script-src`.
+- Allow `https://api.validanalytics.io` in `connect-src`.
+- If using inline scripts, configure nonce/hash or allow `'unsafe-inline'` for pilot mode.

@@ -56,7 +56,9 @@ export interface ConversionEventPayload {
 }
 
 export interface AutoeventsConfig {
+  autoConversions?: boolean;
   conversionSelector?: string;
+  conversionDedupeWindowMs?: number;
   sessionInactivityMs?: number;
   includeQueryInPath?: boolean;
   stripHashInPath?: boolean;

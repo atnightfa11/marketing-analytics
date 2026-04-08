@@ -5,6 +5,7 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
+import ipaddress
 import json
 import secrets
 from collections import defaultdict
@@ -89,6 +90,54 @@ def _rate_limit_bucket_for_plan(plan: str) -> int:
     return settings.FREE_RATE_LIMIT_BUCKET_PER_MIN
 
 
+def _coarsen_ip(ip_value: str) -> str:
+    try:
+        ip_obj = ipaddress.ip_address(ip_value)
+    except ValueError:
+        return "unknown"
+
+    if isinstance(ip_obj, ipaddress.IPv4Address):
+        prefix = max(0, min(32, settings.SESSION_HMAC_IP_PREFIX_V4))
+        network = ipaddress.ip_network(f"{ip_obj}/{prefix}", strict=False)
+        return str(network.network_address)
+
+    prefix = max(0, min(128, settings.SESSION_HMAC_IP_PREFIX_V6))
+    network = ipaddress.ip_network(f"{ip_obj}/{prefix}", strict=False)
+    return str(network.network_address)
+
+
+def _coarsen_ua(ua: str) -> str:
+    if not ua:
+        return "unknown"
+    head = ua.split(" ", 1)[0]
+    if "/" not in head:
+        return head[:32].lower()
+    family, version = head.split("/", 1)
+    major = version.split(".", 1)[0]
+    return f"{family[:24].lower()}:{major[:8]}"
+
+
+def derive_standard_session_key(
+    *,
+    site_id: str,
+    server_received_at: dt.datetime,
+    ip_value: str,
+    user_agent: str,
+) -> str | None:
+    secret = settings.SESSION_HMAC_SECRET
+    if not secret:
+        return None
+    bucket_minutes = max(1, settings.SESSION_WINDOW_MINUTES)
+    bucket_seconds = bucket_minutes * 60
+    ts = int(server_received_at.timestamp())
+    bucket = ts - (ts % bucket_seconds)
+    coarse_ip = _coarsen_ip(ip_value)
+    coarse_ua = _coarsen_ua(user_agent)
+    canonical = f"{site_id}|{bucket}|{coarse_ip}|{coarse_ua}"
+    digest = hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+
 def apply_rate_limit(site_id: str, ip: str, request: Request, plan: str):
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     key = (site_id, ip)
@@ -155,6 +204,24 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
         effective_plan = record.plan if record else "free"
     if effective_plan == "pro" and not settings.ENABLE_PRO_INGEST:
         effective_plan = "standard"
+    if effective_plan == "standard" and not settings.SESSION_HMAC_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="SESSION_HMAC_SECRET is required for standard ingest",
+        )
+
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("User-Agent", "")
+    standard_session_key = (
+        derive_standard_session_key(
+            site_id=collect.site_id,
+            server_received_at=collect.server_received_at,
+            ip_value=client_ip,
+            user_agent=user_agent,
+        )
+        if effective_plan == "standard"
+        else None
+    )
 
     for report in collect.reports:
         if report.site_id != collect.site_id:
@@ -176,11 +243,14 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
                 server_received_at=collect.server_received_at,
             )
         else:
+            raw_payload = dict(report.payload) if isinstance(report.payload, dict) else {}
+            if standard_session_key:
+                raw_payload["_session_hmac"] = standard_session_key
             record = RawReport(
                 site_id=collect.site_id,
                 kind=report.kind,
                 day=payload_time.date(),
-                payload=report.payload,
+                payload=raw_payload,
                 epsilon_used=report.epsilon_used,
                 sampling_rate=report.sampling_rate,
                 server_received_at=collect.server_received_at,

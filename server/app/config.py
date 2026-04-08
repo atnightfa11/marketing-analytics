@@ -23,6 +23,10 @@ class Settings(BaseSettings):
   MAX_EVENTS_PER_MINUTE: int = Field(default=60)
   AGGREGATE_DP_EPSILON: float = Field(default=1.0)
   ENABLE_PRO_INGEST: bool = Field(default=False)
+  SESSION_HMAC_SECRET: str | None = None
+  SESSION_WINDOW_MINUTES: int = Field(default=30)
+  SESSION_HMAC_IP_PREFIX_V4: int = Field(default=24)
+  SESSION_HMAC_IP_PREFIX_V6: int = Field(default=56)
   SDK_BOOTSTRAP_RATE_LIMIT_PER_MINUTE: int = Field(default=60)
   SDK_SITE_KEY_PREFIX: str = Field(default="vsk")
   SDK_ALLOW_WILDCARD_ORIGIN_KEYS: bool = Field(default=False)

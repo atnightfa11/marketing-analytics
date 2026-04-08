@@ -21,6 +21,7 @@ Valid supports three privacy tiers using plan-aware branching at ingestion, redu
 
 - **Free**: Client sends raw events without LDP. Reducer writes raw aggregates directly.
 - **Standard DP**: Client sends raw events; reducer adds aggregate noise and tracks epsilon spend.
+- **Standard DP** additionally derives a server-side ephemeral HMAC session key from coarse context (site + time bucket + coarse fingerprint). Raw IP/UA/referrer are not persisted.
 - **Pro**: Client applies local DP; reducer decodes randomized response and aggregates LDP output.
 
 Current vs planned
@@ -67,6 +68,11 @@ Plan-aware nuance:
 
 - Free + Standard: raw events are accepted and can be aggregated by dimension.
 - Pro: dimension breakdowns require LDP encoding per dimension; until LDP support is extended, Pro can return only aggregate totals for those cuts.
+
+Operational profiles:
+
+- **Pilot profile**: lower `MIN_REPORTS_PER_WINDOW` for validation on small websites.
+- **Production profile**: stricter publish thresholds and full alerting enabled.
 
 Watermarks
 

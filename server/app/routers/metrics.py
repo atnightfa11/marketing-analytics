@@ -52,6 +52,27 @@ async def get_metrics(
             has_anomaly=False,
         )
 
+    if "sessions" in metric_map and "pageviews" in metric_map:
+        sessions_metric = metric_map["sessions"]
+        pageviews_metric = metric_map["pageviews"]
+        if sessions_metric.value > pageviews_metric.value:
+            sessions_metric.value = pageviews_metric.value
+
+    if "conversions" in metric_map and "pageviews" in metric_map and metric_map["pageviews"].value > 0:
+        conversions = metric_map["conversions"].value
+        pageviews = metric_map["pageviews"].value
+        conversion_rate = conversions / pageviews
+        metric_map["conversion_rate"] = MetricStatistic(
+            metric="conversion_rate",
+            value=conversion_rate,
+            variance=0.0,
+            standard_error=0.0,
+            snr=float("inf"),
+            ci80=_ci(conversion_rate, 0.0, 1.2816),
+            ci95=_ci(conversion_rate, 0.0, 1.9599),
+            has_anomaly=False,
+        )
+
     return MetricsResponse(site_id=site_id, metrics=list(metric_map.values()))
 
 
