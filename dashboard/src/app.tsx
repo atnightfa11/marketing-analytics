@@ -1,5 +1,5 @@
 import React, { Suspense, useEffect, useMemo, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import {
   CartesianGrid,
   Line,
@@ -168,7 +168,8 @@ const TableBlock: React.FC<{
   valueLabel: string;
   metricKey: string;
   detailTotals: DetailTotals;
-}> = ({ title, labelHeader, rows, valueLabel, metricKey, detailTotals }) => {
+  emptyState?: string;
+}> = ({ title, labelHeader, rows, valueLabel, metricKey, detailTotals, emptyState }) => {
   const [showDetails, setShowDetails] = useState(false);
   const maxValue = rows.reduce((max, row) => Math.max(max, row.value), 0);
   const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
@@ -184,7 +185,7 @@ const TableBlock: React.FC<{
       </div>
       {rows.length === 0 ? (
         <div className="py-6 text-xs text-gray-400" style={fontBody}>
-          Awaiting events. This table will populate after data arrives.
+          {emptyState ?? "Awaiting events. This table will populate after data arrives."}
         </div>
       ) : (
         <div className="divide-y divide-gray-100">
@@ -267,7 +268,11 @@ const TableBlock: React.FC<{
 const Overview: React.FC = () => {
   const { token } = useAuth();
   const [searchParams] = useSearchParams();
-  const siteId = useMemo(() => resolveActiveSiteId(searchParams.get("site_id") ?? undefined), [searchParams]);
+  const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
+  const querySiteId = searchParams.get("site_id") ?? undefined;
+  const hasExplicitSiteSelection = Boolean((querySiteId && querySiteId.trim()) || (pathSiteId && pathSiteId.trim()));
+  const showSeededBreakdowns = !hasExplicitSiteSelection;
+  const siteId = useMemo(() => resolveActiveSiteId(querySiteId ?? pathSiteId), [querySiteId, pathSiteId]);
   const [selectedMetric, setSelectedMetric] = useState("pageviews");
   const [range, setRange] = useState<RangeOption>("Last 30");
   const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>("90d");
@@ -604,21 +609,34 @@ const Overview: React.FC = () => {
   const hasBounds = chartData.some((point) => point.upper !== null || point.lower !== null);
 
   const selectedTotal = totals[selectedMetric as keyof typeof totals] ?? 0;
-  const topSources = buildRows(
-    ["Organic Search", "Direct", "Referral", "Social", "Email"],
-    [0.36, 0.22, 0.16, 0.14, 0.12],
-    selectedTotal
+  const topSources = useMemo(
+    () =>
+      showSeededBreakdowns
+        ? buildRows(["Organic Search", "Direct", "Referral", "Social", "Email"], [0.36, 0.22, 0.16, 0.14, 0.12], selectedTotal)
+        : [],
+    [showSeededBreakdowns, selectedTotal]
   );
-  const topPages = buildRows(
-    ["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"],
-    [0.3, 0.22, 0.18, 0.16, 0.14],
-    selectedTotal
+  const topPages = useMemo(
+    () =>
+      showSeededBreakdowns
+        ? buildRows(["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"], [0.3, 0.22, 0.18, 0.16, 0.14], selectedTotal)
+        : [],
+    [showSeededBreakdowns, selectedTotal]
   );
-  const deviceRows = buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedTotal);
-  const regionRows = buildRows(
-    ["United States", "United Kingdom", "Canada", "Germany", "France", "Netherlands", "Australia", "Sweden", "India", "Japan"],
-    [0.28, 0.12, 0.09, 0.08, 0.07, 0.06, 0.06, 0.05, 0.1, 0.09],
-    selectedTotal
+  const deviceRows = useMemo(
+    () => (showSeededBreakdowns ? buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedTotal) : []),
+    [showSeededBreakdowns, selectedTotal]
+  );
+  const regionRows = useMemo(
+    () =>
+      showSeededBreakdowns
+        ? buildRows(
+            ["United States", "United Kingdom", "Canada", "Germany", "France", "Netherlands", "Australia", "Sweden", "India", "Japan"],
+            [0.28, 0.12, 0.09, 0.08, 0.07, 0.06, 0.06, 0.05, 0.1, 0.09],
+            selectedTotal
+          )
+        : [],
+    [showSeededBreakdowns, selectedTotal]
   );
   const metricMap = useMemo(
     () => new Map(metrics.map((metric) => [metric.metric, metric.value])),
@@ -768,6 +786,7 @@ const Overview: React.FC = () => {
   }, [dailySelected, forecastHorizon]);
 
   const conversionEvents = useMemo(() => {
+    if (!showSeededBreakdowns) return [];
     if (!Number.isFinite(totals.conversions) || totals.conversions <= 0) return [];
     const labels = ["Demo Request", "Contact Us", "Trial Signup", "Purchase", "Newsletter"];
     const weights = [0.34, 0.22, 0.18, 0.16, 0.1];
@@ -778,7 +797,7 @@ const Overview: React.FC = () => {
       const rate = totals.sessions > 0 ? count / totals.sessions : 0;
       return { label, count, rate };
     });
-  }, [totals.conversions, totals.sessions]);
+  }, [showSeededBreakdowns, totals.conversions, totals.sessions]);
 
   return (
     <div className="min-h-screen bg-[#F3F4F6] print-bg">
@@ -959,6 +978,11 @@ const Overview: React.FC = () => {
             <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
               Site: {siteId}
             </div>
+            {!showSeededBreakdowns && (
+              <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-gray-400" style={fontBody}>
+                Live mode: KPI/chart totals are real. Breakdown panels need dimension APIs.
+              </div>
+            )}
           </div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
             Metrics · {range}
@@ -1222,6 +1246,11 @@ const Overview: React.FC = () => {
             valueLabel={primaryLabel}
             metricKey={selectedMetric}
             detailTotals={detailTotals}
+            emptyState={
+              showSeededBreakdowns
+                ? "Awaiting events. This table will populate after data arrives."
+                : "Breakdown APIs are not enabled for live site mode yet."
+            }
           />
           <TableBlock
             title="Top Pages"
@@ -1230,6 +1259,11 @@ const Overview: React.FC = () => {
             valueLabel={primaryLabel}
             metricKey={selectedMetric}
             detailTotals={detailTotals}
+            emptyState={
+              showSeededBreakdowns
+                ? "Awaiting events. This table will populate after data arrives."
+                : "Breakdown APIs are not enabled for live site mode yet."
+            }
           />
           <TableBlock
             title="Devices"
@@ -1238,6 +1272,11 @@ const Overview: React.FC = () => {
             valueLabel={primaryLabel}
             metricKey={selectedMetric}
             detailTotals={detailTotals}
+            emptyState={
+              showSeededBreakdowns
+                ? "Awaiting events. This table will populate after data arrives."
+                : "Breakdown APIs are not enabled for live site mode yet."
+            }
           />
           <TableBlock
             title="Regions"
@@ -1246,6 +1285,11 @@ const Overview: React.FC = () => {
             valueLabel={primaryLabel}
             metricKey={selectedMetric}
             detailTotals={detailTotals}
+            emptyState={
+              showSeededBreakdowns
+                ? "Awaiting events. This table will populate after data arrives."
+                : "Breakdown APIs are not enabled for live site mode yet."
+            }
           />
         </section>
 
@@ -1264,7 +1308,9 @@ const Overview: React.FC = () => {
           </div>
           {conversionEvents.length === 0 ? (
             <div className="py-6 text-xs text-gray-400" style={fontBody}>
-              Awaiting conversion events. This table will populate after data arrives.
+              {showSeededBreakdowns
+                ? "Awaiting conversion events. This table will populate after data arrives."
+                : "Conversion-event breakdowns are not enabled for live site mode yet."}
             </div>
           ) : (
             <div className="divide-y divide-gray-100">

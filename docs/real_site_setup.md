@@ -12,7 +12,8 @@ Run inside the server container:
 ```bash
 docker compose exec server python scripts/create_upload_token.py \
   --site-id live-validanalytics-io \
-  --origin https://validanalytics.io
+  --origin https://validanalytics.io \
+  --plan standard
 ```
 
 This prints a token and a starter SDK snippet.
@@ -36,6 +37,9 @@ Demo dashboard (seeded data):
 Live dashboard (real traffic):
 
 - `http://localhost:5174` (uses `VITE_SITE_ID=live-validanalytics-io`)
+- Hosted app behavior:
+  - Root (`/`) is demo-first.
+  - Explicit site context (`?site_id=<id>` or `/site/<id>`) uses live KPI/chart totals and disables seeded breakdown panels.
 
 ## Railway deployment checklist (API)
 
@@ -43,6 +47,8 @@ Set these environment variables on the backend service:
 
 - `DATABASE_URL=postgresql+asyncpg://...`
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
+- `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
+- `SESSION_WINDOW_MINUTES=30`
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
 - `ENABLE_PROD_SCHEDULER=true`
 - `PROD_SCHEDULER_HOUR_UTC=2`
@@ -84,6 +90,25 @@ Domain routing:
 1. Add `api.validanalytics.io` in Railway Domains.
 2. Create DNS CNAME `api` → Railway provided target.
 3. Add TXT only if Railway keeps domain verification pending.
+
+## Standard plan activation checklist
+
+Standard sessionization is plan-aware. If a site is missing from `site_plan`, it is treated as `free`.
+
+1. Upsert the site plan row:
+   ```sql
+   insert into site_plan (site_id, plan, updated_at)
+   values ('live-neurotypicaltranslator', 'standard', now())
+   on conflict (site_id) do update set plan = excluded.plan, updated_at = now();
+   ```
+2. Ensure `SESSION_HMAC_SECRET` is set on the backend.
+3. Regenerate/refresh upload tokens after plan changes so token plan and DB plan match.
+
+Generate a secret locally with:
+
+```bash
+openssl rand -hex 32
+```
 
 ## Notes
 

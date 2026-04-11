@@ -62,6 +62,12 @@ def main() -> int:
         "--epsilon-budget", type=float, default=1.0, help="Epsilon budget encoded in the token."
     )
     parser.add_argument(
+        "--plan",
+        choices=["free", "standard", "pro"],
+        default="free",
+        help="Plan encoded in the token claims.",
+    )
+    parser.add_argument(
         "--ttl-seconds", type=int, default=None, help="Optional TTL override for the token."
     )
     parser.add_argument(
@@ -76,6 +82,7 @@ def main() -> int:
         "allowed_origin": args.origin,
         "epsilon_budget": args.epsilon_budget,
         "sampling_rate": args.sampling_rate,
+        "plan": args.plan,
     }
     if args.ttl_seconds:
         payload["ttl_seconds"] = args.ttl_seconds

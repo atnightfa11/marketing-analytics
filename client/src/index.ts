@@ -10,6 +10,7 @@ const CIRCUIT_BREAKER_DURATION_MS = 5 * 60 * 1000;
 const THREE_MINUTES_MS = 3 * 60 * 1000;
 const DEFAULT_SESSION_INACTIVITY_MS = 30 * 60 * 1000;
 const DEFAULT_CONVERSION_DEDUPE_MS = 10 * 1000;
+const SESSION_ACTIVITY_STORAGE_PREFIX = "valid_last_activity_";
 
 let config: ClientConfig | null = null;
 let collector: EventCollector | null = null;
@@ -166,15 +167,43 @@ function normalizePath(
   return `${url.pathname}${query}${hash}`;
 }
 
-function maybeSendSessionStart(sessionInactivityMs: number): void {
+function getSessionActivityStorageKey(siteId: string): string {
+  return `${SESSION_ACTIVITY_STORAGE_PREFIX}${siteId}`;
+}
+
+function readPersistedLastActivity(siteId: string): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const raw = window.localStorage.getItem(getSessionActivityStorageKey(siteId));
+    if (!raw) return 0;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writePersistedLastActivity(siteId: string, timestamp: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(getSessionActivityStorageKey(siteId), String(timestamp));
+  } catch {
+    // ignore storage write failures
+  }
+}
+
+function maybeSendSessionStart(siteId: string, sessionInactivityMs: number): void {
   const now = Date.now();
-  if (!lastActivityAt || now - lastActivityAt > sessionInactivityMs) {
+  const persistedLastActivity = readPersistedLastActivity(siteId);
+  const lastSeen = Math.max(lastActivityAt, persistedLastActivity);
+  if (!lastSeen || now - lastSeen > sessionInactivityMs) {
     sendSessionStart({
       referrerBucket: document.referrer ? "external" : "direct",
       engagementBucket: "start",
     });
   }
   lastActivityAt = now;
+  writePersistedLastActivity(siteId, now);
 }
 
 function emitPageviewForCurrentRoute(routeAction: string, autoConfig: AutoeventsConfig): void {
@@ -286,21 +315,21 @@ export async function configure(userConfig: ClientConfig): Promise<void> {
 }
 
 export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise<void> {
-  ensureConfigured();
+  const { config: activeConfig } = ensureConfigured();
   resetAutoevents();
   await bootstrapTokenIfNeeded();
 
   const sessionInactivityMs = autoConfig.sessionInactivityMs ?? DEFAULT_SESSION_INACTIVITY_MS;
-  maybeSendSessionStart(sessionInactivityMs);
+  maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
   emitPageviewForCurrentRoute("initial-load", autoConfig);
   reportPresence();
 
   const onPopState = () => {
-    maybeSendSessionStart(sessionInactivityMs);
+    maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
     emitPageviewForCurrentRoute("popstate", autoConfig);
   };
   const onHashChange = () => {
-    maybeSendSessionStart(sessionInactivityMs);
+    maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
     emitPageviewForCurrentRoute("hashchange", autoConfig);
   };
   window.addEventListener("popstate", onPopState);
@@ -313,7 +342,7 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
     const original = window.history[method].bind(window.history);
     (window.history[method] as typeof window.history.pushState) = ((...args: unknown[]) => {
       const result = original(...(args as [unknown, string, (string | URL | null | undefined)]));
-      maybeSendSessionStart(sessionInactivityMs);
+      maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
       emitPageviewForCurrentRoute(method, autoConfig);
       return result;
     }) as typeof window.history.pushState;
