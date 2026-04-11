@@ -69,7 +69,7 @@ export const KPIGrid: React.FC<Props> = ({ metrics, values, comparisonValues, co
               <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
                 {kpi.label}
               </div>
-              <div className="mt-1 text-2xl text-[#111827]" style={fontNumeric}>
+              <div className="mt-1 text-2xl text-[#1F2937]" style={fontNumeric}>
                 {display}
               </div>
               {comparisonLabel && (

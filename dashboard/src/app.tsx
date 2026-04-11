@@ -1,5 +1,5 @@
 import React, { Suspense, useEffect, useMemo, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   CartesianGrid,
   Line,
@@ -268,11 +268,19 @@ const TableBlock: React.FC<{
 const Overview: React.FC = () => {
   const { token } = useAuth();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
   const querySiteId = searchParams.get("site_id") ?? undefined;
   const hasExplicitSiteSelection = Boolean((querySiteId && querySiteId.trim()) || (pathSiteId && pathSiteId.trim()));
   const showSeededBreakdowns = !hasExplicitSiteSelection;
   const siteId = useMemo(() => resolveActiveSiteId(querySiteId ?? pathSiteId), [querySiteId, pathSiteId]);
+
+  useEffect(() => {
+    const query = querySiteId?.trim();
+    if (!pathSiteId && query) {
+      navigate(`/site/${encodeURIComponent(query)}`, { replace: true });
+    }
+  }, [navigate, pathSiteId, querySiteId]);
   const [selectedMetric, setSelectedMetric] = useState("pageviews");
   const [range, setRange] = useState<RangeOption>("Last 30");
   const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>("90d");
@@ -800,10 +808,10 @@ const Overview: React.FC = () => {
   }, [showSeededBreakdowns, totals.conversions, totals.sessions]);
 
   return (
-    <div className="min-h-screen bg-[#F3F4F6] print-bg">
+    <div className="min-h-screen bg-[#F9FAFB] print-bg">
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <div className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+          <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </div>
           <div className="flex items-center gap-2 no-print">
@@ -811,7 +819,7 @@ const Overview: React.FC = () => {
               Range
             </span>
             <select
-              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
               style={fontBody}
               value={range}
               onChange={(event) => setRange(event.target.value as RangeOption)}
@@ -826,7 +834,7 @@ const Overview: React.FC = () => {
               <div className="flex items-center gap-1">
                 <input
                   type="date"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                   style={fontBody}
                   min={availableBounds?.min}
                   max={availableBounds?.max}
@@ -845,7 +853,7 @@ const Overview: React.FC = () => {
                 </span>
                 <input
                   type="date"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                   style={fontBody}
                   min={availableBounds?.min}
                   max={availableBounds?.max}
@@ -871,7 +879,7 @@ const Overview: React.FC = () => {
             {compareEnabled && (
               <>
                 <select
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                   style={fontBody}
                   value={compareMode}
                   onChange={(event) => setCompareMode(event.target.value as "previous" | "custom")}
@@ -883,7 +891,7 @@ const Overview: React.FC = () => {
                   <div className="flex items-center gap-1">
                     <input
                       type="date"
-                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                       style={fontBody}
                       min={availableBounds?.min}
                       max={availableBounds?.max}
@@ -901,7 +909,7 @@ const Overview: React.FC = () => {
                     </span>
                     <input
                       type="date"
-                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                       style={fontBody}
                       min={availableBounds?.min}
                       max={availableBounds?.max}
@@ -922,7 +930,7 @@ const Overview: React.FC = () => {
               Forecast
             </span>
             <select
-              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
               style={fontBody}
               value={forecastKey}
               onChange={(event) => setForecastKey(event.target.value as (typeof forecastOptions)[number]["key"])}
@@ -942,7 +950,7 @@ const Overview: React.FC = () => {
               CSV
             </span>
             <select
-              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#111827]"
+              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
               style={fontBody}
               value={exportMode}
               onChange={(event) => setExportMode(event.target.value as "current" | "all")}
@@ -972,7 +980,7 @@ const Overview: React.FC = () => {
       <main className="mx-auto max-w-6xl space-y-6 px-6 pb-10 pt-6 print-container">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="text-lg text-[#111827]" style={fontHeading}>
+            <div className="text-lg text-[#1F2937]" style={fontHeading}>
               Overview
             </div>
             <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
@@ -1003,7 +1011,7 @@ const Overview: React.FC = () => {
                 <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
                   Total
                 </div>
-                <div className="mt-1 text-3xl text-[#111827]" style={fontNumeric}>
+                <div className="mt-1 text-3xl text-[#1F2937]" style={fontNumeric}>
                   {primaryDisplay}
                 </div>
               </div>
@@ -1017,7 +1025,7 @@ const Overview: React.FC = () => {
                     type="button"
                     onClick={() => setSelectedMetric(option.key)}
                     className={`border px-2 py-1 text-[10px] uppercase tracking-[0.2em] ${
-                      isActive ? "border-[#7A6AE6] text-[#111827]" : "border-gray-200 text-gray-500"
+                      isActive ? "border-[#1B7F8E] text-[#1F2937]" : "border-gray-200 text-gray-500"
                     }`}
                     style={fontBody}
                   >
@@ -1029,19 +1037,19 @@ const Overview: React.FC = () => {
             <div className="mt-3 flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-[0.2em] text-gray-500">
               <span style={fontBody}>
                 Live visitors{" "}
-                <span className="ml-1 text-[#111827]" style={fontNumeric}>
+                <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
                   {formatNumber(liveValue)}
                 </span>
               </span>
               <span style={fontBody}>
                 Last updated{" "}
-                <span className="ml-1 text-[#111827]" style={fontNumeric}>
+                <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
                   {lastActualDay ? formatShortDate(lastActualDay) : "—"}
                 </span>
               </span>
               <span style={fontBody}>
                 Forecast {forecastLabel}{" "}
-                <span className="ml-1 text-[#111827]" style={fontNumeric}>
+                <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
                   {forecast.length > 0 ? formatMetricValue(selectedMetric, forecastTotal) : "—"}
                 </span>
               </span>
@@ -1133,7 +1141,7 @@ const Overview: React.FC = () => {
                     <Line
                       type="monotone"
                       dataKey="actual"
-                      stroke="#7A6AE6"
+                      stroke="#1B7F8E"
                       strokeWidth={2}
                       dot={false}
                       isAnimationActive={false}
@@ -1155,7 +1163,7 @@ const Overview: React.FC = () => {
                     <Line
                       type="monotone"
                       dataKey="projected"
-                      stroke="#5E52D6"
+                      stroke="#0A5F6F"
                       strokeWidth={2}
                       strokeDasharray="6 6"
                       strokeOpacity={0.85}
@@ -1168,7 +1176,7 @@ const Overview: React.FC = () => {
                       <Line
                         type="monotone"
                         dataKey="upper"
-                        stroke="#7A6AE6"
+                        stroke="#1B7F8E"
                         strokeWidth={1.5}
                         strokeDasharray="2 6"
                         strokeOpacity={0.4}
@@ -1178,7 +1186,7 @@ const Overview: React.FC = () => {
                       <Line
                         type="monotone"
                         dataKey="lower"
-                        stroke="#7A6AE6"
+                        stroke="#1B7F8E"
                         strokeWidth={1.5}
                         strokeDasharray="2 6"
                         strokeOpacity={0.4}
@@ -1194,7 +1202,7 @@ const Overview: React.FC = () => {
           <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-gray-500">
             <div className="flex items-center gap-4" style={fontBody}>
               <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 bg-[#7A6AE6]" />
+                <span className="h-0.5 w-5 bg-[#1B7F8E]" />
                 Actual
               </span>
               {compareEnabled && hasCompare && (
@@ -1204,11 +1212,11 @@ const Overview: React.FC = () => {
                 </span>
               )}
               <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 border-b border-dashed border-[#5E52D6] opacity-80" />
+                <span className="h-0.5 w-5 border-b border-dashed border-[#0A5F6F] opacity-80" />
                 Projected
               </span>
               <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 border-b border-dotted border-[#7A6AE6] opacity-40" />
+                <span className="h-0.5 w-5 border-b border-dotted border-[#1B7F8E] opacity-40" />
                 Upper/Lower
               </span>
             </div>
@@ -1337,10 +1345,10 @@ const Overview: React.FC = () => {
 };
 
 const Charts: React.FC = () => (
-  <div className="min-h-screen bg-[#F3F4F6] print-bg">
+  <div className="min-h-screen bg-[#F9FAFB] print-bg">
     <header className="border-b border-gray-200 bg-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+        <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
       </div>
@@ -1356,10 +1364,10 @@ const Charts: React.FC = () => (
 );
 
 const Alerts: React.FC = () => (
-  <div className="min-h-screen bg-[#F3F4F6] print-bg">
+  <div className="min-h-screen bg-[#F9FAFB] print-bg">
     <header className="border-b border-gray-200 bg-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+        <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
       </div>
@@ -1373,10 +1381,10 @@ const Alerts: React.FC = () => (
 );
 
 const Settings: React.FC = () => (
-  <div className="min-h-screen bg-[#F3F4F6] print-bg">
+  <div className="min-h-screen bg-[#F9FAFB] print-bg">
     <header className="border-b border-gray-200 bg-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+        <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
       </div>
@@ -1394,17 +1402,17 @@ const BillingSuccess: React.FC = () => {
   const sessionId = searchParams.get("session_id");
 
   return (
-    <div className="min-h-screen bg-[#F3F4F6] print-bg">
+    <div className="min-h-screen bg-[#F9FAFB] print-bg">
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <a href="/" className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+          <a href="/" className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </a>
         </div>
       </header>
       <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
         <section className="border border-gray-200 bg-white p-6">
-          <h1 className="text-2xl text-[#111827]" style={fontHeading}>
+          <h1 className="text-2xl text-[#1F2937]" style={fontHeading}>
             Billing Confirmed
           </h1>
           <p className="mt-3 text-sm text-gray-700" style={fontBody}>
@@ -1434,17 +1442,17 @@ const BillingSuccess: React.FC = () => {
 };
 
 const BillingCancel: React.FC = () => (
-  <div className="min-h-screen bg-[#F3F4F6] print-bg">
+  <div className="min-h-screen bg-[#F9FAFB] print-bg">
     <header className="border-b border-gray-200 bg-white">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <a href="/" className="text-xl font-semibold text-[#111827]" style={fontHeading}>
+        <a href="/" className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </a>
       </div>
     </header>
     <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
       <section className="border border-gray-200 bg-white p-6">
-        <h1 className="text-2xl text-[#111827]" style={fontHeading}>
+        <h1 className="text-2xl text-[#1F2937]" style={fontHeading}>
           Billing Update Canceled
         </h1>
         <p className="mt-3 text-sm text-gray-700" style={fontBody}>

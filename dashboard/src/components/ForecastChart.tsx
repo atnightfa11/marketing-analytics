@@ -28,8 +28,8 @@ export const ForecastChart: React.FC<Props> = ({ metric, data }) => (
         <AreaChart data={data}>
           <defs>
             <linearGradient id="forecastBand" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#4f46e5" stopOpacity={0} />
+              <stop offset="5%" stopColor="#1B7F8E" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#1B7F8E" stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" />
@@ -39,9 +39,9 @@ export const ForecastChart: React.FC<Props> = ({ metric, data }) => (
             formatter={(value: number) => formatNumber(value)}
             labelFormatter={(label) => `Day ${label}`}
           />
-          <Area type="monotone" dataKey="yhat" stroke="#4f46e5" fill="url(#forecastBand)" />
-          <Area type="monotone" dataKey="yhat_upper" stroke="#a855f7" fillOpacity={0} />
-          <Area type="monotone" dataKey="yhat_lower" stroke="#22d3ee" fillOpacity={0} />
+          <Area type="monotone" dataKey="yhat" stroke="#1B7F8E" fill="url(#forecastBand)" />
+          <Area type="monotone" dataKey="yhat_upper" stroke="#0A5F6F" fillOpacity={0} />
+          <Area type="monotone" dataKey="yhat_lower" stroke="#4DB8B8" fillOpacity={0} />
         </AreaChart>
       </ResponsiveContainer>
     )}

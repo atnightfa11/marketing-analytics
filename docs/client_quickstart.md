@@ -27,21 +27,21 @@ The SDK auto-bootstraps an upload token, tracks pageviews/session starts/daily p
 ## 3) SPA install snippet
 
 ```html
-<script src="https://cdn.validanalytics.io/validanalytics.global.js"></script>
-<script>
-  window.ValidAnalytics.init({
-    siteId: "live-validanalytics-io",
-    siteKey: "vsk_xxxxx_xxxxx",
-    apiBase: "https://api.validanalytics.io",
-    shuffleUrl: "https://api.validanalytics.io/api/shuffle",
-    samplingRate: 1,
-    epsilon: { presence: 0.5, pageview: 0.5, session: 0.5, conversion: 0.5 }
-  });
-</script>
+<script
+  src="https://app.validanalytics.io/validanalytics.global.js"
+  data-valid-site-key="vsk_xxxxx_xxxxx"
+  data-valid-api-base="https://api.validanalytics.io"
+  data-valid-sample-rate="1"
+  data-valid-autoconversions="true"
+></script>
 ```
 
 ## 4) Verify first data
 
 1. Open your website and navigate a few pages.
 2. Confirm `POST https://api.validanalytics.io/api/shuffle` returns `202`.
-3. Open `https://app.validanalytics.io` and verify metrics populate.
+3. Open `https://app.validanalytics.io/site/live-validanalytics-io` and verify metrics populate.
+4. Optional API check:
+   ```bash
+   curl -s 'https://api.validanalytics.io/api/aggregate?site_id=live-validanalytics-io&metric=pageviews&window=standard'
+   ```
