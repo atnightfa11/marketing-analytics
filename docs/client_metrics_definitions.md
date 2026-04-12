@@ -20,6 +20,29 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 - `conversion_rate`: `conversions / pageviews` (derived after aggregation; no extra DP noise term).
 - `revenue`: sum of reduced `revenue` events.
 
+## Dimension breakdowns
+
+- Endpoint: `GET /api/breakdown`
+- Dimensions: `pages`, `sources`, `devices`, `countries`
+- Query params:
+  - `site_id` (required)
+  - `dimension` (required)
+  - `start`, `end` (optional ISO dates; if omitted, defaults to last 30 days)
+  - `limit` (optional, default `10`)
+
+Breakdown definitions:
+
+- `pages`: from pageview `payload.url`, normalized to a path.
+- `sources`: from session `payload.referrer_bucket` (for example `direct`, `external`).
+- `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
+- `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`), fallback `Unknown`.
+
+Current caveats:
+
+- Existing historical data may show `Unknown` for device/country until new traffic is ingested.
+- Historical import rows are excluded from breakdown dimensions.
+- Pro plan currently returns empty dimension rows (aggregate totals only).
+
 Quality notes:
 
 - Metrics publish only after minimum volume and SNR checks in reducers/routes.

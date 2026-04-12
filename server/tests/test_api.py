@@ -1,7 +1,7 @@
 import asyncio
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -117,6 +117,30 @@ async def _insert_dp_window(
                     ci95_high=max(0.0, value + ci95_half),
                 )
             )
+        await session.commit()
+
+
+async def _insert_raw_report(
+    *,
+    site_id: str,
+    kind: str,
+    payload: dict,
+    day: date | None = None,
+    server_received_at: datetime | None = None,
+) -> None:
+    received_at = (server_received_at or datetime.now(timezone.utc)).replace(microsecond=0)
+    async with async_session_factory() as session:
+        session.add(
+            RawReport(
+                site_id=site_id,
+                kind=kind,
+                day=day or received_at.date(),
+                payload=payload,
+                epsilon_used=1.0,
+                sampling_rate=1.0,
+                server_received_at=received_at,
+            )
+        )
         await session.commit()
 
 
@@ -365,7 +389,9 @@ async def test_standard_session_dedup_replay_resistance(client):
         },
     )
     token = token_resp.json()["token"]
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    payload_day = now_dt.date()
     batch = [
         {
             "site_id": "site-session-dedupe",
@@ -403,7 +429,7 @@ async def test_standard_session_dedup_replay_resistance(client):
         original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
         reduce_settings.MIN_REPORTS_PER_WINDOW = 1
         try:
-            await reduce_reports(session, days=1)
+            await reduce_reports(session, start_day=payload_day, end_day=payload_day)
         finally:
             reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
         rows = (
@@ -622,6 +648,64 @@ async def test_missing_site_plan_defaults_to_free_for_serving(client):
 
 
 @pytest.mark.asyncio
+async def test_breakdown_endpoint_returns_real_dimension_rows(client):
+    site_id = "site-breakdown-live"
+    target_day = date(2026, 4, 11)
+    await _set_site_plan(site_id, "standard")
+
+    pageview_payloads = [
+        {"url": "/", "_device_bucket": "mobile", "_country_code": "US"},
+        {"url": "/", "_device_bucket": "desktop", "_country_code": "US"},
+        {"url": "/pricing", "_device_bucket": "desktop", "_country_code": "CA"},
+        {"url": "https://neurotypicaltranslator.com/blog/post-1?utm_source=test", "_device_bucket": "mobile", "_country_code": "US"},
+        {"url": "/should-ignore", "_device_bucket": "mobile", "_country_code": "US", "historical_import": True},
+    ]
+    for payload in pageview_payloads:
+        await _insert_raw_report(site_id=site_id, kind="pageviews", payload=payload, day=target_day)
+
+    session_payloads = [
+        {"referrer_bucket": "direct"},
+        {"referrer_bucket": "external"},
+        {"referrer_bucket": "external"},
+    ]
+    for payload in session_payloads:
+        await _insert_raw_report(site_id=site_id, kind="sessions", payload=payload, day=target_day)
+
+    query = {"site_id": site_id, "start": target_day.isoformat(), "end": target_day.isoformat(), "limit": 10}
+
+    pages_resp = client.get("/api/breakdown", params={**query, "dimension": "pages"})
+    assert pages_resp.status_code == 200
+    pages_body = pages_resp.json()
+    assert pages_body["total"] == 4.0
+    assert pages_body["rows"][:3] == [
+        {"label": "/", "value": 2.0},
+        {"label": "/blog/post-1", "value": 1.0},
+        {"label": "/pricing", "value": 1.0},
+    ]
+
+    sources_resp = client.get("/api/breakdown", params={**query, "dimension": "sources"})
+    assert sources_resp.status_code == 200
+    assert sources_resp.json()["rows"] == [
+        {"label": "External", "value": 2.0},
+        {"label": "Direct", "value": 1.0},
+    ]
+
+    devices_resp = client.get("/api/breakdown", params={**query, "dimension": "devices"})
+    assert devices_resp.status_code == 200
+    assert devices_resp.json()["rows"] == [
+        {"label": "Desktop", "value": 2.0},
+        {"label": "Mobile", "value": 2.0},
+    ]
+
+    countries_resp = client.get("/api/breakdown", params={**query, "dimension": "countries"})
+    assert countries_resp.status_code == 200
+    assert countries_resp.json()["rows"] == [
+        {"label": "US", "value": 3.0},
+        {"label": "CA", "value": 1.0},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_dashboard_auth_can_gate_metrics_endpoints(client):
     site_id = "site-dashboard-auth-gate"
     base_start = datetime(2026, 4, 11, 16, 0, tzinfo=timezone.utc)
@@ -653,6 +737,11 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
 
         unauthorized_metrics = client.get("/api/metrics", params={"site_id": site_id})
         assert unauthorized_metrics.status_code == 401
+        unauthorized_breakdown = client.get(
+            "/api/breakdown",
+            params={"site_id": site_id, "dimension": "pages"},
+        )
+        assert unauthorized_breakdown.status_code == 401
 
         bad_login = client.post("/api/auth/login", json={"username": "owner", "password": "wrong"})
         assert bad_login.status_code == 401
@@ -672,6 +761,12 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert authorized_metrics.status_code == 200
+        authorized_breakdown = client.get(
+            "/api/breakdown",
+            params={"site_id": site_id, "dimension": "pages"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert authorized_breakdown.status_code == 200
     finally:
         (
             dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,

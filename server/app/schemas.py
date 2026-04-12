@@ -132,6 +132,18 @@ class ConfidenceInterval(BaseModel):
     high: float
 
 
+class BreakdownRow(BaseModel):
+    label: str
+    value: float
+
+
+class BreakdownResponse(BaseModel):
+    site_id: str
+    dimension: Literal["pages", "sources", "devices", "countries"]
+    total: float
+    rows: list[BreakdownRow]
+
+
 class MetricStatistic(BaseModel):
     metric: str
     value: float

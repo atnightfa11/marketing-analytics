@@ -22,6 +22,7 @@ from .routers import (
     admin,
     alert_webhook,
     aggregates,
+    breakdowns,
     forecast,
     health,
     imports,
@@ -215,6 +216,7 @@ app.include_router(shuffle.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api")
 app.include_router(metrics_router.router, prefix="/api")
 app.include_router(aggregates.router, prefix="/api")
+app.include_router(breakdowns.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(stripe_billing.router, prefix="/api")

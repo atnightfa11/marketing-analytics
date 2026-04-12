@@ -62,7 +62,9 @@ Current implementation status:
 
 - Stored event kinds: pageviews, sessions, uniques, conversions (see PrivatizedEvent in server/app/schemas.py).
 - Conversion types are already supported in the reducer: payload.conversion_type yields metric "conversion:<type>".
-- Dimension breakdowns (source, path, device, country) are planned; the dashboard currently uses seeded distributions.
+- Dimension breakdowns now ship for Free/Standard via `GET /api/breakdown` (`pages`, `sources`, `devices`, `countries`).
+- Root dashboard mode remains demo-seeded; explicit site mode (`/site/<id>` or `?site_id=<id>`) uses real breakdown rows.
+- Pro still serves aggregate totals only for these dimensions until LDP dimension support is extended.
 
 Plan-aware nuance:
 

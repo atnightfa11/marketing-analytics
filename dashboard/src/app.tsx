@@ -12,7 +12,10 @@ import {
 } from "recharts";
 import {
   AggregateWindow,
+  BreakdownDimension,
+  BreakdownRow,
   fetchAggregate,
+  fetchBreakdown,
   fetchForecast,
   fetchMetrics,
   ForecastEntry,
@@ -56,6 +59,7 @@ const metricOptions = [
   { key: "conversions", label: "Conversions" },
   { key: "revenue", label: "Revenue" },
 ];
+const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries"];
 
 const rangeOptions = ["Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
 const forecastOptions = [
@@ -291,6 +295,12 @@ const Overview: React.FC = () => {
     null
   );
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
+  const [breakdownRows, setBreakdownRows] = useState<Record<BreakdownDimension, TableRow[]>>({
+    sources: [],
+    pages: [],
+    devices: [],
+    countries: [],
+  });
   const [liveWindows, setLiveWindows] = useState<AggregateWindow[]>([]);
   const [customRange, setCustomRange] = useState<DateRange>({ start: "", end: "" });
   const [compareEnabled, setCompareEnabled] = useState(false);
@@ -318,6 +328,52 @@ const Overview: React.FC = () => {
       })
       .catch(console.error);
   }, [canQuery, token, siteId]);
+
+  useEffect(() => {
+    if (!canQuery) return;
+    if (showSeededBreakdowns) {
+      setBreakdownRows({
+        sources: [],
+        pages: [],
+        devices: [],
+        countries: [],
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const start = breakdownDateRange?.start;
+    const end = breakdownDateRange?.end;
+    Promise.all(
+      breakdownDimensions.map((dimension) =>
+        fetchBreakdown(dimension, token ?? undefined, siteId, start, end).then((rows) => ({
+          dimension,
+          rows,
+        }))
+      )
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const next: Record<BreakdownDimension, TableRow[]> = {
+          sources: [],
+          pages: [],
+          devices: [],
+          countries: [],
+        };
+        results.forEach((result) => {
+          next[result.dimension] = result.rows.map((row: BreakdownRow) => ({
+            label: row.label,
+            value: row.value,
+          }));
+        });
+        setBreakdownRows(next);
+      })
+      .catch(console.error);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
 
   useEffect(() => {
     if (!canQuery) return;
@@ -424,6 +480,18 @@ const Overview: React.FC = () => {
   const dailySessions = useMemo(() => getDailySeries("sessions"), [aggregateMap, range, customRange]);
   const dailyConversions = useMemo(() => getDailySeries("conversions"), [aggregateMap, range, customRange]);
   const dailyRevenue = useMemo(() => getDailySeries("revenue"), [aggregateMap, range, customRange]);
+  const breakdownDateRange = useMemo(() => {
+    if (range === "Custom" && customRange.start && customRange.end) {
+      return { start: customRange.start, end: customRange.end };
+    }
+    if (dailyPageviews.length === 0) {
+      return null;
+    }
+    return {
+      start: dailyPageviews[0].day,
+      end: dailyPageviews[dailyPageviews.length - 1].day,
+    };
+  }, [range, customRange, dailyPageviews]);
 
   const totals = {
     pageviews: dailyPageviews.reduce((sum, row) => sum + row.value, 0),
@@ -622,19 +690,22 @@ const Overview: React.FC = () => {
     () =>
       showSeededBreakdowns
         ? buildRows(["Organic Search", "Direct", "Referral", "Social", "Email"], [0.36, 0.22, 0.16, 0.14, 0.12], selectedTotal)
-        : [],
-    [showSeededBreakdowns, selectedTotal]
+        : breakdownRows.sources,
+    [showSeededBreakdowns, selectedTotal, breakdownRows.sources]
   );
   const topPages = useMemo(
     () =>
       showSeededBreakdowns
         ? buildRows(["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"], [0.3, 0.22, 0.18, 0.16, 0.14], selectedTotal)
-        : [],
-    [showSeededBreakdowns, selectedTotal]
+        : breakdownRows.pages,
+    [showSeededBreakdowns, selectedTotal, breakdownRows.pages]
   );
   const deviceRows = useMemo(
-    () => (showSeededBreakdowns ? buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedTotal) : []),
-    [showSeededBreakdowns, selectedTotal]
+    () =>
+      showSeededBreakdowns
+        ? buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedTotal)
+        : breakdownRows.devices,
+    [showSeededBreakdowns, selectedTotal, breakdownRows.devices]
   );
   const regionRows = useMemo(
     () =>
@@ -644,8 +715,8 @@ const Overview: React.FC = () => {
             [0.28, 0.12, 0.09, 0.08, 0.07, 0.06, 0.06, 0.05, 0.1, 0.09],
             selectedTotal
           )
-        : [],
-    [showSeededBreakdowns, selectedTotal]
+        : breakdownRows.countries,
+    [showSeededBreakdowns, selectedTotal, breakdownRows.countries]
   );
   const metricMap = useMemo(
     () => new Map(metrics.map((metric) => [metric.metric, metric.value])),
@@ -1252,52 +1323,52 @@ const Overview: React.FC = () => {
             title="Top Sources"
             labelHeader="Referrer"
             rows={topSources}
-            valueLabel={primaryLabel}
-            metricKey={selectedMetric}
+            valueLabel={showSeededBreakdowns ? primaryLabel : "Sessions"}
+            metricKey={showSeededBreakdowns ? selectedMetric : "sessions"}
             detailTotals={detailTotals}
             emptyState={
               showSeededBreakdowns
                 ? "Awaiting events. This table will populate after data arrives."
-                : "Breakdown APIs are not enabled for live site mode yet."
+                : "No source data yet for the selected range."
             }
           />
           <TableBlock
             title="Top Pages"
             labelHeader="Path"
             rows={topPages}
-            valueLabel={primaryLabel}
-            metricKey={selectedMetric}
+            valueLabel={showSeededBreakdowns ? primaryLabel : "Pageviews"}
+            metricKey={showSeededBreakdowns ? selectedMetric : "pageviews"}
             detailTotals={detailTotals}
             emptyState={
               showSeededBreakdowns
                 ? "Awaiting events. This table will populate after data arrives."
-                : "Breakdown APIs are not enabled for live site mode yet."
+                : "No page-path data yet for the selected range."
             }
           />
           <TableBlock
             title="Devices"
             labelHeader="Device"
             rows={deviceRows}
-            valueLabel={primaryLabel}
-            metricKey={selectedMetric}
+            valueLabel={showSeededBreakdowns ? primaryLabel : "Pageviews"}
+            metricKey={showSeededBreakdowns ? selectedMetric : "pageviews"}
             detailTotals={detailTotals}
             emptyState={
               showSeededBreakdowns
                 ? "Awaiting events. This table will populate after data arrives."
-                : "Breakdown APIs are not enabled for live site mode yet."
+                : "No device data yet for the selected range."
             }
           />
           <TableBlock
             title="Regions"
             labelHeader="Country"
             rows={regionRows}
-            valueLabel={primaryLabel}
-            metricKey={selectedMetric}
+            valueLabel={showSeededBreakdowns ? primaryLabel : "Pageviews"}
+            metricKey={showSeededBreakdowns ? selectedMetric : "pageviews"}
             detailTotals={detailTotals}
             emptyState={
               showSeededBreakdowns
                 ? "Awaiting events. This table will populate after data arrives."
-                : "Breakdown APIs are not enabled for live site mode yet."
+                : "No country data yet for the selected range."
             }
           />
         </section>

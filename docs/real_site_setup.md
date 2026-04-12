@@ -39,7 +39,8 @@ Live dashboard (real traffic):
 - `http://localhost:5174` (uses `VITE_SITE_ID=live-validanalytics-io`)
 - Hosted app behavior:
   - Root (`/`) is demo-first.
-  - Explicit site context (`?site_id=<id>` or `/site/<id>`) uses live KPI/chart totals and disables seeded breakdown panels.
+  - Explicit site context (`?site_id=<id>` or `/site/<id>`) uses live KPI/chart totals plus real dimension breakdowns from `/api/breakdown`.
+  - Demo seeded breakdowns stay on root mode only.
 
 ## Railway deployment checklist (API)
 

@@ -117,6 +117,36 @@ def _coarsen_ua(ua: str) -> str:
     return f"{family[:24].lower()}:{major[:8]}"
 
 
+def _derive_device_bucket(user_agent: str) -> str:
+    if not user_agent:
+        return "unknown"
+    ua = user_agent.lower()
+    if "ipad" in ua or "tablet" in ua:
+        return "tablet"
+    if "mobile" in ua or "android" in ua or "iphone" in ua or "ipod" in ua:
+        return "mobile"
+    return "desktop"
+
+
+def _derive_country_code(request: Request) -> str:
+    # Common reverse-proxy headers. We store only a coarse country code.
+    header_candidates = (
+        "CF-IPCountry",
+        "X-Vercel-IP-Country",
+        "CloudFront-Viewer-Country",
+        "Fly-Client-Country",
+        "X-Country-Code",
+    )
+    for header in header_candidates:
+        raw = request.headers.get(header)
+        if not raw:
+            continue
+        value = raw.strip().upper()
+        if len(value) == 2 and value.isalpha() and value != "XX":
+            return value
+    return "unknown"
+
+
 def derive_standard_session_key(
     *,
     site_id: str,
@@ -212,6 +242,8 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
 
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("User-Agent", "")
+    device_bucket = _derive_device_bucket(user_agent)
+    country_code = _derive_country_code(request)
     standard_session_key = (
         derive_standard_session_key(
             site_id=collect.site_id,
@@ -246,6 +278,8 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
             raw_payload = dict(report.payload) if isinstance(report.payload, dict) else {}
             if standard_session_key:
                 raw_payload["_session_hmac"] = standard_session_key
+            raw_payload.setdefault("_device_bucket", device_bucket)
+            raw_payload.setdefault("_country_code", country_code)
             record = RawReport(
                 site_id=collect.site_id,
                 kind=report.kind,

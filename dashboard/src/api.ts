@@ -33,6 +33,13 @@ export interface AggregateWindow {
   ci95: { low: number; high: number };
 }
 
+export interface BreakdownRow {
+  label: string;
+  value: number;
+}
+
+export type BreakdownDimension = "pages" | "sources" | "devices" | "countries";
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
   withCredentials: false,
@@ -109,4 +116,20 @@ export async function fetchAggregate(
     params: { site_id: resolvedSiteId, metric, window },
   });
   return response.data.windows ?? [];
+}
+
+export async function fetchBreakdown(
+  dimension: BreakdownDimension,
+  token?: string,
+  siteId?: string,
+  start?: string,
+  end?: string,
+  limit: number = 10
+): Promise<BreakdownRow[]> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/breakdown", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId, dimension, start, end, limit },
+  });
+  return response.data.rows ?? [];
 }
