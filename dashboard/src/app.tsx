@@ -331,52 +331,6 @@ const Overview: React.FC = () => {
 
   useEffect(() => {
     if (!canQuery) return;
-    if (showSeededBreakdowns) {
-      setBreakdownRows({
-        sources: [],
-        pages: [],
-        devices: [],
-        countries: [],
-      });
-      return;
-    }
-
-    let cancelled = false;
-    const start = breakdownDateRange?.start;
-    const end = breakdownDateRange?.end;
-    Promise.all(
-      breakdownDimensions.map((dimension) =>
-        fetchBreakdown(dimension, token ?? undefined, siteId, start, end).then((rows) => ({
-          dimension,
-          rows,
-        }))
-      )
-    )
-      .then((results) => {
-        if (cancelled) return;
-        const next: Record<BreakdownDimension, TableRow[]> = {
-          sources: [],
-          pages: [],
-          devices: [],
-          countries: [],
-        };
-        results.forEach((result) => {
-          next[result.dimension] = result.rows.map((row: BreakdownRow) => ({
-            label: row.label,
-            value: row.value,
-          }));
-        });
-        setBreakdownRows(next);
-      })
-      .catch(console.error);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
-
-  useEffect(() => {
-    if (!canQuery) return;
     fetchForecast(token, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
@@ -492,6 +446,52 @@ const Overview: React.FC = () => {
       end: dailyPageviews[dailyPageviews.length - 1].day,
     };
   }, [range, customRange, dailyPageviews]);
+
+  useEffect(() => {
+    if (!canQuery) return;
+    if (showSeededBreakdowns) {
+      setBreakdownRows({
+        sources: [],
+        pages: [],
+        devices: [],
+        countries: [],
+      });
+      return;
+    }
+
+    let cancelled = false;
+    const start = breakdownDateRange?.start;
+    const end = breakdownDateRange?.end;
+    Promise.all(
+      breakdownDimensions.map((dimension) =>
+        fetchBreakdown(dimension, token ?? undefined, siteId, start, end).then((rows) => ({
+          dimension,
+          rows,
+        }))
+      )
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const next: Record<BreakdownDimension, TableRow[]> = {
+          sources: [],
+          pages: [],
+          devices: [],
+          countries: [],
+        };
+        results.forEach((result) => {
+          next[result.dimension] = result.rows.map((row: BreakdownRow) => ({
+            label: row.label,
+            value: row.value,
+          }));
+        });
+        setBreakdownRows(next);
+      })
+      .catch(console.error);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
 
   const totals = {
     pageviews: dailyPageviews.reduce((sum, row) => sum + row.value, 0),
@@ -1060,7 +1060,7 @@ const Overview: React.FC = () => {
             </div>
             {!showSeededBreakdowns && (
               <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-gray-400" style={fontBody}>
-                Live mode: KPI/chart totals are real. Breakdown panels need dimension APIs.
+                Live mode: KPI/chart totals and breakdown panels use real data.
               </div>
             )}
           </div>
