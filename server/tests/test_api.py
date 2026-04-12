@@ -20,6 +20,7 @@ from sqlalchemy import select
 from argon2 import PasswordHasher
 
 from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
+from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app.routers.shuffle import derive_standard_session_key  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
 
@@ -64,6 +65,58 @@ async def _create_site_api_key(site_id: str, key_id: str, full_key: str, allowed
                 is_active=active,
             )
         )
+        await session.commit()
+
+
+async def _insert_dp_window(
+    *,
+    site_id: str,
+    plan: str,
+    metric: str,
+    value: float,
+    variance: float = 1.0,
+    window_start: datetime | None = None,
+) -> None:
+    start = (window_start or datetime.now(timezone.utc)).replace(second=0, microsecond=0)
+    minutes = 3 if metric == "uniques" else 15
+    end = start + timedelta(minutes=minutes)
+    ci80_half = 1.2816
+    ci95_half = 1.9599
+    async with async_session_factory() as session:
+        existing = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == site_id,
+                    DpWindow.plan == plan,
+                    DpWindow.metric == metric,
+                    DpWindow.window_start == start,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.window_end = end
+            existing.value = value
+            existing.variance = variance
+            existing.ci80_low = max(0.0, value - ci80_half)
+            existing.ci80_high = max(0.0, value + ci80_half)
+            existing.ci95_low = max(0.0, value - ci95_half)
+            existing.ci95_high = max(0.0, value + ci95_half)
+        else:
+            session.add(
+                DpWindow(
+                    site_id=site_id,
+                    plan=plan,
+                    metric=metric,
+                    window_start=start,
+                    window_end=end,
+                    value=value,
+                    variance=variance,
+                    ci80_low=max(0.0, value - ci80_half),
+                    ci80_high=max(0.0, value + ci80_half),
+                    ci95_low=max(0.0, value - ci95_half),
+                    ci95_high=max(0.0, value + ci95_half),
+                )
+            )
         await session.commit()
 
 
@@ -461,3 +514,169 @@ async def test_sdk_bootstrap_rejects_inactive_site_key(client):
         headers={"Origin": "https://example.com"},
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_metrics_and_aggregate_follow_site_plan(client):
+    site_id = "site-plan-serving-contract"
+    base_start = datetime(2026, 4, 11, 12, 0, tzinfo=timezone.utc)
+
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=10.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="conversions",
+        value=2.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="pageviews",
+        value=100.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="conversions",
+        value=25.0,
+        window_start=base_start,
+    )
+
+    await _set_site_plan(site_id, "free")
+    free_aggregate = client.get(
+        "/api/aggregate",
+        params={"site_id": site_id, "metric": "pageviews", "window": "standard"},
+    )
+    assert free_aggregate.status_code == 200
+    free_windows = free_aggregate.json()["windows"]
+    assert free_windows
+    assert free_windows[0]["value"] == 10.0
+
+    free_metrics_resp = client.get("/api/metrics", params={"site_id": site_id})
+    assert free_metrics_resp.status_code == 200
+    free_metrics = {row["metric"]: row for row in free_metrics_resp.json()["metrics"]}
+    assert free_metrics["pageviews"]["value"] == 10.0
+    assert free_metrics["conversions"]["value"] == 2.0
+    assert free_metrics["conversion_rate"]["value"] == 0.2
+
+    await _set_site_plan(site_id, "standard")
+    standard_aggregate = client.get(
+        "/api/aggregate",
+        params={"site_id": site_id, "metric": "pageviews", "window": "standard"},
+    )
+    assert standard_aggregate.status_code == 200
+    standard_windows = standard_aggregate.json()["windows"]
+    assert standard_windows
+    assert standard_windows[0]["value"] == 100.0
+
+    standard_metrics_resp = client.get("/api/metrics", params={"site_id": site_id})
+    assert standard_metrics_resp.status_code == 200
+    standard_metrics = {row["metric"]: row for row in standard_metrics_resp.json()["metrics"]}
+    assert standard_metrics["pageviews"]["value"] == 100.0
+    assert standard_metrics["conversions"]["value"] == 25.0
+    assert standard_metrics["conversion_rate"]["value"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_missing_site_plan_defaults_to_free_for_serving(client):
+    site_id = "site-default-plan-free"
+    base_start = datetime(2026, 4, 11, 14, 0, tzinfo=timezone.utc)
+
+    # No site_plan row for this site on purpose: serving should fall back to free.
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=7.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="pageviews",
+        value=70.0,
+        window_start=base_start,
+    )
+
+    aggregate_resp = client.get(
+        "/api/aggregate",
+        params={"site_id": site_id, "metric": "pageviews", "window": "standard"},
+    )
+    assert aggregate_resp.status_code == 200
+    windows = aggregate_resp.json()["windows"]
+    assert windows
+    assert windows[0]["value"] == 7.0
+
+    metrics_resp = client.get("/api/metrics", params={"site_id": site_id})
+    assert metrics_resp.status_code == 200
+    metrics_map = {row["metric"]: row for row in metrics_resp.json()["metrics"]}
+    assert metrics_map["pageviews"]["value"] == 7.0
+
+
+@pytest.mark.asyncio
+async def test_dashboard_auth_can_gate_metrics_endpoints(client):
+    site_id = "site-dashboard-auth-gate"
+    base_start = datetime(2026, 4, 11, 16, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=9.0,
+        window_start=base_start,
+    )
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-test-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    try:
+        status_resp = client.get("/api/auth/status")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["enabled"] is True
+
+        unauthorized_metrics = client.get("/api/metrics", params={"site_id": site_id})
+        assert unauthorized_metrics.status_code == 401
+
+        bad_login = client.post("/api/auth/login", json={"username": "owner", "password": "wrong"})
+        assert bad_login.status_code == 401
+
+        good_login = client.post("/api/auth/login", json={"username": "owner", "password": "secret-pass"})
+        assert good_login.status_code == 200
+        access_token = good_login.json()["access_token"]
+        assert access_token
+
+        me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+        assert me_resp.status_code == 200
+        assert me_resp.json()["username"] == "owner"
+
+        authorized_metrics = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert authorized_metrics.status_code == 200
+    finally:
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        ) = original

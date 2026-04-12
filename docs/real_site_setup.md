@@ -49,6 +49,10 @@ Set these environment variables on the backend service:
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
 - `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
 - `SESSION_WINDOW_MINUTES=30`
+- `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
+- `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
+- `DASHBOARD_AUTH_PASSWORD=<dashboard-admin-password>`
+- `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
 - `ENABLE_PROD_SCHEDULER=true`
 - `PROD_SCHEDULER_HOUR_UTC=2`

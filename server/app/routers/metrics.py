@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan
 from ..ldp.rr_decoder import confidence_interval, standard_error
 from ..models import DailyUnique, DpWindow, get_session
@@ -22,6 +23,7 @@ async def get_metrics(
     start: str | None = None,
     end: str | None = None,
     metrics: list[str] | None = Query(default=None),
+    _auth_claims: dict | None = Depends(require_dashboard_auth),
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
@@ -67,7 +69,8 @@ async def get_metrics(
             value=conversion_rate,
             variance=0.0,
             standard_error=0.0,
-            snr=float("inf"),
+            # Derived metric; no direct RR/DP variance term, so keep finite for JSON safety.
+            snr=0.0,
             ci80=_ci(conversion_rate, 0.0, 1.2816),
             ci95=_ci(conversion_rate, 0.0, 1.9599),
             has_anomaly=False,

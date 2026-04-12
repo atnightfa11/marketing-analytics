@@ -1,21 +1,31 @@
 # Metrics Definitions
 
-This document defines how the API/dashboard metrics are calculated for Free and Standard.
+This document defines how API/dashboard metrics are calculated for all plan tiers.
 
-- **pageviews**: Sum of reduced `pageviews` events in the selected window.
-- **sessions**:
+## Plan resolution
+
+- Serving plan is resolved from `site_plan.site_id`.
+- If no `site_plan` row exists, serving defaults to `free`.
+- `/api/metrics`, `/api/aggregate`, and `/api/forecast` use the resolved plan.
+
+## Metric formulas
+
+- `pageviews`: sum of reduced `pageviews` windows.
+- `sessions`:
   - Free: sum of reduced `sessions` events.
-  - Standard: number of unique server-derived HMAC session keys per window (deduped).
-- **uniques**: reduced daily presence estimate from `uniques`.
-- **conversions**: sum of reduced `conversions` events.
-- **conversion_rate**: `conversions / pageviews` (computed after decoding/aggregation).
-- **revenue**: sum of reduced `revenue` events.
+  - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, then bounded by pageviews in the same session bucket.
+  - Pro: reduced LDP estimate from `sessions` randomized-response reports.
+- `uniques`: reduced estimate from `uniques` events (presence signal).
+- `conversions`: sum of reduced `conversions` events.
+- `conversion_rate`: `conversions / pageviews` (derived after aggregation; no extra DP noise term).
+- `revenue`: sum of reduced `revenue` events.
 
 Quality notes:
 
 - Metrics publish only after minimum volume and SNR checks in reducers/routes.
 - For short windows, sessions are clamped to not exceed pageviews to avoid obviously broken output.
-- `conversion_rate` is derived from already published aggregates; no extra noise term is added.
+- `conversion_rate` is derived from already published aggregates.
+- Standard session dedupe is replay-resistant and coarse-context based.
 
 ## Privacy/data handling summary
 

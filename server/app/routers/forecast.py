@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_site_plan
+from ..dashboard_auth import require_dashboard_auth
 from ..models import Forecast, ModelStore, get_session
 from ..schemas import ForecastResponse, ForecastPoint
 
@@ -14,7 +15,13 @@ router = APIRouter(tags=["forecast"])
 
 
 @router.get("/forecast/{metric}", response_model=ForecastResponse, status_code=status.HTTP_200_OK)
-async def forecast(metric: str, site_id: str, request: Request, session: AsyncSession = Depends(get_session)):
+async def forecast(
+    metric: str,
+    site_id: str,
+    request: Request,
+    _auth_claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+):
     plan = await get_site_plan(site_id, session)
     stmt = (
         select(Forecast)

@@ -266,7 +266,8 @@ const TableBlock: React.FC<{
 };
 
 const Overview: React.FC = () => {
-  const { token } = useAuth();
+  const { token, authEnabled } = useAuth();
+  const canQuery = !authEnabled || Boolean(token);
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
@@ -297,12 +298,12 @@ const Overview: React.FC = () => {
   const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
   useEffect(() => {
-    if (!token) return;
+    if (!canQuery) return;
     fetchMetrics(token, siteId).then(setMetrics).catch(console.error);
     const metricsToFetch = metricOptions.map((metric) => metric.key);
     Promise.all(
       metricsToFetch.map((metric) =>
-        fetchAggregate(metric, "standard", siteId).then((data) => ({
+        fetchAggregate(metric, "standard", token ?? undefined, siteId).then((data) => ({
           metric,
           data,
         }))
@@ -316,25 +317,25 @@ const Overview: React.FC = () => {
         setAggregateMap(next);
       })
       .catch(console.error);
-  }, [token, siteId]);
+  }, [canQuery, token, siteId]);
 
   useEffect(() => {
-    if (!token) return;
+    if (!canQuery) return;
     fetchForecast(token, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
         setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly });
       })
       .catch(console.error);
-  }, [token, selectedMetric, siteId]);
+  }, [canQuery, token, selectedMetric, siteId]);
 
   useEffect(() => {
-    if (!token) return;
-    const loadLive = () => fetchAggregate("uniques", "live", siteId).then(setLiveWindows).catch(console.error);
+    if (!canQuery) return;
+    const loadLive = () => fetchAggregate("uniques", "live", token ?? undefined, siteId).then(setLiveWindows).catch(console.error);
     loadLive();
     const interval = setInterval(loadLive, 30000);
     return () => clearInterval(interval);
-  }, [token, siteId]);
+  }, [canQuery, token, siteId]);
 
   const toDaily = (windows: AggregateWindow[]) => {
     const bucket: Record<string, number> = {};
@@ -690,7 +691,7 @@ const Overview: React.FC = () => {
   };
 
   const handleExportAllMetricsCsv = async () => {
-    if (!token) return;
+    if (authEnabled && !token) return;
     const metricKeys = metricOptions.map((metric) => metric.key);
     const forecasts = await Promise.all(
       metricKeys.map(async (metric) => {
@@ -698,7 +699,7 @@ const Overview: React.FC = () => {
           return { metric, forecast };
         }
         try {
-          const response = await fetchForecast(token, metric, siteId);
+          const response = await fetchForecast(token ?? undefined, metric, siteId);
           return { metric, forecast: response.forecast };
         } catch (error) {
           console.error(error);
@@ -1475,14 +1476,92 @@ const BillingCancel: React.FC = () => (
   </div>
 );
 
-export const App: React.FC = () => {
-  const { token, login } = useAuth();
+const LoginGate: React.FC = () => {
+  const { login } = useAuth();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!token) {
-      login("demo", "demo");
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await login(username, password);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed");
+    } finally {
+      setIsSubmitting(false);
     }
-  }, [token, login]);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F9FAFB]">
+      <main className="mx-auto flex min-h-screen max-w-md items-center px-6 py-12">
+        <section className="w-full border border-gray-200 bg-white p-6">
+          <h1 className="text-2xl text-[#1F2937]" style={fontHeading}>
+            Sign In
+          </h1>
+          <p className="mt-2 text-sm text-gray-600" style={fontBody}>
+            Dashboard access is restricted.
+          </p>
+          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+                Username
+              </label>
+              <input
+                type="text"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                className="w-full border border-gray-300 px-3 py-2 text-sm text-[#111827]"
+                style={fontBody}
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="w-full border border-gray-300 px-3 py-2 text-sm text-[#111827]"
+                style={fontBody}
+                required
+              />
+            </div>
+            {error && (
+              <p className="text-sm text-rose-600" style={fontBody}>
+                {error}
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-60"
+              style={fontBody}
+            >
+              {isSubmitting ? "Signing in..." : "Sign In"}
+            </button>
+          </form>
+        </section>
+      </main>
+    </div>
+  );
+};
+
+export const App: React.FC = () => {
+  const { token, authEnabled, ready } = useAuth();
+
+  if (!ready) {
+    return <div className="p-6 text-sm text-gray-500">{en.loading}</div>;
+  }
+  if (authEnabled && !token) {
+    return <LoginGate />;
+  }
 
   return (
     <BrowserRouter future={{ v7_relativeSplatPath: true }}>

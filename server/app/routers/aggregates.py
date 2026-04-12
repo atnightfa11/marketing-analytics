@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import DpWindow, get_session
+from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan
 from ..schemas import AggregateResponse, WindowAggregate
 
@@ -17,7 +18,8 @@ router = APIRouter(tags=["metrics"])
 async def aggregate(
     site_id: str,
     metric: str,
-    window: str = Query(default="standard", regex="^(live|standard)$"),
+    window: str = Query(default="standard", pattern="^(live|standard)$"),
+    _auth_claims: dict | None = Depends(require_dashboard_auth),
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):

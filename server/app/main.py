@@ -18,6 +18,7 @@ from .scheduler.nightly_reduce import reduce_reports
 from .scheduler.prophet_job import train_prophet
 from .models import Base, async_engine, init_db
 from .routers import (
+    auth,
     admin,
     alert_webhook,
     aggregates,
@@ -208,6 +209,7 @@ async def on_shutdown():
 
 
 app.include_router(upload_token.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(shuffle.router, prefix="/api")
 app.include_router(ingest.router, prefix="/api")

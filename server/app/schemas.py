@@ -65,6 +65,25 @@ class SdkBootstrapResponse(BaseModel):
     config: SdkBootstrapConfig
 
 
+class AuthStatusResponse(BaseModel):
+    enabled: bool
+
+
+class AuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthLoginResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: dt.datetime
+
+
+class AuthMeResponse(BaseModel):
+    username: str
+
+
 class PrivatizedEvent(BaseModel):
     site_id: str
     kind: Literal["uniques", "pageviews", "sessions", "conversions", "revenue"]

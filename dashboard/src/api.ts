@@ -61,26 +61,34 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
+      const hadToken = Boolean(localStorage.getItem("ma_token"));
       localStorage.removeItem("ma_token");
-      window.location.href = "/";
+      if (hadToken && typeof window !== "undefined") {
+        window.location.reload();
+      }
     }
     return Promise.reject(err);
   }
 );
 
-export async function fetchMetrics(token: string, siteId?: string): Promise<MetricStatistic[]> {
+function authHeaders(token?: string): Record<string, string> | undefined {
+  if (!token) return undefined;
+  return { Authorization: `Bearer ${token}` };
+}
+
+export async function fetchMetrics(token?: string, siteId?: string): Promise<MetricStatistic[]> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/metrics", {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(token),
     params: { site_id: resolvedSiteId },
   });
   return response.data.metrics;
 }
 
-export async function fetchForecast(token: string, metric: string, siteId?: string): Promise<ForecastResponse> {
+export async function fetchForecast(token: string | undefined, metric: string, siteId?: string): Promise<ForecastResponse> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get(`/api/forecast/${metric}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(token),
     params: { site_id: resolvedSiteId },
   });
   if (response.status === 204) {
@@ -92,10 +100,12 @@ export async function fetchForecast(token: string, metric: string, siteId?: stri
 export async function fetchAggregate(
   metric: string,
   window: "live" | "standard",
+  token?: string,
   siteId?: string
 ): Promise<AggregateWindow[]> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/aggregate", {
+    headers: authHeaders(token),
     params: { site_id: resolvedSiteId, metric, window },
   });
   return response.data.windows ?? [];

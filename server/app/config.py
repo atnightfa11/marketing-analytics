@@ -36,6 +36,11 @@ class Settings(BaseSettings):
   ENABLE_PROD_SCHEDULER: bool = Field(default=False)
   PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
   MODEL_ARTIFACT_BUCKET: str | None = None
+  DASHBOARD_AUTH_ENABLED: bool = Field(default=False)
+  DASHBOARD_AUTH_USERNAME: str = Field(default="admin")
+  DASHBOARD_AUTH_PASSWORD: str | None = None
+  DASHBOARD_AUTH_SECRET: str | None = None
+  DASHBOARD_AUTH_TTL_SECONDS: int = Field(default=8 * 60 * 60)
   expose_docs: bool = False
   cors_origins: list[str] = Field(
       default_factory=lambda: [
