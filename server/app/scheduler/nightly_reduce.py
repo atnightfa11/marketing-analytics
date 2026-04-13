@@ -150,22 +150,43 @@ async def reduce_reports(
 
     # Free + Standard raw path
     raw_reports = (
-        await session.execute(select(RawReport).where(RawReport.day >= start, RawReport.day <= end))
+        await session.execute(
+            select(RawReport)
+            .where(RawReport.day >= start, RawReport.day <= end)
+            .order_by(RawReport.server_received_at, RawReport.id)
+        )
     ).scalars().all()
     raw_buckets: dict[tuple[str, str, dt.datetime], list[RawReport]] = defaultdict(list)
     standard_session_keys: dict[tuple[str, dt.datetime], set[str]] = defaultdict(set)
+    deduped_session_markers: set[tuple[str, dt.datetime, str]] = set()
+    deduped_unique_markers: set[tuple[str, dt.date, str]] = set()
     epsilon_totals: dict[tuple[str, dt.date], float] = defaultdict(float)
 
     for report in raw_reports:
         plan = plan_map.get(report.site_id, "free")
         if plan == "pro":
             continue
+        payload = report.payload if isinstance(report.payload, dict) else {}
+        if report.kind == "sessions":
+            session_hmac = payload.get("_session_hmac")
+            if isinstance(session_hmac, str) and session_hmac:
+                session_bucket_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)
+                marker = (report.site_id, session_bucket_start, session_hmac)
+                if marker in deduped_session_markers:
+                    continue
+                deduped_session_markers.add(marker)
+        elif report.kind == "uniques":
+            visitor_day_hmac = payload.get("_visitor_day_hmac")
+            if isinstance(visitor_day_hmac, str) and visitor_day_hmac:
+                marker = (report.site_id, report.day, visitor_day_hmac)
+                if marker in deduped_unique_markers:
+                    continue
+                deduped_unique_markers.add(marker)
         window_start = report.server_received_at.replace(second=0, microsecond=0)
         if plan == "standard" and report.kind == "sessions":
             window_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)
         raw_buckets[(report.site_id, report.kind, window_start)].append(report)
         if plan == "standard":
-            payload = report.payload if isinstance(report.payload, dict) else {}
             session_hmac = payload.get("_session_hmac")
             if isinstance(session_hmac, str) and session_hmac:
                 session_bucket_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)

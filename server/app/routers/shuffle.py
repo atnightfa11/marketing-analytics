@@ -168,6 +168,23 @@ def derive_standard_session_key(
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
 
+def derive_daily_visitor_key(
+    *,
+    site_id: str,
+    day: dt.date,
+    ip_value: str,
+    user_agent: str,
+) -> str | None:
+    secret = settings.SESSION_HMAC_SECRET
+    if not secret:
+        return None
+    coarse_ip = _coarsen_ip(ip_value)
+    coarse_ua = _coarsen_ua(user_agent)
+    canonical = f"{site_id}|{day.isoformat()}|{coarse_ip}|{coarse_ua}"
+    digest = hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+
 def apply_rate_limit(site_id: str, ip: str, request: Request, plan: str):
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     key = (site_id, ip)
@@ -251,7 +268,7 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
             ip_value=client_ip,
             user_agent=user_agent,
         )
-        if effective_plan == "standard"
+        if effective_plan != "pro"
         else None
     )
 
@@ -278,6 +295,14 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
             raw_payload = dict(report.payload) if isinstance(report.payload, dict) else {}
             if standard_session_key:
                 raw_payload["_session_hmac"] = standard_session_key
+            visitor_day_hmac = derive_daily_visitor_key(
+                site_id=collect.site_id,
+                day=payload_time.date(),
+                ip_value=client_ip,
+                user_agent=user_agent,
+            )
+            if visitor_day_hmac:
+                raw_payload["_visitor_day_hmac"] = visitor_day_hmac
             raw_payload.setdefault("_device_bucket", device_bucket)
             raw_payload.setdefault("_country_code", country_code)
             record = RawReport(

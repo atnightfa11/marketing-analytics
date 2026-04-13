@@ -139,7 +139,7 @@ class BreakdownRow(BaseModel):
 
 class BreakdownResponse(BaseModel):
     site_id: str
-    dimension: Literal["pages", "sources", "devices", "countries"]
+    dimension: Literal["pages", "sources", "devices", "countries", "conversions"]
     total: float
     rows: list[BreakdownRow]
 

@@ -23,6 +23,7 @@ export interface ClientConfig {
   presenceEpsilonCap?: number;
   includeQueryInPath?: boolean;
   stripHashInPath?: boolean;
+  honorPrivacySignals?: boolean;
   autoRefreshSkewSeconds?: number;
   refreshEndpoint?: string;
   bootstrapEndpoint?: string;
@@ -48,6 +49,7 @@ export interface PresenceReport {
 
 export interface SessionEventPayload {
   referrerBucket: string;
+  referrerSource?: string;
   engagementBucket: string;
 }
 

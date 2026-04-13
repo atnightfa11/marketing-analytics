@@ -21,7 +21,7 @@ from argon2 import PasswordHasher
 
 from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
-from app.routers.shuffle import derive_standard_session_key  # noqa: E402
+from app.routers.shuffle import derive_daily_visitor_key, derive_standard_session_key  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
 
 
@@ -374,6 +374,31 @@ def test_standard_hmac_session_key_stability_and_rollover():
     assert stable_key_1 != rollover_key
 
 
+def test_daily_visitor_key_rotates_daily():
+    base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
+    day_key_1 = derive_daily_visitor_key(
+        site_id="site-hmac",
+        day=base_time.date(),
+        ip_value="203.0.113.44",
+        user_agent="Mozilla/5.0",
+    )
+    day_key_2 = derive_daily_visitor_key(
+        site_id="site-hmac",
+        day=base_time.date(),
+        ip_value="203.0.113.44",
+        user_agent="Mozilla/5.0",
+    )
+    next_day_key = derive_daily_visitor_key(
+        site_id="site-hmac",
+        day=(base_time + timedelta(days=1)).date(),
+        ip_value="203.0.113.44",
+        user_agent="Mozilla/5.0",
+    )
+
+    assert day_key_1 == day_key_2
+    assert day_key_1 != next_day_key
+
+
 @pytest.mark.asyncio
 async def test_standard_session_dedup_replay_resistance(client):
     await _set_site_plan("site-session-dedupe", "standard")
@@ -446,6 +471,100 @@ async def test_standard_session_dedup_replay_resistance(client):
         ).scalars().all()
         assert rows
         assert max(row.value for row in rows) <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_free_session_and_unique_dedupe_without_client_storage(client):
+    await _set_site_plan("site-free-dedupe", "free")
+
+    token_resp = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": "site-free-dedupe",
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+            "plan": "free",
+        },
+    )
+    token = token_resp.json()["token"]
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    payload_day = now_dt.date()
+
+    batch = [
+        {
+            "site_id": "site-free-dedupe",
+            "kind": "sessions",
+            "payload": {"randomized_bit": 1, "referrer_bucket": "direct"},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": now_iso,
+        },
+        {
+            "site_id": "site-free-dedupe",
+            "kind": "sessions",
+            "payload": {"randomized_bit": 1, "referrer_bucket": "direct"},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": now_iso,
+        },
+        {
+            "site_id": "site-free-dedupe",
+            "kind": "uniques",
+            "payload": {"randomized_bit": 1},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": now_iso,
+        },
+        {
+            "site_id": "site-free-dedupe",
+            "kind": "uniques",
+            "payload": {"randomized_bit": 1},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": now_iso,
+        },
+    ]
+
+    ingest_resp = client.post(
+        "/api/shuffle",
+        json={"token": token, "nonce": "free-dedupe-nonce", "batch": batch},
+        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+    )
+    assert ingest_resp.status_code == 202
+
+    async with async_session_factory() as session:
+        original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+        reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+        try:
+            await reduce_reports(session, start_day=payload_day, end_day=payload_day)
+        finally:
+            reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+
+        session_rows = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == "site-free-dedupe",
+                    DpWindow.plan == "free",
+                    DpWindow.metric == "sessions",
+                )
+            )
+        ).scalars().all()
+        unique_rows = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == "site-free-dedupe",
+                    DpWindow.plan == "free",
+                    DpWindow.metric == "uniques",
+                )
+            )
+        ).scalars().all()
+
+        assert session_rows
+        assert unique_rows
+        assert sum(row.value for row in session_rows) == 1.0
+        assert sum(row.value for row in unique_rows) == 1.0
 
 
 @pytest.mark.asyncio
@@ -667,12 +786,28 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
         await _insert_raw_report(site_id=site_id, kind="pageviews", payload=payload, day=target_day)
 
     session_payloads = [
-        {"referrer_bucket": "direct"},
-        {"referrer_bucket": "external"},
-        {"referrer_bucket": "external"},
+        ({"referrer_bucket": "organic", "referrer_source": "google.com", "_session_hmac": "sess-a"}, datetime(2026, 4, 11, 9, 0, tzinfo=timezone.utc)),
+        ({"referrer_bucket": "external", "_session_hmac": "sess-a"}, datetime(2026, 4, 11, 9, 5, tzinfo=timezone.utc)),
+        ({"referrer_bucket": "direct", "_session_hmac": "sess-b"}, datetime(2026, 4, 11, 9, 6, tzinfo=timezone.utc)),
+        ({"referrer_bucket": "organic", "referrer_source": "google.com", "_session_hmac": "sess-a"}, datetime(2026, 4, 11, 9, 35, tzinfo=timezone.utc)),
     ]
-    for payload in session_payloads:
-        await _insert_raw_report(site_id=site_id, kind="sessions", payload=payload, day=target_day)
+    for payload, received_at in session_payloads:
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload=payload,
+            day=target_day,
+            server_received_at=received_at,
+        )
+
+    conversion_payloads = [
+        {"conversion_type": "demo_request"},
+        {"conversion_type": "demo_request"},
+        {"conversion_type": "contact_us"},
+        {"conversion_type": "", "historical_import": True},
+    ]
+    for payload in conversion_payloads:
+        await _insert_raw_report(site_id=site_id, kind="conversions", payload=payload, day=target_day)
 
     query = {"site_id": site_id, "start": target_day.isoformat(), "end": target_day.isoformat(), "limit": 10}
 
@@ -689,7 +824,7 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
     sources_resp = client.get("/api/breakdown", params={**query, "dimension": "sources"})
     assert sources_resp.status_code == 200
     assert sources_resp.json()["rows"] == [
-        {"label": "External", "value": 2.0},
+        {"label": "google.com", "value": 2.0},
         {"label": "Direct", "value": 1.0},
     ]
 
@@ -705,6 +840,13 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
     assert countries_resp.json()["rows"] == [
         {"label": "US", "value": 3.0},
         {"label": "CA", "value": 1.0},
+    ]
+
+    conversions_resp = client.get("/api/breakdown", params={**query, "dimension": "conversions"})
+    assert conversions_resp.status_code == 200
+    assert conversions_resp.json()["rows"] == [
+        {"label": "Demo Request", "value": 2.0},
+        {"label": "Contact Us", "value": 1.0},
     ]
 
 

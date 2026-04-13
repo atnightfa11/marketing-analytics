@@ -59,7 +59,7 @@ const metricOptions = [
   { key: "conversions", label: "Conversions" },
   { key: "revenue", label: "Revenue" },
 ];
-const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries"];
+const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions"];
 
 const rangeOptions = ["Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
 const forecastOptions = [
@@ -300,6 +300,7 @@ const Overview: React.FC = () => {
     pages: [],
     devices: [],
     countries: [],
+    conversions: [],
   });
   const [liveWindows, setLiveWindows] = useState<AggregateWindow[]>([]);
   const [customRange, setCustomRange] = useState<DateRange>({ start: "", end: "" });
@@ -455,6 +456,7 @@ const Overview: React.FC = () => {
         pages: [],
         devices: [],
         countries: [],
+        conversions: [],
       });
       return;
     }
@@ -477,6 +479,7 @@ const Overview: React.FC = () => {
           pages: [],
           devices: [],
           countries: [],
+          conversions: [],
         };
         results.forEach((result) => {
           next[result.dimension] = result.rows.map((row: BreakdownRow) => ({
@@ -866,7 +869,13 @@ const Overview: React.FC = () => {
   }, [dailySelected, forecastHorizon]);
 
   const conversionEvents = useMemo(() => {
-    if (!showSeededBreakdowns) return [];
+    if (!showSeededBreakdowns) {
+      return breakdownRows.conversions.map((row) => ({
+        label: row.label,
+        count: row.value,
+        rate: totals.sessions > 0 ? row.value / totals.sessions : 0,
+      }));
+    }
     if (!Number.isFinite(totals.conversions) || totals.conversions <= 0) return [];
     const labels = ["Demo Request", "Contact Us", "Trial Signup", "Purchase", "Newsletter"];
     const weights = [0.34, 0.22, 0.18, 0.16, 0.1];
@@ -877,7 +886,7 @@ const Overview: React.FC = () => {
       const rate = totals.sessions > 0 ? count / totals.sessions : 0;
       return { label, count, rate };
     });
-  }, [showSeededBreakdowns, totals.conversions, totals.sessions]);
+  }, [showSeededBreakdowns, breakdownRows.conversions, totals.conversions, totals.sessions]);
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] print-bg">
@@ -1390,7 +1399,7 @@ const Overview: React.FC = () => {
             <div className="py-6 text-xs text-gray-400" style={fontBody}>
               {showSeededBreakdowns
                 ? "Awaiting conversion events. This table will populate after data arrives."
-                : "Conversion-event breakdowns are not enabled for live site mode yet."}
+                : "No conversion events yet for the selected range."}
             </div>
           ) : (
             <div className="divide-y divide-gray-100">

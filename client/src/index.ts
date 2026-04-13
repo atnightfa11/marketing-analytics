@@ -10,7 +10,108 @@ const CIRCUIT_BREAKER_DURATION_MS = 5 * 60 * 1000;
 const THREE_MINUTES_MS = 3 * 60 * 1000;
 const DEFAULT_SESSION_INACTIVITY_MS = 30 * 60 * 1000;
 const DEFAULT_CONVERSION_DEDUPE_MS = 10 * 1000;
-const SESSION_ACTIVITY_STORAGE_PREFIX = "valid_last_activity_";
+
+const SEARCH_ENGINE_HOSTS = [
+  "google.com",
+  "bing.com",
+  "duckduckgo.com",
+  "yahoo.com",
+  "search.brave.com",
+  "ecosia.org",
+  "yandex.com",
+  "baidu.com",
+];
+
+const SOCIAL_HOSTS = [
+  "facebook.com",
+  "instagram.com",
+  "x.com",
+  "twitter.com",
+  "linkedin.com",
+  "t.co",
+  "reddit.com",
+  "youtube.com",
+  "tiktok.com",
+  "threads.net",
+  "pinterest.com",
+];
+
+const EMAIL_HOSTS = [
+  "mail.google.com",
+  "outlook.live.com",
+  "mail.yahoo.com",
+  "proton.me",
+  "protonmail.com",
+];
+
+const SEARCH_SOURCE_HINTS = [
+  "google",
+  "bing",
+  "duckduckgo",
+  "yahoo",
+  "search",
+  "ecosia",
+  "brave",
+  "yandex",
+  "baidu",
+  "qwant",
+  "naver",
+  "perplexity",
+];
+
+const SOCIAL_SOURCE_HINTS = [
+  "facebook",
+  "fb",
+  "instagram",
+  "linkedin",
+  "reddit",
+  "youtube",
+  "yt",
+  "tiktok",
+  "threads",
+  "pinterest",
+  "discord",
+  "bluesky",
+  "mastodon",
+];
+
+const EMAIL_SOURCE_HINTS = [
+  "email",
+  "newsletter",
+  "gmail",
+  "outlook",
+  "mailchimp",
+  "sendgrid",
+  "convertkit",
+  "substack",
+];
+
+const CLICK_ID_QUERY_PARAMS = new Set([
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "dclid",
+  "msclkid",
+  "fbclid",
+  "ttclid",
+  "twclid",
+  "li_fat_id",
+  "yclid",
+  "srsltid",
+]);
+
+const PAID_MEDIUM_HINTS = [
+  "cpc",
+  "ppc",
+  "paid",
+  "display",
+  "affiliate",
+  "retargeting",
+  "remarketing",
+];
+
+const SOCIAL_MEDIUM_HINTS = ["social", "social_media", "social-network", "social-networking"];
+const EMAIL_MEDIUM_HINTS = ["email", "e-mail", "newsletter"];
 
 let config: ClientConfig | null = null;
 let collector: EventCollector | null = null;
@@ -30,6 +131,14 @@ let autoeventsCleanup: Array<() => void> = [];
 let conversionDedupCache = new Map<string, number>();
 
 type EnsureResult = { config: ClientConfig; collector: EventCollector };
+type SignalNavigator = {
+  doNotTrack?: string | null;
+  msDoNotTrack?: string | null;
+  globalPrivacyControl?: boolean | string | null;
+};
+type SignalWindow = {
+  doNotTrack?: string | null;
+};
 
 function ensureConfigured(): EnsureResult {
   const currentConfig = config;
@@ -162,48 +271,186 @@ function normalizePath(
   stripHash: boolean
 ): string {
   const url = new URL(input, window.location.origin);
-  const query = includeQuery ? url.search : "";
+  const query = includeQuery ? stripTrackingIdentifiersFromQuery(url.search) : "";
   const hash = stripHash ? "" : url.hash;
   return `${url.pathname}${query}${hash}`;
 }
 
-function getSessionActivityStorageKey(siteId: string): string {
-  return `${SESSION_ACTIVITY_STORAGE_PREFIX}${siteId}`;
+export function stripTrackingIdentifiersFromQuery(search: string): string {
+  if (!search) return "";
+  const query = search.startsWith("?") ? search.slice(1) : search;
+  const params = new URLSearchParams(query);
+  for (const key of CLICK_ID_QUERY_PARAMS) {
+    params.delete(key);
+  }
+  const serialized = params.toString();
+  return serialized ? `?${serialized}` : "";
 }
 
-function readPersistedLastActivity(siteId: string): number {
-  if (typeof window === "undefined") return 0;
+function isSignalAffirmative(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (value == null) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === "1" || normalized === "yes" || normalized === "true";
+}
+
+export function isPrivacySignalEnabled(
+  navigatorInput?: SignalNavigator | null,
+  windowInput?: SignalWindow | null
+): boolean {
+  const nav = navigatorInput ?? (
+    typeof navigator !== "undefined" ? (navigator as unknown as SignalNavigator) : null
+  );
+  const win = windowInput ?? (
+    typeof window !== "undefined" ? (window as unknown as SignalWindow) : null
+  );
+
+  const dntEnabled = isSignalAffirmative(nav?.doNotTrack)
+    || isSignalAffirmative(nav?.msDoNotTrack)
+    || isSignalAffirmative(win?.doNotTrack);
+  const gpcEnabled = isSignalAffirmative(nav?.globalPrivacyControl);
+
+  return dntEnabled || gpcEnabled;
+}
+
+function isTrackingAllowed(activeConfig: ClientConfig): boolean {
+  if (activeConfig.honorPrivacySignals === false) return true;
+  return !isPrivacySignalEnabled();
+}
+
+function parseUrl(value: string, base: string): URL | null {
   try {
-    const raw = window.localStorage.getItem(getSessionActivityStorageKey(siteId));
-    if (!raw) return 0;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    return new URL(value, base);
   } catch {
-    return 0;
+    return null;
   }
 }
 
-function writePersistedLastActivity(siteId: string, timestamp: number): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(getSessionActivityStorageKey(siteId), String(timestamp));
-  } catch {
-    // ignore storage write failures
-  }
+function normalizeHost(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^www\./, "");
 }
 
-function maybeSendSessionStart(siteId: string, sessionInactivityMs: number): void {
+function hostMatches(hostname: string, candidates: string[]): boolean {
+  const host = normalizeHost(hostname);
+  return candidates.some((candidate) => {
+    const normalized = normalizeHost(candidate);
+    return host === normalized || host.endsWith(`.${normalized}`);
+  });
+}
+
+function classifyByMedium(utmMedium: string): string | null {
+  if (!utmMedium) return null;
+  const medium = utmMedium.trim().toLowerCase();
+  if (!medium) return null;
+  if (PAID_MEDIUM_HINTS.some((hint) => medium.includes(hint))) return "paid";
+  if (EMAIL_MEDIUM_HINTS.some((hint) => medium.includes(hint))) return "email";
+  if (SOCIAL_MEDIUM_HINTS.some((hint) => medium.includes(hint))) return "social";
+  if (medium === "organic") return "organic";
+  if (medium === "referral" || medium === "app" || medium === "link") return "referral";
+  return null;
+}
+
+function sourceLabelFromHost(hostname: string): string {
+  const host = normalizeHost(hostname);
+  return host || "Unknown";
+}
+
+function classifyBySource(utmSource: string): string | null {
+  if (!utmSource) return null;
+  const source = utmSource.trim().toLowerCase();
+  if (!source) return null;
+  if (source === "direct" || source === "(direct)") return "direct";
+  if (EMAIL_SOURCE_HINTS.some((hint) => source.includes(hint))) return "email";
+  if (SOCIAL_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "social";
+  if (SEARCH_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "organic";
+  return null;
+}
+
+export function classifyReferrerBucket(currentHref?: string, referrerHref?: string): {
+  bucket: string;
+  source: string;
+} {
+  const fallbackOrigin = "https://example.invalid";
+  const activeHref = currentHref ?? (typeof window !== "undefined" ? window.location.href : fallbackOrigin);
+  const currentUrl = parseUrl(activeHref, fallbackOrigin);
+  if (!currentUrl) {
+    return { bucket: "direct", source: "Direct" };
+  }
+
+  const utmSource = (
+    currentUrl.searchParams.get("utm_source")
+    ?? currentUrl.searchParams.get("source")
+    ?? currentUrl.searchParams.get("ref")
+    ?? ""
+  ).trim().toLowerCase();
+  const utmMedium = (
+    currentUrl.searchParams.get("utm_medium")
+    ?? currentUrl.searchParams.get("medium")
+    ?? ""
+  ).trim().toLowerCase();
+  const hasPaidClickId = [
+    "gclid",
+    "msclkid",
+    "fbclid",
+    "ttclid",
+    "li_fat_id",
+  ].some((key) => Boolean(currentUrl.searchParams.get(key)));
+
+  if (hasPaidClickId) {
+    return { bucket: "paid", source: utmSource || "Paid" };
+  }
+
+  const mediumBucket = classifyByMedium(utmMedium);
+  if (mediumBucket) {
+    return { bucket: mediumBucket, source: utmSource || mediumBucket };
+  }
+
+  const sourceBucket = classifyBySource(utmSource);
+  if (sourceBucket) {
+    return { bucket: sourceBucket, source: sourceBucket === "direct" ? "Direct" : utmSource };
+  }
+
+  if (utmSource) {
+    return { bucket: "referral", source: utmSource };
+  }
+
+  const activeReferrer = referrerHref ?? (typeof document !== "undefined" ? document.referrer : "");
+  if (!activeReferrer) {
+    return { bucket: "direct", source: "Direct" };
+  }
+
+  const referrerUrl = parseUrl(activeReferrer, currentUrl.origin);
+  if (!referrerUrl) {
+    return { bucket: "direct", source: "Direct" };
+  }
+
+  if (normalizeHost(referrerUrl.hostname) === normalizeHost(currentUrl.hostname)) {
+    return { bucket: "direct", source: "Direct" };
+  }
+  if (hostMatches(referrerUrl.hostname, SEARCH_ENGINE_HOSTS)) {
+    return { bucket: "organic", source: sourceLabelFromHost(referrerUrl.hostname) };
+  }
+  if (hostMatches(referrerUrl.hostname, SOCIAL_HOSTS)) {
+    return { bucket: "social", source: sourceLabelFromHost(referrerUrl.hostname) };
+  }
+  if (hostMatches(referrerUrl.hostname, EMAIL_HOSTS)) {
+    return { bucket: "email", source: sourceLabelFromHost(referrerUrl.hostname) };
+  }
+  return { bucket: "referral", source: sourceLabelFromHost(referrerUrl.hostname) };
+}
+
+function maybeSendSessionStart(sessionInactivityMs: number): void {
   const now = Date.now();
-  const persistedLastActivity = readPersistedLastActivity(siteId);
-  const lastSeen = Math.max(lastActivityAt, persistedLastActivity);
+  const lastSeen = lastActivityAt;
   if (!lastSeen || now - lastSeen > sessionInactivityMs) {
+    const source = classifyReferrerBucket();
     sendSessionStart({
-      referrerBucket: document.referrer ? "external" : "direct",
+      referrerBucket: source.bucket,
+      referrerSource: source.source,
       engagementBucket: "start",
     });
   }
   lastActivityAt = now;
-  writePersistedLastActivity(siteId, now);
 }
 
 function emitPageviewForCurrentRoute(routeAction: string, autoConfig: AutoeventsConfig): void {
@@ -293,6 +540,7 @@ export async function configure(userConfig: ClientConfig): Promise<void> {
     maxBatchSize: userConfig.maxBatchSize ?? 50,
     includeQueryInPath: userConfig.includeQueryInPath ?? false,
     stripHashInPath: userConfig.stripHashInPath ?? true,
+    honorPrivacySignals: userConfig.honorPrivacySignals ?? true,
     autoRefreshSkewSeconds: userConfig.autoRefreshSkewSeconds ?? 60,
   };
   logger = createLogger(Boolean(userConfig.debug));
@@ -316,20 +564,24 @@ export async function configure(userConfig: ClientConfig): Promise<void> {
 
 export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise<void> {
   const { config: activeConfig } = ensureConfigured();
+  if (!isTrackingAllowed(activeConfig)) {
+    logger.debug("Privacy signal detected (DNT/GPC); autoevents are disabled.");
+    return;
+  }
   resetAutoevents();
   await bootstrapTokenIfNeeded();
 
   const sessionInactivityMs = autoConfig.sessionInactivityMs ?? DEFAULT_SESSION_INACTIVITY_MS;
-  maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
+  maybeSendSessionStart(sessionInactivityMs);
   emitPageviewForCurrentRoute("initial-load", autoConfig);
   reportPresence();
 
   const onPopState = () => {
-    maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
+    maybeSendSessionStart(sessionInactivityMs);
     emitPageviewForCurrentRoute("popstate", autoConfig);
   };
   const onHashChange = () => {
-    maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
+    maybeSendSessionStart(sessionInactivityMs);
     emitPageviewForCurrentRoute("hashchange", autoConfig);
   };
   window.addEventListener("popstate", onPopState);
@@ -342,7 +594,7 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
     const original = window.history[method].bind(window.history);
     (window.history[method] as typeof window.history.pushState) = ((...args: unknown[]) => {
       const result = original(...(args as [unknown, string, (string | URL | null | undefined)]));
-      maybeSendSessionStart(activeConfig.siteId, sessionInactivityMs);
+      maybeSendSessionStart(sessionInactivityMs);
       emitPageviewForCurrentRoute(method, autoConfig);
       return result;
     }) as typeof window.history.pushState;
@@ -429,6 +681,10 @@ export function enableDebug(): void {
 
 export function sendPageview(url: string, metadata: Record<string, unknown> = {}): boolean {
   const { config: activeConfig, collector: activeCollector } = ensureConfigured();
+  if (!isTrackingAllowed(activeConfig)) {
+    logger.debug("Privacy signal detected (DNT/GPC); skipping pageview.");
+    return false;
+  }
   if (!shouldSample(activeConfig.samplingRate)) {
     logger.debug("Pageview dropped by sampling.");
     return false;
@@ -455,6 +711,10 @@ export function sendPageview(url: string, metadata: Record<string, unknown> = {}
 
 export function sendSessionStart(payload: SessionEventPayload): boolean {
   const { config: activeConfig, collector: activeCollector } = ensureConfigured();
+  if (!isTrackingAllowed(activeConfig)) {
+    logger.debug("Privacy signal detected (DNT/GPC); skipping session start.");
+    return false;
+  }
   if (!shouldSample(activeConfig.samplingRate)) {
     logger.debug("Session start dropped by sampling.");
     return false;
@@ -470,6 +730,7 @@ export function sendSessionStart(payload: SessionEventPayload): boolean {
       probability_false: rr.q,
       variance: rr.variance,
       referrer_bucket: payload.referrerBucket,
+      referrer_source: payload.referrerSource,
       engagement_bucket: payload.engagementBucket,
     },
     activeConfig.epsilon.session,
@@ -481,6 +742,10 @@ export function sendSessionStart(payload: SessionEventPayload): boolean {
 
 export function sendConversion(payload: ConversionEventPayload): boolean {
   const { config: activeConfig, collector: activeCollector } = ensureConfigured();
+  if (!isTrackingAllowed(activeConfig)) {
+    logger.debug("Privacy signal detected (DNT/GPC); skipping conversion.");
+    return false;
+  }
   if (!shouldSample(activeConfig.samplingRate)) {
     logger.debug("Conversion dropped by sampling.");
     return false;
@@ -506,6 +771,10 @@ export function sendConversion(payload: ConversionEventPayload): boolean {
 
 export function reportPresence(): PresenceReport | null {
   const { config: activeConfig, collector: activeCollector } = ensureConfigured();
+  if (!isTrackingAllowed(activeConfig)) {
+    logger.debug("Privacy signal detected (DNT/GPC); skipping presence.");
+    return null;
+  }
   const report = presenceMemo.getDailyPresence(
     activeConfig.epsilon.presence,
     activeConfig.samplingRate
@@ -587,6 +856,7 @@ if (typeof window !== "undefined") {
     const siteId = currentScript.dataset.validSiteId ?? "pending-site";
     const sampleRate = Number(currentScript.dataset.validSampleRate ?? "1");
     const debug = currentScript.dataset.validDebug === "true";
+    const honorPrivacySignals = currentScript.dataset.validHonorPrivacySignals !== "false";
     const autoConversions = currentScript.dataset.validAutoconversions !== "false";
     const conversionSelector = currentScript.dataset.validConversionSelector;
     void init({
@@ -602,6 +872,7 @@ if (typeof window !== "undefined") {
         conversion: 0.5,
       },
       debug,
+      honorPrivacySignals,
     }, {
       autoConversions,
       conversionSelector,

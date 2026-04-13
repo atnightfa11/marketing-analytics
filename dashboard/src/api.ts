@@ -38,7 +38,7 @@ export interface BreakdownRow {
   value: number;
 }
 
-export type BreakdownDimension = "pages" | "sources" | "devices" | "countries";
+export type BreakdownDimension = "pages" | "sources" | "devices" | "countries" | "conversions";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
