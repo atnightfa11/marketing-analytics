@@ -1,27 +1,62 @@
 # Privacy Budget Calculator
 
-This calculator models randomized response with sampling, alpha smoothing, and publishing guards that require SNR ≥ 1.5. Let:
+This repo now treats privacy-budget sizing as tier-specific:
 
-- `p = exp(ε) / (1 + exp(ε))`
+- `standard`: central DP (server-side Laplace noise on aggregates)
+- `pro`: local DP randomized response (RR) decode path
+
+Use `scripts/calc_budget.py --tier ...` and `scripts/validate_privacy_budget.py --tier ...`.
+
+## Standard (Central DP)
+
+For count queries with sensitivity 1:
+
+- Laplace scale: `b = 1 / epsilon`
+- Variance: `Var = 2 * b^2`
+- Std dev: `sigma = sqrt(2) / epsilon`
+
+Approximate relative error target:
+
+`target_relative_error ~= sigma / effective_reports`
+
+where `effective_reports = reports * sampling_rate`.
+
+Solver:
+
+```bash
+python scripts/calc_budget.py 0.10 --tier standard --reports 500 --sampling 1.0
+```
+
+Validation simulation:
+
+```bash
+python scripts/validate_privacy_budget.py --tier standard --epsilon 1.0 --count 500 --trials 20000
+```
+
+## Pro (Local DP RR)
+
+RR parameters:
+
+- `p = exp(epsilon) / (1 + exp(epsilon))`
 - `q = 1 - p`
-- `s` be the sampling probability
-- `adjusted_p(ε, s) = s * p + (1 - s) * 0.5`
-- `adjusted_q(ε, s) = s * q + (1 - s) * 0.5`
+- `adjusted_p = s*p + (1-s)*0.5`
+- `adjusted_q = s*q + (1-s)*0.5`
 
-The smoothed unbiased estimator for uniques is 
+Use this tier when events are privatized in-browser before upload.
 
-N_hat = max(0, min(n, (s_ones - n * adjusted_q) / (adjusted_p - adjusted_q) + α)) 
+Solver:
 
-with variance 
+```bash
+python scripts/calc_budget.py 0.10 --tier pro --reports 500 --sampling 0.5
+```
 
-Var = (s * (1 - adjusted_p) * adjusted_p + (n - s) * (1 - adjusted_q) * adjusted_q) / (adjusted_p - adjusted_q)^2
+Validation simulation:
 
-Standard error is `sqrt(Var)`, and we publish only when `SNR = N_hat / SE ≥ 1.5`. Confidence intervals follow `estimate ± z * SE` where `z ∈ {1.2816 (80%), 1.9599 (95%)}`.
+```bash
+python scripts/validate_privacy_budget.py --tier pro --epsilon 1.0 --sampling 0.5 --trials 20000
+```
 
-| ε | p (exp(ε)/(1+exp(ε))) | q | adjusted_p(ε, 0.5) | adjusted_q(ε, 0.5) | 80% CI half-width (z₀.₈ · SE) | 95% CI half-width (z₀.₉₅ · SE) |
-|---|-----------------------|---|--------------------|--------------------|--------------------------------|--------------------------------|
-| 0.2 | 0.5498 | 0.4502 | 0.5249 | 0.4751 | 1.2816 · SE | 1.9599 · SE |
-| 0.5 | 0.6225 | 0.3775 | 0.5612 | 0.4387 | 1.2816 · SE | 1.9599 · SE |
-| 1.0 | 0.7311 | 0.2689 | 0.6156 | 0.3845 | 1.2816 · SE | 1.9599 · SE |
+## Notes
 
-Use `scripts/calc_budget.py` to solve for the minimum ε that meets a target relative error given `s`, `n`, and α smoothing. Sampling reduces user contribution frequency, while the local DP constraint ensures no raw identifiers ever leave the browser.
+- Free tier does not currently add DP noise; it remains privacy-respecting via data minimization (no cookies, no persistent user IDs, coarse metadata handling).
+- Standard central DP can be too noisy for very low traffic; expect better utility at higher volumes.

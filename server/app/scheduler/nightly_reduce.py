@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import hmac
+import math
+import secrets
 from collections import defaultdict
 
 from sqlalchemy import select
@@ -15,6 +19,34 @@ settings = get_settings()
 
 def _laplace_scale(epsilon: float) -> float:
     return 1.0 / max(epsilon, 1e-6)
+
+
+def _laplace_variance(scale: float) -> float:
+    # Laplace(0, b) variance is 2*b^2
+    return 2.0 * (scale**2)
+
+
+def _uniform_unit_interval(site_id: str, metric: str, window_start: dt.datetime, secret: str | None) -> float:
+    # Use a keyed deterministic CSPRNG stream when a secret is configured so
+    # noise is stable across reducer re-runs but still unpredictable externally.
+    if secret:
+        context = f"{site_id}|{metric}|{window_start.isoformat()}|standard-v1"
+        digest = hmac.new(secret.encode("utf-8"), context.encode("utf-8"), hashlib.sha256).digest()
+        raw = int.from_bytes(digest[:8], "big")
+        # map to (0,1), avoiding exact endpoints
+        return (raw + 0.5) / (2**64)
+
+    # Fallback: true CSPRNG draw (non-deterministic across re-runs)
+    raw = secrets.randbits(64)
+    return (raw + 0.5) / (2**64)
+
+
+def _laplace_noise(scale: float, site_id: str, metric: str, window_start: dt.datetime, secret: str | None) -> float:
+    # Inverse CDF sampler for Laplace(0, scale)
+    u = _uniform_unit_interval(site_id, metric, window_start, secret)
+    if u < 0.5:
+        return scale * math.log(2.0 * u)
+    return -scale * math.log(2.0 * (1.0 - u))
 
 
 def _resolve_day_window(
@@ -109,6 +141,7 @@ async def reduce_reports(
     end_day: dt.date | None = None,
 ):
     start, end = _resolve_day_window(days=days, start_day=start_day, end_day=end_day)
+    noise_secret = settings.AGGREGATE_DP_NOISE_SECRET or settings.SESSION_HMAC_SECRET
 
     plan_map = {
         rec.site_id: rec.plan
@@ -176,16 +209,16 @@ async def reduce_reports(
         if base_value <= 0:
             continue
         if plan == "standard":
-            noise = 0.0
-            # deterministic-ish pseudonoise from timestamp/site to keep tests stable-ish
-            seed = abs(hash((site_id, metric, window_start.isoformat()))) % 1000
-            centered = (seed / 1000.0) - 0.5
-            noise = centered * 2.0 * _laplace_scale(settings.AGGREGATE_DP_EPSILON)
+            scale = _laplace_scale(settings.AGGREGATE_DP_EPSILON)
+            noise = _laplace_noise(scale, site_id, metric, window_start, noise_secret)
             value = max(0.0, base_value + noise)
             if metric == "sessions":
                 # Keep standard sessions bounded by deduped session keys for replay resistance.
                 value = min(value, base_value)
-            variance = _laplace_scale(settings.AGGREGATE_DP_EPSILON) ** 2
+            variance = _laplace_variance(scale)
+            se = standard_error(variance)
+            if se > 0 and (value / se) < 1.5:
+                continue
         else:
             value = base_value
             variance = max(1.0, base_value)

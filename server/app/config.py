@@ -22,6 +22,7 @@ class Settings(BaseSettings):
   ALPHA_SMOOTHING: float = Field(default=0.5)
   MAX_EVENTS_PER_MINUTE: int = Field(default=60)
   AGGREGATE_DP_EPSILON: float = Field(default=1.0)
+  AGGREGATE_DP_NOISE_SECRET: str | None = None
   ENABLE_PRO_INGEST: bool = Field(default=False)
   SESSION_HMAC_SECRET: str | None = None
   SESSION_WINDOW_MINUTES: int = Field(default=30)

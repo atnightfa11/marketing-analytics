@@ -13,7 +13,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 - `pageviews`: sum of reduced `pageviews` windows.
 - `sessions`:
   - Free: sum of reduced `sessions` events.
-  - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, then bounded by pageviews in the same session bucket.
+  - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, then central-DP Laplace noise is added at aggregate publish time.
   - Pro: reduced LDP estimate from `sessions` randomized-response reports.
 - `uniques`: reduced estimate from `uniques` events (presence signal).
 - `conversions`: sum of reduced `conversions` events.
@@ -41,12 +41,12 @@ Current caveats:
 
 - Existing historical data may show `Unknown` for device/country until new traffic is ingested.
 - Historical import rows are excluded from breakdown dimensions.
-- Pro plan currently returns empty dimension rows (aggregate totals only).
+- Pro plan currently returns empty dimension rows (aggregate totals only). v2 target: local-DP sparse histograms with top-N + "Insufficient data for privacy" gating.
 
 Quality notes:
 
 - Metrics publish only after minimum volume and SNR checks in reducers/routes.
-- For short windows, sessions are clamped to not exceed pageviews to avoid obviously broken output.
+- For short windows, Standard sessions are clamped to not exceed deduped session baseline after noise to avoid obviously broken output.
 - `conversion_rate` is derived from already published aggregates.
 - Standard session dedupe is replay-resistant and coarse-context based.
 

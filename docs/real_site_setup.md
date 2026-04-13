@@ -49,6 +49,7 @@ Set these environment variables on the backend service:
 - `DATABASE_URL=postgresql+asyncpg://...`
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
 - `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
+- `AGGREGATE_DP_NOISE_SECRET=<strong-random-secret>` (recommended for stable central-DP noise in Standard)
 - `SESSION_WINDOW_MINUTES=30`
 - `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
 - `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
@@ -113,6 +114,19 @@ Generate a secret locally with:
 
 ```bash
 openssl rand -hex 32
+```
+
+## Set Sites Back To Free (Railway Postgres)
+
+If you want to run low-volume sites on Free until traffic grows:
+
+```sql
+insert into site_plan (site_id, plan)
+values
+  ('live-validanalytics-io', 'free'),
+  ('live-neurotypicaltranslator', 'free')
+on conflict (site_id)
+do update set plan = excluded.plan;
 ```
 
 ## Notes

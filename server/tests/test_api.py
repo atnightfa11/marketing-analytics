@@ -427,11 +427,14 @@ async def test_standard_session_dedup_replay_resistance(client):
 
     async with async_session_factory() as session:
         original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+        original_epsilon = reduce_settings.AGGREGATE_DP_EPSILON
         reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+        reduce_settings.AGGREGATE_DP_EPSILON = 10.0
         try:
             await reduce_reports(session, start_day=payload_day, end_day=payload_day)
         finally:
             reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+            reduce_settings.AGGREGATE_DP_EPSILON = original_epsilon
         rows = (
             await session.execute(
                 select(DpWindow).where(

@@ -99,8 +99,9 @@ Forecasting & anomalies
 
 Plan-aware serving
 
-Metrics, aggregates, and forecasts are filtered by plan. Free sites see raw aggregates, Standard sites see DP-noised aggregates and a privacy budget meter, and Pro sites see LDP-derived aggregates with per-event epsilon tracking.
+Metrics, aggregates, and forecasts are filtered by plan. Free sites see raw aggregates, Standard sites see central-DP Laplace-noised aggregates with per-day epsilon logs, and Pro sites follow the local-DP RR path.
 
 Roadmap
 
 - Import pipeline for customers migrating historical analytics into Valid (CSV/API ingest + backfill reducer).
+- Pro/Enterprise v2: zero-access local/hybrid DP with dimension-capable sparse histograms and privacy-gated top-N results.
