@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..access_control import require_admin_api_token
 from ..models import UploadToken, get_session
 from ..schemas import RevokeTokenRequest, RevokeTokensRequest
 
@@ -16,6 +17,7 @@ router = APIRouter(tags=["admin"])
 async def revoke_token(
     payload: RevokeTokenRequest,
     request: Request,
+    _: None = Depends(require_admin_api_token),
     session: AsyncSession = Depends(get_session),
 ):
     stmt = select(UploadToken)
@@ -36,6 +38,7 @@ async def revoke_token(
 async def revoke_tokens(
     payload: RevokeTokensRequest,
     request: Request,
+    _: None = Depends(require_admin_api_token),
     session: AsyncSession = Depends(get_session),
 ):
     now = dt.datetime.now(dt.timezone.utc)

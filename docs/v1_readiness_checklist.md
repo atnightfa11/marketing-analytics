@@ -56,6 +56,8 @@ This checklist reflects the **current repository state** and the shortest path t
 ### Required environment
 - [ ] `DATABASE_URL` with async driver (`postgresql+asyncpg://...`).
 - [ ] `UPLOAD_TOKEN_SECRET` (rotate before launch if previously shared).
+- [ ] `ADMIN_API_TOKEN` configured for privileged endpoints (`/api/upload-token`, `/api/admin/*`).
+- [ ] `COLLECT_ENDPOINT_TOKEN` configured for `/api/collect` (and set on any internal collector/proxy).
 - [ ] `ENABLE_PROD_SCHEDULER=true` and `PROD_SCHEDULER_HOUR_UTC` set.
 - [ ] `FORECAST_HORIZON_DAYS=90` (recommended to support quarter presets).
 

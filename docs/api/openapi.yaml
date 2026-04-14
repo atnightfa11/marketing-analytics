@@ -13,6 +13,12 @@ paths:
       summary: Issue a short-lived upload token
       operationId: issueUploadToken
       tags: [tokens]
+      parameters:
+        - in: header
+          name: X-Admin-Token
+          schema:
+            type: string
+          required: true
       requestBody:
         required: true
         content:
@@ -28,11 +34,19 @@ paths:
                 $ref: '#/components/schemas/UploadTokenResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/admin/revoke-token:
     post:
       summary: Revoke a single upload token by jti or hash
       operationId: revokeToken
       tags: [admin]
+      parameters:
+        - in: header
+          name: X-Admin-Token
+          schema:
+            type: string
+          required: true
       requestBody:
         required: true
         content:
@@ -44,11 +58,19 @@ paths:
           description: Token revoked
         '404':
           $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/admin/revoke-tokens:
     post:
       summary: Bulk revoke tokens for a site
       operationId: revokeTokens
       tags: [admin]
+      parameters:
+        - in: header
+          name: X-Admin-Token
+          schema:
+            type: string
+          required: true
       requestBody:
         required: true
         content:
@@ -58,6 +80,8 @@ paths:
       responses:
         '204':
           description: All matching tokens revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/shuffle:
     post:
       summary: Accept shuffled, locally privatized batches
@@ -87,6 +111,12 @@ paths:
       summary: Internal collector endpoint for shuffled payloads
       operationId: collectReports
       tags: [ingest]
+      parameters:
+        - in: header
+          name: X-Collect-Token
+          schema:
+            type: string
+          required: true
       requestBody:
         required: true
         content:
@@ -98,6 +128,8 @@ paths:
           description: Batch persisted
         '409':
           description: Payload rejected because it is stale
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/metrics:
     get:
       summary: Retrieve KPIs with variance, SE, and confidence intervals

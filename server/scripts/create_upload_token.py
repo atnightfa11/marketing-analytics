@@ -9,10 +9,13 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-def request_upload_token(api_base: str, payload: dict[str, object]) -> dict[str, object]:
+def request_upload_token(api_base: str, payload: dict[str, object], admin_token: str | None = None) -> dict[str, object]:
     url = f"{api_base.rstrip('/')}/api/upload-token"
     data = json.dumps(payload).encode("utf-8")
-    req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    headers = {"Content-Type": "application/json"}
+    if admin_token:
+        headers["X-Admin-Token"] = admin_token
+    req = Request(url, data=data, headers=headers, method="POST")
     with urlopen(req, timeout=10) as response:  # nosec - internal utility for local/dev use
         return json.loads(response.read().decode("utf-8"))
 
@@ -75,6 +78,11 @@ def main() -> int:
         default="/sdk/index.js",
         help="Import path for the SDK bundle (self-hosted or bundled).",
     )
+    parser.add_argument(
+        "--admin-token",
+        default=os.environ.get("VALID_ADMIN_API_TOKEN"),
+        help="Privileged API token for /api/upload-token (or set VALID_ADMIN_API_TOKEN).",
+    )
 
     args = parser.parse_args()
     payload: dict[str, object] = {
@@ -88,7 +96,7 @@ def main() -> int:
         payload["ttl_seconds"] = args.ttl_seconds
 
     try:
-        response = request_upload_token(args.api_base, payload)
+        response = request_upload_token(args.api_base, payload, admin_token=args.admin_token)
     except HTTPError as exc:
         detail = exc.read().decode("utf-8") if exc.fp else str(exc)
         print(f"Upload token request failed: {detail}", file=sys.stderr)

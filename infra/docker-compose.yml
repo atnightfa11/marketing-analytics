@@ -24,6 +24,8 @@ services:
       ALPHA_SMOOTHING: 0.5
       MAX_EVENTS_PER_MINUTE: 60
       ENABLE_DEV_SCHEDULER: "1"
+      ADMIN_API_TOKEN: local-admin-token
+      COLLECT_ENDPOINT_TOKEN: local-collect-token
     ports:
       - "8000:8000"
     volumes:
@@ -74,6 +76,7 @@ services:
       context: ../mock-shuffle
     environment:
       COLLECT_URL: http://server:8000/api/collect
+      COLLECT_ENDPOINT_TOKEN: local-collect-token
     ports:
       - "8787:8787"
     volumes:

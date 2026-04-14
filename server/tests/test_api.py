@@ -12,7 +12,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 TEST_DB_PATH = Path(__file__).parent / "test.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB_PATH}"
+os.environ["UPLOAD_TOKEN_SECRET"] = "test-upload-token-secret"
 os.environ["SESSION_HMAC_SECRET"] = "test-session-hmac-secret"
+os.environ["ADMIN_API_TOKEN"] = "test-admin-api-token"
+os.environ["COLLECT_ENDPOINT_TOKEN"] = "test-collect-token"
+
+ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
+COLLECT_HEADERS = {"X-Collect-Token": os.environ["COLLECT_ENDPOINT_TOKEN"]}
 
 from app.main import app  # noqa: E402
 from sqlalchemy import select
@@ -168,12 +174,13 @@ async def test_token_issue_and_revoke(client):
             "epsilon_budget": 1.0,
             "sampling_rate": 0.5,
         },
+        headers=ADMIN_HEADERS,
     )
     assert response.status_code == 200
     token = response.json()["token"]
     jti = response.json()["jti"]
 
-    revoke = client.post("/api/admin/revoke-token", json={"jti": jti})
+    revoke = client.post("/api/admin/revoke-token", json={"jti": jti}, headers=ADMIN_HEADERS)
     assert revoke.status_code == 204
 
     shuffle = client.post(
@@ -198,6 +205,7 @@ async def test_nonce_replay_rejected(client):
             "epsilon_budget": 1.0,
             "sampling_rate": 1.0,
         },
+        headers=ADMIN_HEADERS,
     )
     token = token_resp.json()["token"]
 
@@ -235,6 +243,7 @@ async def test_shuffle_requires_origin_header(client):
             "epsilon_budget": 1.0,
             "sampling_rate": 1.0,
         },
+        headers=ADMIN_HEADERS,
     )
     token = token_resp.json()["token"]
 
@@ -266,6 +275,7 @@ async def test_stale_payload_rejected(client):
             "epsilon_budget": 1.0,
             "sampling_rate": 1.0,
         },
+        headers=ADMIN_HEADERS,
     )
     token = token_resp.json()["token"]
     stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -315,6 +325,7 @@ async def test_plan_aware_ingest_paths(client):
                 "sampling_rate": 1.0,
                 "plan": plan,
             },
+            headers=ADMIN_HEADERS,
         )
         token = token_resp.json()["token"]
         batch = [
@@ -341,6 +352,34 @@ async def test_plan_aware_ingest_paths(client):
     standard_raw, standard_ldp = await _count_reports("site-standard")
     assert free_raw > 0 and free_ldp == 0
     assert standard_raw > 0 and standard_ldp == 0
+
+
+@pytest.mark.asyncio
+async def test_privileged_endpoints_require_internal_tokens(client):
+    unauth_upload = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": "site-privileged",
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+        },
+    )
+    assert unauth_upload.status_code == 401
+
+    unauth_revoke = client.post("/api/admin/revoke-tokens", json={"site_id": "site-privileged"})
+    assert unauth_revoke.status_code == 401
+
+    collect_payload = {
+        "site_id": "site-privileged",
+        "server_received_at": datetime.now(timezone.utc).isoformat(),
+        "reports": [],
+    }
+    unauth_collect = client.post("/api/collect", json=collect_payload)
+    assert unauth_collect.status_code == 401
+
+    auth_collect = client.post("/api/collect", json=collect_payload, headers=COLLECT_HEADERS)
+    assert auth_collect.status_code == 202
 
 
 @pytest.mark.asyncio
@@ -412,6 +451,7 @@ async def test_standard_session_dedup_replay_resistance(client):
             "sampling_rate": 1.0,
             "plan": "standard",
         },
+        headers=ADMIN_HEADERS,
     )
     token = token_resp.json()["token"]
     now_dt = datetime.now(timezone.utc)
@@ -486,6 +526,7 @@ async def test_free_session_and_unique_dedupe_without_client_storage(client):
             "sampling_rate": 1.0,
             "plan": "free",
         },
+        headers=ADMIN_HEADERS,
     )
     token = token_resp.json()["token"]
     now_dt = datetime.now(timezone.utc)
@@ -587,6 +628,7 @@ async def test_historical_import_requires_token_and_uses_row_value(client):
             "sampling_rate": 1.0,
             "plan": "free",
         },
+        headers=ADMIN_HEADERS,
     )
     token = token_resp.json()["token"]
 

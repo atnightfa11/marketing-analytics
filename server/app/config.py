@@ -31,6 +31,8 @@ class Settings(BaseSettings):
   SDK_BOOTSTRAP_RATE_LIMIT_PER_MINUTE: int = Field(default=60)
   SDK_SITE_KEY_PREFIX: str = Field(default="vsk")
   SDK_ALLOW_WILDCARD_ORIGIN_KEYS: bool = Field(default=False)
+  ADMIN_API_TOKEN: str | None = None
+  COLLECT_ENDPOINT_TOKEN: str | None = None
   FREE_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=60)
   STANDARD_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=240)
   FORECAST_HORIZON_DAYS: int = Field(default=90)
@@ -63,6 +65,9 @@ class Settings(BaseSettings):
 
   @model_validator(mode="after")
   def ensure_required_cors_origins(self):
+    if self.UPLOAD_TOKEN_SECRET == "change-me":
+      raise ValueError("UPLOAD_TOKEN_SECRET must be overridden from the insecure default")
+
     if self.cors_origins_csv:
       extras = [item.strip() for item in self.cors_origins_csv.split(",") if item.strip()]
       self.cors_origins = [*self.cors_origins, *extras]

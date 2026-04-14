@@ -13,6 +13,7 @@ from argon2 import PasswordHasher
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..access_control import require_admin_api_token
 from ..config import Settings, TokenClaims, get_settings
 from ..models import UploadToken, get_session
 from ..schemas import UploadTokenRequest, UploadTokenResponse
@@ -43,6 +44,7 @@ def _normalize_origin(value: str) -> str:
 async def create_upload_token(
     payload: UploadTokenRequest,
     request: Request,
+    _: None = Depends(require_admin_api_token),
     session: AsyncSession = Depends(get_session),
 ):
     token, exp, jti = await issue_upload_token(

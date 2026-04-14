@@ -50,6 +50,8 @@ Set these environment variables on the backend service:
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
 - `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
 - `AGGREGATE_DP_NOISE_SECRET=<strong-random-secret>` (recommended for stable central-DP noise in Standard)
+- `ADMIN_API_TOKEN=<strong-random-secret>` (required for privileged admin/token endpoints)
+- `COLLECT_ENDPOINT_TOKEN=<strong-random-secret>` (required for `/api/collect`; mock-shuffle must send `X-Collect-Token`)
 - `SESSION_WINDOW_MINUTES=30`
 - `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
 - `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
@@ -64,6 +66,11 @@ Optional tuning:
 - `MIN_REPORTS_PER_WINDOW=40`
 - `RATE_LIMIT_BUCKET_PER_MIN=200`
 - `LIVE_WATERMARK_SECONDS=120`
+
+Privileged endpoint headers:
+
+- `POST /api/upload-token` and `POST /api/admin/*` require `X-Admin-Token`.
+- `POST /api/collect` requires `X-Collect-Token` (or `ADMIN_API_TOKEN` when `COLLECT_ENDPOINT_TOKEN` is unset).
 
 Stripe billing env vars:
 
