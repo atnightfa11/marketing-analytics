@@ -7,6 +7,44 @@ const COMMON_SOURCE_MAP: Record<string, string> = {
   "linkedin.com": "LinkedIn",
 };
 
+const SEARCH_SOURCE_SET = new Set([
+  "google",
+  "google.com",
+  "bing",
+  "bing.com",
+  "duckduckgo",
+  "duckduckgo.com",
+  "yahoo",
+  "yahoo.com",
+  "ecosia",
+  "ecosia.org",
+  "search.brave.com",
+  "baidu.com",
+  "yandex.com",
+]);
+
+const SOCIAL_SOURCE_SET = new Set([
+  "reddit",
+  "reddit.com",
+  "x",
+  "x.com",
+  "t.co",
+  "linkedin",
+  "linkedin.com",
+  "facebook",
+  "facebook.com",
+  "instagram",
+  "instagram.com",
+  "youtube",
+  "youtube.com",
+  "tiktok",
+  "tiktok.com",
+  "threads.net",
+  "pinterest.com",
+]);
+
+const isLikelyPaid = (value: string) => /(paid|cpc|ppc|adwords|sponsored|campaign)/i.test(value);
+
 const normalizeHost = (value: string): string => value.trim().toLowerCase().replace(/^www\./, "");
 
 const titleCaseWords = (value: string) =>
@@ -38,4 +76,27 @@ export function normalizeSourceLabel(rawLabel: string): string {
 
   if (normalized === "unknown") return "Referral";
   return titleCaseWords(normalized);
+}
+
+export function classifyChannelLabel(rawLabel: string): string {
+  const source = normalizeSourceLabel(rawLabel);
+  const normalized = source.toLowerCase();
+  if (normalized === "direct") return "Direct";
+  if (isLikelyPaid(normalized) && SOCIAL_SOURCE_SET.has(normalized)) return "Paid Social";
+  if (isLikelyPaid(normalized)) return "Paid Search";
+  if (SOCIAL_SOURCE_SET.has(normalized)) return "Organic Social";
+  if (SEARCH_SOURCE_SET.has(normalized)) return "Organic Search";
+  if (normalized === "email") return "Referral";
+  return "Referral";
+}
+
+export function buildSourceMediumLabel(rawLabel: string): string {
+  const source = normalizeSourceLabel(rawLabel);
+  const channel = classifyChannelLabel(rawLabel);
+  if (channel === "Direct") return `${source}/None`;
+  if (channel === "Organic Search") return `${source}/Organic`;
+  if (channel === "Organic Social") return `${source}/Organic Social`;
+  if (channel === "Paid Search") return `${source}/Paid`;
+  if (channel === "Paid Social") return `${source}/Paid Social`;
+  return `${source}/Referral`;
 }

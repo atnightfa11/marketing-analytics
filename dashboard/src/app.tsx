@@ -3,8 +3,8 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSear
 import {
   Area,
   CartesianGrid,
+  ComposedChart,
   Line,
-  LineChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -30,7 +30,7 @@ import { TopCountries } from "./components/TopCountries";
 import { TopSources } from "./components/TopSources";
 import { useAuth } from "./hooks/useAuth";
 import { formatNumber, formatPercent, formatShortDate } from "./utils/format";
-import { normalizeSourceLabel } from "./utils/sourceAttribution";
+import { buildSourceMediumLabel, classifyChannelLabel, normalizeSourceLabel } from "./utils/sourceAttribution";
 import en from "./locales/en.json";
 
 const fontHeading: React.CSSProperties = { fontFamily: '"Playfair Display", serif' };
@@ -208,6 +208,12 @@ interface TableRow {
   value: number;
 }
 
+interface ActiveFilter {
+  dimension: string;
+  value: string;
+  share: number;
+}
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const toIsoDate = (value: Date) => value.toISOString().slice(0, 10);
 
@@ -272,13 +278,65 @@ const enumerateDays = (startDay: string, endDay: string): string[] => {
   return days;
 };
 
+const buildSeededDailySeries = (days: number = 180) => {
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  const allDays = enumerateDays(formatIsoDate(start), formatIsoDate(end));
+
+  const seeded = {
+    pageviews: [] as { day: string; value: number }[],
+    uniques: [] as { day: string; value: number }[],
+    sessions: [] as { day: string; value: number }[],
+    conversions: [] as { day: string; value: number }[],
+    revenue: [] as { day: string; value: number }[],
+    visit_duration: [] as { day: string; value: number }[],
+  };
+
+  allDays.forEach((day, index) => {
+    const seasonal = 1 + Math.sin((index / 7) * Math.PI * 2) * 0.14;
+    const trend = 0.78 + index / (days * 1.85);
+    const base = Math.max(24, Math.round(190 * seasonal * trend));
+    const pageviews = base;
+    const uniques = Math.max(12, Math.round(pageviews * 0.63));
+    const sessions = Math.max(8, Math.round(uniques * 1.08));
+    const conversions = Math.max(0, Math.round(sessions * 0.043));
+    const revenue = Math.max(0, Math.round(conversions * 42));
+    const visitDuration = 112 + Math.round((index % 9) * 4);
+
+    seeded.pageviews.push({ day, value: pageviews });
+    seeded.uniques.push({ day, value: uniques });
+    seeded.sessions.push({ day, value: sessions });
+    seeded.conversions.push({ day, value: conversions });
+    seeded.revenue.push({ day, value: revenue });
+    seeded.visit_duration.push({ day, value: visitDuration });
+  });
+
+  return seeded;
+};
+
+const aggregateRowsByLabel = (rows: TableRow[]) => {
+  const bucket = new Map<string, number>();
+  rows.forEach((row) => {
+    bucket.set(row.label, (bucket.get(row.label) ?? 0) + row.value);
+  });
+  return Array.from(bucket.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, value]) => ({ label, value }));
+};
+
 const TableBlock: React.FC<{
   title: string;
   rows: TableRow[];
   metricKey: "pageviews" | "sessions" | "conversions" | "revenue";
   emptyState?: string;
-}> = ({ title, rows, metricKey, emptyState }) => {
+  rowDimension?: string;
+  activeFilter?: ActiveFilter | null;
+  onToggleFilter?: (dimension: string, row: TableRow, total: number) => void;
+}> = ({ title, rows, metricKey, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
   const maxValue = rows.reduce((max, row) => Math.max(max, row.value), 0);
+  const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
 
   return (
     <div className="border border-[var(--color-border-subtle)] bg-white p-4">
@@ -293,10 +351,29 @@ const TableBlock: React.FC<{
         <div className="space-y-2">
           {rows.map((row) => {
             const width = maxValue > 0 ? Math.max(4, (row.value / maxValue) * 100) : 0;
+            const isActive = Boolean(
+              activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
+            );
             return (
               <div key={row.label} className="py-1">
                 <div className="flex items-center justify-between text-sm text-gray-700">
-                  <span className="truncate pr-4" style={fontBody}>{row.label}</span>
+                  <button
+                    type="button"
+                    className={`truncate pr-4 text-left transition-colors ${
+                      rowDimension && onToggleFilter
+                        ? isActive
+                          ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
+                          : "hover:text-[#0A5F6F] hover:underline hover:decoration-[#0A5F6F] hover:underline-offset-2"
+                        : ""
+                    }`}
+                    style={fontBody}
+                    onClick={() => {
+                      if (!rowDimension || !onToggleFilter) return;
+                      onToggleFilter(rowDimension, row, totalValue);
+                    }}
+                  >
+                    {row.label}
+                  </button>
                   <span className="text-right text-gray-900 metric-number" style={fontMetric}>
                     {formatMetricValue(metricKey, row.value)}
                   </span>
@@ -351,7 +428,14 @@ const Overview: React.FC = () => {
   const [compareMode, setCompareMode] = useState<"previous" | "custom">("previous");
   const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
   const [breakdownMetric, setBreakdownMetric] = useState<BreakdownMetricKey>("pageviews");
+  const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">("channels");
+  const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">("campaign");
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
+
+  useEffect(() => {
+    setActiveFilter(null);
+  }, [siteId, range, customRange.start, customRange.end, breakdownMetric, acquisitionTab, campaignDimension]);
   useEffect(() => {
     if (!canQuery) return;
     const metricsToFetch = [...aggregateMetricKeys];
@@ -439,12 +523,31 @@ const Overview: React.FC = () => {
       .map((day) => ({ day, value: compute(day) }))
       .filter((entry) => Number.isFinite(entry.value));
 
-  const pageviewsAll = useMemo(() => toDaily(aggregateMap.pageviews ?? []), [aggregateMap]);
-  const uniquesAll = useMemo(() => toDaily(aggregateMap.uniques ?? []), [aggregateMap]);
-  const sessionsAll = useMemo(() => toDaily(aggregateMap.sessions ?? []), [aggregateMap]);
-  const conversionsAll = useMemo(() => toDaily(aggregateMap.conversions ?? []), [aggregateMap]);
-  const revenueAll = useMemo(() => toDaily(aggregateMap.revenue ?? []), [aggregateMap]);
-  const durationAll = useMemo(() => toDaily(aggregateMap.avg_time_on_site ?? []), [aggregateMap]);
+  const seededSeries = useMemo(() => buildSeededDailySeries(210), []);
+  const pageviewsAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.pageviews : toDaily(aggregateMap.pageviews ?? [])),
+    [showSeededBreakdowns, seededSeries.pageviews, aggregateMap]
+  );
+  const uniquesAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.uniques : toDaily(aggregateMap.uniques ?? [])),
+    [showSeededBreakdowns, seededSeries.uniques, aggregateMap]
+  );
+  const sessionsAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.sessions : toDaily(aggregateMap.sessions ?? [])),
+    [showSeededBreakdowns, seededSeries.sessions, aggregateMap]
+  );
+  const conversionsAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.conversions : toDaily(aggregateMap.conversions ?? [])),
+    [showSeededBreakdowns, seededSeries.conversions, aggregateMap]
+  );
+  const revenueAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.revenue : toDaily(aggregateMap.revenue ?? [])),
+    [showSeededBreakdowns, seededSeries.revenue, aggregateMap]
+  );
+  const durationAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.visit_duration : toDaily(aggregateMap.avg_time_on_site ?? [])),
+    [showSeededBreakdowns, seededSeries.visit_duration, aggregateMap]
+  );
 
   const dailyPageviews = useMemo(() => filterByRange(pageviewsAll, range, customRange), [pageviewsAll, range, customRange]);
   const dailyUniques = useMemo(() => filterByRange(uniquesAll, range, customRange), [uniquesAll, range, customRange]);
@@ -648,6 +751,18 @@ const Overview: React.FC = () => {
     revenue: dailyRevenue,
     visitDuration: dailyVisitDuration,
   });
+  const activeFilterScale = activeFilter?.share ?? 1;
+  const scaledTotals = useMemo(() => {
+    if (activeFilterScale >= 0.999) return totals;
+    return {
+      ...totals,
+      pageviews: totals.pageviews * activeFilterScale,
+      uniques: totals.uniques * activeFilterScale,
+      sessions: totals.sessions * activeFilterScale,
+      conversions: totals.conversions * activeFilterScale,
+      revenue: totals.revenue * activeFilterScale,
+    };
+  }, [totals, activeFilterScale]);
   const liveValue = liveWindows.reduce((sum, window) => sum + window.value, 0);
   const availableBounds = useMemo(() => {
     if (dailySelectedAll.length === 0) return null;
@@ -862,13 +977,14 @@ const Overview: React.FC = () => {
     }
     return null;
   }, [chartDomainDays, forecastByDay]);
-  const chartData = useMemo(
+  const baseChartData = useMemo(
     () =>
       chartDomainDays.map((day) => {
         const forecastEntry = forecastByDay.get(day);
         const lower = forecastEntry?.yhat_lower;
         const upper = forecastEntry?.yhat_upper;
         const hasBand = Number.isFinite(lower) && Number.isFinite(upper);
+        const bandSpan = hasBand ? Math.max(0, (upper as number) - (lower as number)) : null;
         return {
           day,
           actual: actualByDay.get(day) ?? null,
@@ -876,16 +992,50 @@ const Overview: React.FC = () => {
           forecast: forecastEntry?.yhat ?? null,
           forecastLower: hasBand ? lower : null,
           forecastUpper: hasBand ? upper : null,
-          forecastBand: hasBand ? [lower, upper] : null,
+          forecastBandSpan: hasBand ? bandSpan : null,
         };
       }),
     [chartDomainDays, forecastByDay, actualByDay, comparisonAligned]
   );
 
+  const scaledKpiComparisonValues = useMemo(() => {
+    if (!kpiComparisonValues) return null;
+    if (activeFilterScale >= 0.999) return kpiComparisonValues;
+    return {
+      ...kpiComparisonValues,
+      pageviews: (kpiComparisonValues.pageviews ?? 0) * activeFilterScale,
+      uniques: (kpiComparisonValues.uniques ?? 0) * activeFilterScale,
+      sessions: (kpiComparisonValues.sessions ?? 0) * activeFilterScale,
+      conversions: (kpiComparisonValues.conversions ?? 0) * activeFilterScale,
+      revenue: (kpiComparisonValues.revenue ?? 0) * activeFilterScale,
+    };
+  }, [kpiComparisonValues, activeFilterScale]);
+
+  const isCountTrendMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(selectedMetric);
+  const trendScale = isCountTrendMetric ? activeFilterScale : 1;
+  const chartData = useMemo(
+    () =>
+      baseChartData.map((point) => {
+        if (trendScale >= 0.999) return point;
+        return {
+          ...point,
+          actual: Number.isFinite(point.actual) ? point.actual * trendScale : point.actual,
+          compare: Number.isFinite(point.compare) ? point.compare * trendScale : point.compare,
+          forecast: Number.isFinite(point.forecast) ? point.forecast * trendScale : point.forecast,
+          forecastLower: Number.isFinite(point.forecastLower) ? point.forecastLower * trendScale : point.forecastLower,
+          forecastUpper: Number.isFinite(point.forecastUpper) ? point.forecastUpper * trendScale : point.forecastUpper,
+          forecastBandSpan: Number.isFinite(point.forecastBandSpan)
+            ? point.forecastBandSpan * trendScale
+            : point.forecastBandSpan,
+        };
+      }),
+    [baseChartData, trendScale]
+  );
+
   const hasActual = chartData.some((point) => point.actual !== null);
   const hasCompare = chartData.some((point) => point.compare !== null);
   const hasForecast = chartData.some((point) => point.forecast !== null);
-  const hasForecastBand = chartData.some((point) => point.forecastBand !== null);
+  const hasForecastBand = chartData.some((point) => point.forecastBandSpan !== null);
   const hasAnyForecastData = forecastCandidates.length > 0;
   const selectedRangeEnd = primaryRangeBounds?.end ?? null;
   const actualIsStale = Boolean(lastActualDay && selectedRangeEnd && lastActualDay < selectedRangeEnd);
@@ -905,18 +1055,77 @@ const Overview: React.FC = () => {
     : "Forecast unavailable until more history is collected.";
 
   const selectedBreakdownTotal = useMemo(() => {
-    if (breakdownMetric === "sessions") return totals.sessions;
-    if (breakdownMetric === "conversions") return totals.conversions;
-    if (breakdownMetric === "revenue") return totals.revenue;
-    return totals.pageviews;
-  }, [breakdownMetric, totals.sessions, totals.conversions, totals.revenue, totals.pageviews]);
+    if (breakdownMetric === "sessions") return scaledTotals.sessions;
+    if (breakdownMetric === "conversions") return scaledTotals.conversions;
+    if (breakdownMetric === "revenue") return scaledTotals.revenue;
+    return scaledTotals.pageviews;
+  }, [breakdownMetric, scaledTotals.sessions, scaledTotals.conversions, scaledTotals.revenue, scaledTotals.pageviews]);
   const sourceRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["Organic Search", "Direct", "Google", "Reddit", "LinkedIn"], [0.34, 0.24, 0.18, 0.14, 0.1], selectedBreakdownTotal)
+        ? buildRows(["Direct", "Google", "Reddit", "DuckDuckGo", "openai.com", "LinkedIn"], [0.31, 0.26, 0.14, 0.12, 0.1, 0.07], selectedBreakdownTotal)
         : breakdownRows.sources.map((row) => ({ ...row, label: normalizeSourceLabel(row.label) })),
     [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.sources]
   );
+  const channelRows = useMemo(
+    () =>
+      aggregateRowsByLabel(
+        sourceRows.map((row) => ({
+          label: classifyChannelLabel(row.label),
+          value: row.value,
+        }))
+      ),
+    [sourceRows]
+  );
+  const sourceMediumRows = useMemo(
+    () =>
+      aggregateRowsByLabel(
+        sourceRows.map((row) => ({
+          label: buildSourceMediumLabel(row.label),
+          value: row.value,
+        }))
+      ),
+    [sourceRows]
+  );
+  const campaignRows = useMemo(() => {
+    if (!showSeededBreakdowns) return [];
+    if (campaignDimension === "content") {
+      return buildRows(["hero-video", "cta-footer", "docs-banner", "homepage-hero"], [0.34, 0.24, 0.22, 0.2], selectedBreakdownTotal);
+    }
+    if (campaignDimension === "term") {
+      return buildRows(["privacy analytics", "cookie-free analytics", "plausible alternative", "gdpr analytics"], [0.31, 0.27, 0.24, 0.18], selectedBreakdownTotal);
+    }
+    return buildRows(["spring_launch", "brand_search", "product_update", "partner_referral"], [0.36, 0.26, 0.2, 0.18], selectedBreakdownTotal);
+  }, [showSeededBreakdowns, campaignDimension, selectedBreakdownTotal]);
+  const acquisitionRows = useMemo(() => {
+    if (!showSeededBreakdowns && breakdownMetric !== "sessions") return [];
+    if (acquisitionTab === "sources") return sourceRows;
+    if (acquisitionTab === "source_medium") return sourceMediumRows;
+    if (acquisitionTab === "campaigns") return campaignRows;
+    return channelRows;
+  }, [showSeededBreakdowns, breakdownMetric, acquisitionTab, sourceRows, sourceMediumRows, campaignRows, channelRows]);
+  const acquisitionMetricKey = showSeededBreakdowns ? breakdownMetric : "sessions";
+  const acquisitionEmptyState = !showSeededBreakdowns && breakdownMetric !== "sessions"
+    ? `Metric "${metricLabels[breakdownMetric] ?? breakdownMetric}" is not available for acquisition breakdowns yet.`
+    : acquisitionTab === "campaigns"
+      ? "Campaign and UTM metadata will appear after campaign parameters are collected."
+      : "No acquisition data yet for the selected range.";
+  const acquisitionDimensionKey = useMemo(() => {
+    if (acquisitionTab === "sources") return "source";
+    if (acquisitionTab === "source_medium") return "source_medium";
+    if (acquisitionTab === "campaigns") return campaignDimension;
+    return "channel";
+  }, [acquisitionTab, campaignDimension]);
+
+  const toggleFilter = (dimension: string, row: TableRow, total: number) => {
+    if (!Number.isFinite(total) || total <= 0) return;
+    const share = clamp(row.value / total, 0.01, 1);
+    setActiveFilter((prev) => {
+      if (prev && prev.dimension === dimension && prev.value === row.label) return null;
+      return { dimension, value: row.label, share };
+    });
+  };
+
   const pageRows = useMemo(
     () =>
       showSeededBreakdowns
@@ -950,31 +1159,19 @@ const Overview: React.FC = () => {
     [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.conversions]
   );
   const breakdownCards = useMemo(() => {
-    if (showSeededBreakdowns) {
-      return [
-        { title: "Sources", rows: sourceRows, empty: "No source data yet for the selected range." },
-        { title: "Pages", rows: pageRows, empty: "No page data yet for the selected range." },
-        { title: "Countries", rows: countryRows, empty: "No country data yet for the selected range." },
-        { title: "Devices", rows: deviceRows, empty: "No device data yet for the selected range." },
-        { title: "Goals", rows: goalRows, empty: "No goal events yet for the selected range." },
-      ];
-    }
-
     const unavailableMessage = `Metric "${metricLabels[breakdownMetric] ?? breakdownMetric}" is not available for this breakdown yet.`;
-    const sourceMetricRows = breakdownMetric === "sessions" ? sourceRows : [];
     const pageMetricRows = breakdownMetric === "pageviews" ? pageRows : [];
     const countryMetricRows = breakdownMetric === "pageviews" ? countryRows : [];
     const deviceMetricRows = breakdownMetric === "pageviews" ? deviceRows : [];
     const goalMetricRows = breakdownMetric === "conversions" ? goalRows : [];
 
     return [
-      { title: "Sources", rows: sourceMetricRows, empty: breakdownMetric === "sessions" ? "No source data yet for the selected range." : unavailableMessage },
-      { title: "Pages", rows: pageMetricRows, empty: breakdownMetric === "pageviews" ? "No page data yet for the selected range." : unavailableMessage },
-      { title: "Countries", rows: countryMetricRows, empty: breakdownMetric === "pageviews" ? "No country data yet for the selected range." : unavailableMessage },
-      { title: "Devices", rows: deviceMetricRows, empty: breakdownMetric === "pageviews" ? "No device data yet for the selected range." : unavailableMessage },
-      { title: "Goals", rows: goalMetricRows, empty: breakdownMetric === "conversions" ? "No goal events yet for the selected range." : unavailableMessage },
+      { title: "Top Pages", rows: pageMetricRows, empty: breakdownMetric === "pageviews" ? "No page data yet for the selected range." : unavailableMessage, dimension: "page" },
+      { title: "Countries", rows: countryMetricRows, empty: breakdownMetric === "pageviews" ? "No country data yet for the selected range." : unavailableMessage, dimension: "country" },
+      { title: "Devices", rows: deviceMetricRows, empty: breakdownMetric === "pageviews" ? "No device data yet for the selected range." : unavailableMessage, dimension: "device" },
+      { title: "Goals", rows: goalMetricRows, empty: breakdownMetric === "conversions" ? "No goal events yet for the selected range." : unavailableMessage, dimension: "goal" },
     ];
-  }, [showSeededBreakdowns, sourceRows, pageRows, countryRows, deviceRows, goalRows, breakdownMetric]);
+  }, [pageRows, countryRows, deviceRows, goalRows, breakdownMetric]);
 
   const mapeValue = forecastMeta?.mape ?? Number.NaN;
   const forecastMape = Number.isFinite(mapeValue) ? `${(mapeValue * 100).toFixed(1)}%` : "—";
@@ -1309,12 +1506,31 @@ const Overview: React.FC = () => {
           </div>
         </div>
         <KPIGrid
-          values={totals}
-          comparisonValues={kpiComparisonValues}
+          values={scaledTotals}
+          comparisonValues={scaledKpiComparisonValues}
           comparisonLabel={kpiComparisonLabel}
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
         />
+        {activeFilter && (
+          <div className="flex flex-wrap items-center gap-3 border border-[var(--color-border-subtle)] bg-white px-3 py-2 text-xs text-gray-600">
+            <span style={fontBody}>
+              Filtered by <span className="font-semibold text-[#1F2937]">{activeFilter.dimension}</span>:
+              <span className="ml-1 font-semibold text-[#0A5F6F]">{activeFilter.value}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setActiveFilter(null)}
+              className="border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600 hover:text-[#0A5F6F]"
+              style={fontBody}
+            >
+              Clear filter
+            </button>
+            <span className="text-[11px] text-gray-400" style={fontBody}>
+              Trend and KPI views are scaled proportionally by selected dimension share.
+            </span>
+          </div>
+        )}
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
           <div className="mb-4 border-b border-[var(--color-border-subtle)] pb-3">
             <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1344,13 +1560,13 @@ const Overview: React.FC = () => {
             </div>
           </div>
           <div className="mt-4">
-            {chartData.length === 0 ? (
+            {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
                 No chart data yet. Seed events, run the reducer, and reload.
               </div>
             ) : (
               <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={chartData}>
+                <ComposedChart data={chartData}>
                   <CartesianGrid stroke="#E5E7EB" strokeDasharray="2 6" vertical={false} />
                   <XAxis
                     dataKey="day"
@@ -1430,14 +1646,25 @@ const Overview: React.FC = () => {
                     />
                   )}
                   {hasForecastBand && (
-                    <Area
-                      type="monotone"
-                      dataKey="forecastBand"
-                      stroke="none"
-                      fill="#4DB8B8"
-                      fillOpacity={0.16}
-                      isAnimationActive={false}
-                    />
+                    <>
+                      <Area
+                        type="monotone"
+                        dataKey="forecastLower"
+                        stackId="forecast-band"
+                        stroke="none"
+                        fill="transparent"
+                        isAnimationActive={false}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="forecastBandSpan"
+                        stackId="forecast-band"
+                        stroke="none"
+                        fill="#4DB8B8"
+                        fillOpacity={0.16}
+                        isAnimationActive={false}
+                      />
+                    </>
                   )}
                   {hasActual && (
                     <Line
@@ -1473,7 +1700,7 @@ const Overview: React.FC = () => {
                       isAnimationActive={false}
                     />
                   )}
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             )}
           </div>
@@ -1529,16 +1756,109 @@ const Overview: React.FC = () => {
               </select>
             </div>
           </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {breakdownCards.map((card) => (
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="border border-[var(--color-border-subtle)] bg-white p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-4 text-xs font-semibold text-gray-500" style={fontBody}>
+                  <button
+                    type="button"
+                    className={acquisitionTab === "channels" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                    onClick={() => setAcquisitionTab("channels")}
+                  >
+                    Channels
+                  </button>
+                  <button
+                    type="button"
+                    className={acquisitionTab === "sources" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                    onClick={() => setAcquisitionTab("sources")}
+                  >
+                    Sources
+                  </button>
+                  <button
+                    type="button"
+                    className={acquisitionTab === "source_medium" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                    onClick={() => setAcquisitionTab("source_medium")}
+                  >
+                    Source / Medium
+                  </button>
+                  <button
+                    type="button"
+                    className={acquisitionTab === "campaigns" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                    onClick={() => setAcquisitionTab("campaigns")}
+                  >
+                    Campaigns
+                  </button>
+                </div>
+                {acquisitionTab === "campaigns" && (
+                  <select
+                    className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                    style={fontBody}
+                    value={campaignDimension}
+                    onChange={(event) => setCampaignDimension(event.target.value as "campaign" | "content" | "term")}
+                  >
+                    <option value="campaign">Campaign</option>
+                    <option value="content">Content</option>
+                    <option value="term">Term</option>
+                  </select>
+                )}
+              </div>
               <TableBlock
-                key={card.title}
-                title={card.title}
-                rows={card.rows}
-                metricKey={breakdownMetric}
-                emptyState={card.empty}
+                title={acquisitionTab === "channels" ? "Channels" : acquisitionTab === "source_medium" ? "Source / Medium" : acquisitionTab === "campaigns" ? "Campaigns" : "Sources"}
+                rows={acquisitionRows}
+                metricKey={acquisitionMetricKey}
+                rowDimension={acquisitionDimensionKey}
+                activeFilter={activeFilter}
+                onToggleFilter={toggleFilter}
+                emptyState={acquisitionEmptyState}
               />
-            ))}
+            </div>
+            <TableBlock
+              title="Top Pages"
+              rows={breakdownCards[0]?.rows ?? []}
+              metricKey={breakdownMetric}
+              emptyState={breakdownCards[0]?.empty}
+              rowDimension={breakdownCards[0]?.dimension}
+              activeFilter={activeFilter}
+              onToggleFilter={toggleFilter}
+            />
+            <TableBlock
+              title="Countries"
+              rows={breakdownCards[1]?.rows ?? []}
+              metricKey={breakdownMetric}
+              emptyState={breakdownCards[1]?.empty}
+              rowDimension={breakdownCards[1]?.dimension}
+              activeFilter={activeFilter}
+              onToggleFilter={toggleFilter}
+            />
+            <TableBlock
+              title="Devices"
+              rows={breakdownCards[2]?.rows ?? []}
+              metricKey={breakdownMetric}
+              emptyState={breakdownCards[2]?.empty}
+              rowDimension={breakdownCards[2]?.dimension}
+              activeFilter={activeFilter}
+              onToggleFilter={toggleFilter}
+            />
+            <TableBlock
+              title="Goals"
+              rows={breakdownCards[3]?.rows ?? []}
+              metricKey={breakdownMetric}
+              emptyState={breakdownCards[3]?.empty}
+              rowDimension={breakdownCards[3]?.dimension}
+              activeFilter={activeFilter}
+              onToggleFilter={toggleFilter}
+            />
+          </div>
+          {activeFilter && (
+            <div className="mt-3 text-xs text-gray-500" style={fontBody}>
+              Active report filter: <span className="font-semibold text-[#0A5F6F]">{activeFilter.value}</span>
+            </div>
+          )}
+          <div className="mt-2 text-[11px] text-gray-400" style={fontBody}>
+            Channels are normalized into Direct, Organic Search, Organic Social, Paid Search, Paid Social, and Referral.
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400" style={fontBody}>
+            Campaign/Content/Term breakdowns require UTM metadata collection in session payloads.
           </div>
         </section>
       </main>
