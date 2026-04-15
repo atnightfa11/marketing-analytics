@@ -17,10 +17,8 @@ import {
   fetchAggregate,
   fetchBreakdown,
   fetchForecast,
-  fetchMetrics,
   ForecastEntry,
   ForecastResponse,
-  MetricStatistic,
   resolveActiveSiteId,
 } from "./api";
 import { AlertsPanel } from "./components/AlertsPanel";
@@ -47,8 +45,9 @@ const metricLabels: Record<string, string> = {
   sessions: "Sessions",
   pageviews: "Pageviews",
   conversions: "Conversions",
+  avg_pages_per_visit: "Avg. Pages per Visit",
   bounce_rate: "Bounce Rate",
-  avg_time_on_site: "Visit Duration",
+  visit_duration: "Visit Duration",
   revenue: "Revenue",
 };
 
@@ -58,11 +57,16 @@ const metricOptions = [
   { key: "sessions", label: "Sessions" },
   { key: "conversions", label: "Conversions" },
   { key: "revenue", label: "Revenue" },
+  { key: "avg_pages_per_visit", label: "Avg. Pages per Visit" },
+  { key: "visit_duration", label: "Visit Duration" },
+  { key: "bounce_rate", label: "Bounce Rate" },
 ];
+const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
 const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions"];
 
-const rangeOptions = ["Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
+const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
 const forecastOptions = [
+  { key: "7d", label: "7 days", kind: "days", days: 7 },
   { key: "30d", label: "30d", kind: "days", days: 30 },
   { key: "60d", label: "60d", kind: "days", days: 60 },
   { key: "90d", label: "90d", kind: "days", days: 90 },
@@ -79,9 +83,23 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 0,
   }).format(value);
 
+const formatDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const rounded = Math.round(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const secs = rounded % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
+  }
+  return `${minutes}m ${secs.toString().padStart(2, "0")}s`;
+};
+
 const formatMetricValue = (metric: string, value: number) => {
   if (!Number.isFinite(value)) return "N/A";
   if (metric === "revenue") return formatCurrency(value);
+  if (metric === "visit_duration") return formatDuration(value);
   if (metric.includes("rate")) return formatPercent(value);
   return formatNumber(value);
 };
@@ -99,6 +117,23 @@ const formatCompactCurrency = (value: number) => {
 
 const formatAxisDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+const safeRatio = (numerator: number, denominator: number) =>
+  Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0 ? numerator / denominator : Number.NaN;
+
+const deriveBounceRate = (sessions: number, pageviews: number, conversions: number) => {
+  if (!Number.isFinite(sessions) || sessions <= 0) return Number.NaN;
+  const extraPageviews = Math.max(0, pageviews - sessions);
+  const engagedByPageDepth = Math.min(sessions, extraPageviews);
+  const engagedByConversions = Math.min(sessions, Math.max(0, conversions));
+  const engagedSessions = Math.min(sessions, engagedByPageDepth + engagedByConversions);
+  return clamp(1 - engagedSessions / sessions, 0, 1);
+};
+
+const deriveVisitDurationSeconds = (avgPagesPerVisit: number, bounceRate: number) => {
+  if (!Number.isFinite(avgPagesPerVisit) || !Number.isFinite(bounceRate)) return Number.NaN;
+  return clamp((avgPagesPerVisit - 1) * 45 + (1 - bounceRate) * 30, 0, 1800);
+};
 
 type ForecastOption = (typeof forecastOptions)[number];
 type RangeOption = (typeof rangeOptions)[number];
@@ -288,8 +323,7 @@ const Overview: React.FC = () => {
   }, [navigate, pathSiteId, querySiteId]);
   const [selectedMetric, setSelectedMetric] = useState("pageviews");
   const [range, setRange] = useState<RangeOption>("Last 30");
-  const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>("90d");
-  const [metrics, setMetrics] = useState<MetricStatistic[]>([]);
+  const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>("30d");
   const [forecast, setForecast] = useState<ForecastEntry[]>([]);
   const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "mape" | "has_anomaly"> | null>(
     null
@@ -310,8 +344,7 @@ const Overview: React.FC = () => {
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
   useEffect(() => {
     if (!canQuery) return;
-    fetchMetrics(token, siteId).then(setMetrics).catch(console.error);
-    const metricsToFetch = metricOptions.map((metric) => metric.key);
+    const metricsToFetch = [...aggregateMetricKeys];
     Promise.all(
       metricsToFetch.map((metric) =>
         fetchAggregate(metric, "standard", token ?? undefined, siteId).then((data) => ({
@@ -332,6 +365,11 @@ const Overview: React.FC = () => {
 
   useEffect(() => {
     if (!canQuery) return;
+    if (!aggregateMetricKeys.includes(selectedMetric as (typeof aggregateMetricKeys)[number])) {
+      setForecast([]);
+      setForecastMeta(null);
+      return;
+    }
     fetchForecast(token, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
@@ -370,7 +408,9 @@ const Overview: React.FC = () => {
     const maxDate = parseDay(entries[entries.length - 1].day);
     const clampDate = (date: Date) =>
       new Date(Math.min(Math.max(date.getTime(), minDate.getTime()), maxDate.getTime()));
-    const endDate = clampDate(new Date());
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const endDate = clampDate(today);
 
     if (rangeKey === "Custom") {
       if (!custom.start || !custom.end) return entries;
@@ -381,6 +421,20 @@ const Overview: React.FC = () => {
       return entries.filter((entry) => {
         const day = parseDay(entry.day);
         return day >= start && day <= end;
+      });
+    }
+    if (rangeKey === "Today") {
+      return entries.filter((entry) => {
+        const day = parseDay(entry.day);
+        return day >= endDate && day <= endDate;
+      });
+    }
+    if (rangeKey === "Yesterday") {
+      const start = new Date(endDate);
+      start.setDate(start.getDate() - 1);
+      return entries.filter((entry) => {
+        const day = parseDay(entry.day);
+        return day >= start && day <= start;
       });
     }
     if (rangeKey === "Last 7" || rangeKey === "Last 30" || rangeKey === "Last 90") {
@@ -420,21 +474,121 @@ const Overview: React.FC = () => {
     });
   };
 
-  const getDailySeries = (metric: string, rangeKey: RangeOption = range, custom: DateRange = customRange) =>
-    filterByRange(toDaily(aggregateMap[metric] ?? []), rangeKey, custom);
-  const dailySelectedAll = useMemo(
-    () => toDaily(aggregateMap[selectedMetric] ?? []),
-    [aggregateMap, selectedMetric]
+  const mapByDay = (entries: { day: string; value: number }[]) => new Map(entries.map((entry) => [entry.day, entry.value]));
+  const makeDerivedSeries = (
+    dayValues: string[],
+    compute: (day: string) => number
+  ) =>
+    dayValues
+      .map((day) => ({ day, value: compute(day) }))
+      .filter((entry) => Number.isFinite(entry.value));
+
+  const pageviewsAll = useMemo(() => toDaily(aggregateMap.pageviews ?? []), [aggregateMap]);
+  const uniquesAll = useMemo(() => toDaily(aggregateMap.uniques ?? []), [aggregateMap]);
+  const sessionsAll = useMemo(() => toDaily(aggregateMap.sessions ?? []), [aggregateMap]);
+  const conversionsAll = useMemo(() => toDaily(aggregateMap.conversions ?? []), [aggregateMap]);
+  const revenueAll = useMemo(() => toDaily(aggregateMap.revenue ?? []), [aggregateMap]);
+  const durationAll = useMemo(() => toDaily(aggregateMap.avg_time_on_site ?? []), [aggregateMap]);
+
+  const dailyPageviews = useMemo(() => filterByRange(pageviewsAll, range, customRange), [pageviewsAll, range, customRange]);
+  const dailyUniques = useMemo(() => filterByRange(uniquesAll, range, customRange), [uniquesAll, range, customRange]);
+  const dailySessions = useMemo(() => filterByRange(sessionsAll, range, customRange), [sessionsAll, range, customRange]);
+  const dailyConversions = useMemo(
+    () => filterByRange(conversionsAll, range, customRange),
+    [conversionsAll, range, customRange]
   );
-  const dailySelected = useMemo(
-    () => getDailySeries(selectedMetric, range, customRange),
-    [aggregateMap, selectedMetric, range, customRange]
+  const dailyRevenue = useMemo(() => filterByRange(revenueAll, range, customRange), [revenueAll, range, customRange]);
+  const dailyDuration = useMemo(() => filterByRange(durationAll, range, customRange), [durationAll, range, customRange]);
+
+  const avgPagesPerVisitAll = useMemo(() => {
+    const pageviewsMap = mapByDay(pageviewsAll);
+    const sessionsMap = mapByDay(sessionsAll);
+    const days = Array.from(new Set([...pageviewsMap.keys(), ...sessionsMap.keys()])).sort((a, b) => a.localeCompare(b));
+    return makeDerivedSeries(days, (day) => safeRatio(pageviewsMap.get(day) ?? Number.NaN, sessionsMap.get(day) ?? Number.NaN));
+  }, [pageviewsAll, sessionsAll]);
+
+  const dailyAvgPagesPerVisit = useMemo(
+    () => filterByRange(avgPagesPerVisitAll, range, customRange),
+    [avgPagesPerVisitAll, range, customRange]
   );
-  const dailyPageviews = useMemo(() => getDailySeries("pageviews"), [aggregateMap, range, customRange]);
-  const dailyUniques = useMemo(() => getDailySeries("uniques"), [aggregateMap, range, customRange]);
-  const dailySessions = useMemo(() => getDailySeries("sessions"), [aggregateMap, range, customRange]);
-  const dailyConversions = useMemo(() => getDailySeries("conversions"), [aggregateMap, range, customRange]);
-  const dailyRevenue = useMemo(() => getDailySeries("revenue"), [aggregateMap, range, customRange]);
+
+  const bounceRateAll = useMemo(() => {
+    const pageviewsMap = mapByDay(pageviewsAll);
+    const sessionsMap = mapByDay(sessionsAll);
+    const conversionsMap = mapByDay(conversionsAll);
+    const days = Array.from(new Set([...sessionsMap.keys(), ...pageviewsMap.keys(), ...conversionsMap.keys()])).sort((a, b) =>
+      a.localeCompare(b)
+    );
+    return makeDerivedSeries(days, (day) =>
+      deriveBounceRate(sessionsMap.get(day) ?? Number.NaN, pageviewsMap.get(day) ?? Number.NaN, conversionsMap.get(day) ?? 0)
+    );
+  }, [pageviewsAll, sessionsAll, conversionsAll]);
+
+  const dailyBounceRate = useMemo(() => filterByRange(bounceRateAll, range, customRange), [bounceRateAll, range, customRange]);
+
+  const visitDurationAll = useMemo(() => {
+    if (durationAll.length > 0) return durationAll;
+    const avgPagesMap = mapByDay(avgPagesPerVisitAll);
+    const bounceMap = mapByDay(bounceRateAll);
+    const days = Array.from(new Set([...avgPagesMap.keys(), ...bounceMap.keys()])).sort((a, b) => a.localeCompare(b));
+    return makeDerivedSeries(days, (day) =>
+      deriveVisitDurationSeconds(avgPagesMap.get(day) ?? Number.NaN, bounceMap.get(day) ?? Number.NaN)
+    );
+  }, [durationAll, avgPagesPerVisitAll, bounceRateAll]);
+
+  const dailyVisitDuration = useMemo(
+    () => filterByRange(visitDurationAll, range, customRange),
+    [visitDurationAll, range, customRange]
+  );
+
+  const getDailySeries = (metric: string) => {
+    switch (metric) {
+      case "pageviews":
+        return dailyPageviews;
+      case "uniques":
+        return dailyUniques;
+      case "sessions":
+        return dailySessions;
+      case "conversions":
+        return dailyConversions;
+      case "revenue":
+        return dailyRevenue;
+      case "avg_pages_per_visit":
+        return dailyAvgPagesPerVisit;
+      case "visit_duration":
+        return dailyVisitDuration;
+      case "bounce_rate":
+        return dailyBounceRate;
+      default:
+        return [];
+    }
+  };
+
+  const getUnfilteredSeries = (metric: string) => {
+    switch (metric) {
+      case "pageviews":
+        return pageviewsAll;
+      case "uniques":
+        return uniquesAll;
+      case "sessions":
+        return sessionsAll;
+      case "conversions":
+        return conversionsAll;
+      case "revenue":
+        return revenueAll;
+      case "avg_pages_per_visit":
+        return avgPagesPerVisitAll;
+      case "visit_duration":
+        return visitDurationAll;
+      case "bounce_rate":
+        return bounceRateAll;
+      default:
+        return [];
+    }
+  };
+
+  const dailySelectedAll = useMemo(() => getUnfilteredSeries(selectedMetric), [selectedMetric, aggregateMap]);
+  const dailySelected = useMemo(() => getDailySeries(selectedMetric), [selectedMetric, aggregateMap, range, customRange]);
   const breakdownDateRange = useMemo(() => {
     if (range === "Custom" && customRange.start && customRange.end) {
       return { start: customRange.start, end: customRange.end };
@@ -496,13 +650,48 @@ const Overview: React.FC = () => {
     };
   }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
 
-  const totals = {
-    pageviews: dailyPageviews.reduce((sum, row) => sum + row.value, 0),
-    uniques: dailyUniques.reduce((sum, row) => sum + row.value, 0),
-    sessions: dailySessions.reduce((sum, row) => sum + row.value, 0),
-    conversions: dailyConversions.reduce((sum, row) => sum + row.value, 0),
-    revenue: dailyRevenue.reduce((sum, row) => sum + row.value, 0),
+  const computeKpiValues = (series: {
+    pageviews: { day: string; value: number }[];
+    uniques: { day: string; value: number }[];
+    sessions: { day: string; value: number }[];
+    conversions: { day: string; value: number }[];
+    revenue: { day: string; value: number }[];
+    visitDuration: { day: string; value: number }[];
+  }) => {
+    const pageviews = series.pageviews.reduce((sum, row) => sum + row.value, 0);
+    const uniques = series.uniques.reduce((sum, row) => sum + row.value, 0);
+    const sessions = series.sessions.reduce((sum, row) => sum + row.value, 0);
+    const conversions = series.conversions.reduce((sum, row) => sum + row.value, 0);
+    const revenue = series.revenue.reduce((sum, row) => sum + row.value, 0);
+    const avgPagesPerVisit = safeRatio(pageviews, sessions);
+    const bounceRate = deriveBounceRate(sessions, pageviews, conversions);
+    const durationAverage =
+      series.visitDuration.length > 0
+        ? series.visitDuration.reduce((sum, row) => sum + row.value, 0) / series.visitDuration.length
+        : Number.NaN;
+    const visitDuration = Number.isFinite(durationAverage)
+      ? durationAverage
+      : deriveVisitDurationSeconds(avgPagesPerVisit, bounceRate);
+    return {
+      pageviews,
+      uniques,
+      sessions,
+      conversions,
+      revenue,
+      avg_pages_per_visit: avgPagesPerVisit,
+      visit_duration: visitDuration,
+      bounce_rate: bounceRate,
+    };
   };
+
+  const totals = computeKpiValues({
+    pageviews: dailyPageviews,
+    uniques: dailyUniques,
+    sessions: dailySessions,
+    conversions: dailyConversions,
+    revenue: dailyRevenue,
+    visitDuration: dailyVisitDuration,
+  });
   const liveValue = liveWindows.reduce((sum, window) => sum + window.value, 0);
   const availableBounds = useMemo(() => {
     if (dailySelectedAll.length === 0) return null;
@@ -532,6 +721,31 @@ const Overview: React.FC = () => {
   }, [availableBounds]);
 
   useEffect(() => {
+    const setAutoForecast = (next: (typeof forecastOptions)[number]["key"]) => setForecastKey(next);
+    if (range === "Today" || range === "Yesterday" || range === "Last 7") {
+      setAutoForecast("7d");
+      return;
+    }
+    if (range === "Last 30" || range === "MTD") {
+      setAutoForecast("30d");
+      return;
+    }
+    if (range === "Last 90" || range === "YTD") {
+      setAutoForecast("90d");
+      return;
+    }
+    if (range === "Custom" && customRange.start && customRange.end) {
+      const start = parseDay(customRange.start);
+      const end = parseDay(customRange.end);
+      const diff = Math.max(1, Math.round(Math.abs(end.getTime() - start.getTime()) / MS_PER_DAY) + 1);
+      if (diff <= 7) setAutoForecast("7d");
+      else if (diff <= 30) setAutoForecast("30d");
+      else if (diff <= 60) setAutoForecast("60d");
+      else setAutoForecast("90d");
+    }
+  }, [range, customRange.start, customRange.end]);
+
+  useEffect(() => {
     if (!availableBounds || compareMode !== "custom" || !compareRange.start || !compareRange.end) return;
     setCompareRange((prev) => {
       const nextStart = prev.start < availableBounds.min ? availableBounds.min : prev.start;
@@ -541,8 +755,6 @@ const Overview: React.FC = () => {
   }, [availableBounds, compareMode, compareRange.start, compareRange.end]);
 
   const primaryLabel = metricLabels[selectedMetric] ?? selectedMetric;
-  const primaryValue = totals[selectedMetric as keyof typeof totals] ?? Number.NaN;
-  const primaryDisplay = formatMetricValue(selectedMetric, primaryValue);
   const lastActualDay = dailySelected.length > 0 ? dailySelected[dailySelected.length - 1].day : null;
   const primaryRangeBounds = useMemo(() => {
     if (dailySelected.length === 0) return null;
@@ -550,7 +762,8 @@ const Overview: React.FC = () => {
   }, [dailySelected]);
 
   const selectedForecast =
-    (forecastOptions.find((option) => option.key === forecastKey) as ForecastOption) ?? forecastOptions[2];
+    (forecastOptions.find((option) => option.key === forecastKey) as ForecastOption) ??
+    (forecastOptions.find((option) => option.key === "30d") as ForecastOption);
   const forecastWindow = useMemo(
     () => resolveForecastWindow(forecast, lastActualDay, selectedForecast),
     [forecast, lastActualDay, selectedForecast]
@@ -559,32 +772,33 @@ const Overview: React.FC = () => {
   const forecastLabel = forecastWindow.label;
   const forecastHorizon = forecastWindow.entries;
 
+  const previousBounds = useMemo(() => {
+    if (!availableBounds || !primaryRangeBounds) return null;
+    const start = parseDay(primaryRangeBounds.start);
+    const end = parseDay(primaryRangeBounds.end);
+    const diffDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1);
+    const compareEnd = new Date(start);
+    compareEnd.setDate(compareEnd.getDate() - 1);
+    const compareStart = new Date(compareEnd);
+    compareStart.setDate(compareStart.getDate() - (diffDays - 1));
+    const minDate = parseDay(availableBounds.min);
+    const maxDate = parseDay(availableBounds.max);
+    const clampDate = (date: Date) => new Date(Math.min(Math.max(date.getTime(), minDate.getTime()), maxDate.getTime()));
+    const clampedStart = clampDate(compareStart);
+    const clampedEnd = clampDate(compareEnd);
+    return { start: formatIsoDate(clampedStart), end: formatIsoDate(clampedEnd) };
+  }, [availableBounds, primaryRangeBounds]);
+
   const comparisonBounds = useMemo(() => {
     if (!compareEnabled || !availableBounds) return null;
-    if (compareMode === "previous") {
-      if (!primaryRangeBounds) return null;
-      const start = parseDay(primaryRangeBounds.start);
-      const end = parseDay(primaryRangeBounds.end);
-      const diffDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / MS_PER_DAY) + 1);
-      const compareEnd = new Date(start);
-      compareEnd.setDate(compareEnd.getDate() - 1);
-      const compareStart = new Date(compareEnd);
-      compareStart.setDate(compareStart.getDate() - (diffDays - 1));
-      const minDate = parseDay(availableBounds.min);
-      const maxDate = parseDay(availableBounds.max);
-      const clampDate = (date: Date) =>
-        new Date(Math.min(Math.max(date.getTime(), minDate.getTime()), maxDate.getTime()));
-      const clampedStart = clampDate(compareStart);
-      const clampedEnd = clampDate(compareEnd);
-      return { start: formatIsoDate(clampedStart), end: formatIsoDate(clampedEnd) };
-    }
+    if (compareMode === "previous") return previousBounds;
     if (!compareRange.start || !compareRange.end) return null;
     const startCandidate = compareRange.start < availableBounds.min ? availableBounds.min : compareRange.start;
     const endCandidate = compareRange.end > availableBounds.max ? availableBounds.max : compareRange.end;
     const start = startCandidate <= endCandidate ? startCandidate : endCandidate;
     const end = startCandidate <= endCandidate ? endCandidate : startCandidate;
     return { start, end };
-  }, [compareEnabled, compareMode, compareRange, availableBounds, primaryRangeBounds]);
+  }, [compareEnabled, compareMode, compareRange, availableBounds, previousBounds]);
 
   useEffect(() => {
     if (!compareEnabled || compareMode !== "custom" || !primaryRangeBounds || compareRange.start) return;
@@ -614,11 +828,13 @@ const Overview: React.FC = () => {
     });
   };
 
-  const getComparisonSeries = (metric: string) => {
-    if (!comparisonBounds) return [];
-    const entries = toDaily(aggregateMap[metric] ?? []);
-    return filterByWindow(entries, comparisonBounds.start, comparisonBounds.end);
+  const getSeriesForBounds = (metric: string, bounds: { start: string; end: string } | null) => {
+    if (!bounds) return [];
+    const entries = getUnfilteredSeries(metric);
+    return filterByWindow(entries, bounds.start, bounds.end);
   };
+
+  const getComparisonSeries = (metric: string) => getSeriesForBounds(metric, comparisonBounds);
 
   const comparisonAligned = useMemo(() => {
     if (!compareEnabled) return new Map<string, number>();
@@ -638,29 +854,33 @@ const Overview: React.FC = () => {
   }, [compareEnabled, dailySelected, selectedMetric, comparisonBounds, compareMode, compareRange, aggregateMap]);
 
   const comparisonTotals = compareEnabled
-    ? {
-        pageviews: getComparisonSeries("pageviews").reduce((sum, row) => sum + row.value, 0),
-        uniques: getComparisonSeries("uniques").reduce((sum, row) => sum + row.value, 0),
-        sessions: getComparisonSeries("sessions").reduce((sum, row) => sum + row.value, 0),
-        conversions: getComparisonSeries("conversions").reduce((sum, row) => sum + row.value, 0),
-        revenue: getComparisonSeries("revenue").reduce((sum, row) => sum + row.value, 0),
-      }
+    ? computeKpiValues({
+        pageviews: getComparisonSeries("pageviews"),
+        uniques: getComparisonSeries("uniques"),
+        sessions: getComparisonSeries("sessions"),
+        conversions: getComparisonSeries("conversions"),
+        revenue: getComparisonSeries("revenue"),
+        visitDuration: getComparisonSeries("visit_duration"),
+      })
     : null;
-  const comparisonLabel = comparisonBounds
+  const previousTotals = previousBounds
+    ? computeKpiValues({
+        pageviews: getSeriesForBounds("pageviews", previousBounds),
+        uniques: getSeriesForBounds("uniques", previousBounds),
+        sessions: getSeriesForBounds("sessions", previousBounds),
+        conversions: getSeriesForBounds("conversions", previousBounds),
+        revenue: getSeriesForBounds("revenue", previousBounds),
+        visitDuration: getSeriesForBounds("visit_duration", previousBounds),
+      })
+    : null;
+  const kpiComparisonValues = compareEnabled ? comparisonTotals : previousTotals;
+  const kpiComparisonLabel = comparisonBounds
     ? compareMode === "previous"
       ? "vs previous period"
       : `vs ${formatShortDate(comparisonBounds.start)}–${formatShortDate(comparisonBounds.end)}`
-    : null;
-  const selectedCompareTotal =
-    comparisonTotals?.[selectedMetric as keyof typeof totals] ?? Number.NaN;
-  const selectedCompareDelta =
-    Number.isFinite(selectedCompareTotal) && selectedCompareTotal > 0
-      ? (primaryValue - selectedCompareTotal) / selectedCompareTotal
-      : Number.NaN;
-  const selectedCompareDisplay = Number.isFinite(selectedCompareDelta)
-    ? `${selectedCompareDelta >= 0 ? "+" : ""}${(selectedCompareDelta * 100).toFixed(1)}%`
-    : "—";
-
+    : previousBounds
+      ? "vs previous period"
+      : null;
   const chartData = useMemo(() => {
     const actualSeries = dailySelected.map((row) => ({
       day: row.day,
@@ -688,7 +908,7 @@ const Overview: React.FC = () => {
   const hasProjected = chartData.some((point) => point.projected !== null);
   const hasBounds = chartData.some((point) => point.upper !== null || point.lower !== null);
 
-  const selectedTotal = totals[selectedMetric as keyof typeof totals] ?? 0;
+  const selectedTotal = totals.pageviews ?? 0;
   const topSources = useMemo(
     () =>
       showSeededBreakdowns
@@ -721,15 +941,7 @@ const Overview: React.FC = () => {
         : breakdownRows.countries,
     [showSeededBreakdowns, selectedTotal, breakdownRows.countries]
   );
-  const metricMap = useMemo(
-    () => new Map(metrics.map((metric) => [metric.metric, metric.value])),
-    [metrics]
-  );
-  const overallBounceRate = clamp(
-    Number(metricMap.get("bounce_rate") ?? 0.42),
-    0.1,
-    0.9
-  );
+  const overallBounceRate = Number.isFinite(totals.bounce_rate) ? clamp(totals.bounce_rate, 0, 1) : 0.5;
   const detailTotals: DetailTotals = {
     sessions: totals.sessions,
     conversions: totals.conversions,
@@ -743,8 +955,13 @@ const Overview: React.FC = () => {
       ? "text-emerald-600"
       : "text-amber-600"
     : "text-gray-400";
-  const chartFormatter = (value: number) =>
-    selectedMetric === "revenue" ? formatCompactCurrency(value) : formatNumber(value);
+  const chartFormatter = (value: number) => {
+    if (selectedMetric === "revenue") return formatCompactCurrency(value);
+    if (selectedMetric === "bounce_rate") return formatPercent(value);
+    if (selectedMetric === "visit_duration") return formatDuration(value);
+    if (selectedMetric === "avg_pages_per_visit") return value.toFixed(2);
+    return formatNumber(value);
+  };
   const todayKey = new Date().toISOString().slice(0, 10);
   const showTodayLine =
     chartData.length > 0 &&
@@ -766,7 +983,7 @@ const Overview: React.FC = () => {
 
   const handleExportAllMetricsCsv = async () => {
     if (authEnabled && !token) return;
-    const metricKeys = metricOptions.map((metric) => metric.key);
+    const metricKeys = [...aggregateMetricKeys];
     const forecasts = await Promise.all(
       metricKeys.map(async (metric) => {
         if (metric === selectedMetric) {
@@ -824,9 +1041,15 @@ const Overview: React.FC = () => {
     }
     if (csvRows.length === 0) return;
     const isRevenue = selectedMetric === "revenue";
+    const isRate = selectedMetric === "bounce_rate";
+    const isRatio = selectedMetric === "avg_pages_per_visit";
+    const isDuration = selectedMetric === "visit_duration";
     const toCell = (value?: number) => {
       if (!Number.isFinite(value)) return "";
-      return isRevenue ? value.toFixed(2) : value.toFixed(0);
+      if (isRate || isRatio) return value.toFixed(4);
+      if (isDuration) return value.toFixed(1);
+      if (isRevenue) return value.toFixed(2);
+      return value.toFixed(0);
     };
     const lines = [
       ["date", "actual", "forecast", "forecast_lower", "forecast_upper"].join(","),
@@ -895,9 +1118,9 @@ const Overview: React.FC = () => {
           <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </div>
-          <div className="flex items-center gap-2 no-print">
+          <div className="flex flex-wrap items-center gap-4 no-print">
             <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-              Range
+              Date Range
             </span>
             <select
               className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
@@ -1007,7 +1230,7 @@ const Overview: React.FC = () => {
                 )}
               </>
             )}
-            <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+            <span className="ml-3 text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
               Forecast
             </span>
             <select
@@ -1077,45 +1300,16 @@ const Overview: React.FC = () => {
             Metrics · {range}
           </div>
         </div>
+        <KPIGrid
+          values={totals}
+          comparisonValues={kpiComparisonValues}
+          comparisonLabel={kpiComparisonLabel}
+          selectedMetric={selectedMetric}
+          onSelectMetric={setSelectedMetric}
+        />
         <section className="border border-gray-200 bg-white p-4">
           <div className="border-b border-gray-200 pb-3">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                  {primaryLabel}
-                </div>
-                <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-                  Daily totals · {range}
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                  Total
-                </div>
-                <div className="mt-1 text-3xl text-[#1F2937]" style={fontNumeric}>
-                  {primaryDisplay}
-                </div>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2 no-print">
-              {metricOptions.map((option) => {
-                const isActive = selectedMetric === option.key;
-                return (
-                  <button
-                    key={option.key}
-                    type="button"
-                    onClick={() => setSelectedMetric(option.key)}
-                    className={`border px-2 py-1 text-[10px] uppercase tracking-[0.2em] ${
-                      isActive ? "border-[#1B7F8E] text-[#1F2937]" : "border-gray-200 text-gray-500"
-                    }`}
-                    style={fontBody}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-[0.2em] text-gray-500">
+            <div className="flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-[0.2em] text-gray-500">
               <span style={fontBody}>
                 Live visitors{" "}
                 <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
@@ -1141,7 +1335,7 @@ const Overview: React.FC = () => {
                 </span>
               </span>
               {forecastMeta?.has_anomaly && (
-                <span className="text-amber-600" style={fontBody}>
+                <span className="text-[#8B2635]" style={fontBody}>
                   Anomaly flagged
                 </span>
               )}
@@ -1172,12 +1366,6 @@ const Overview: React.FC = () => {
                     axisLine={false}
                     tickLine={false}
                     width={48}
-                    label={{
-                      value: primaryLabel,
-                      angle: -90,
-                      position: "insideLeft",
-                      style: { fill: "#9CA3AF", fontSize: 10, fontFamily: fontBody.fontFamily },
-                    }}
                   />
                   <Tooltip
                     formatter={(value: number, name: string) => {
@@ -1308,24 +1496,6 @@ const Overview: React.FC = () => {
             )}
           </div>
         </section>
-
-        <div>
-          <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-            Key metrics
-          </div>
-          <KPIGrid
-            metrics={metrics}
-            values={{
-              pageviews: totals.pageviews,
-              uniques: totals.uniques,
-              sessions: totals.sessions,
-              conversions: totals.conversions,
-              revenue: totals.revenue,
-            }}
-            comparisonValues={comparisonTotals}
-            comparisonLabel={comparisonLabel}
-          />
-        </div>
 
         <section className="grid gap-6 md:grid-cols-2">
           <TableBlock

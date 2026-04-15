@@ -1,12 +1,12 @@
 import React from "react";
-import { MetricStatistic } from "../api";
 import { formatNumber, formatPercent } from "../utils/format";
 
 interface Props {
-  metrics: MetricStatistic[];
-  values?: Record<string, number>;
+  values: Record<string, number>;
   comparisonValues?: Record<string, number> | null;
   comparisonLabel?: string | null;
+  selectedMetric?: string;
+  onSelectMetric?: (metric: string) => void;
 }
 
 const fontBody: React.CSSProperties = {
@@ -24,68 +24,93 @@ const formatCurrency = (value: number): string =>
     maximumFractionDigits: 0,
   }).format(value);
 
-export const KPIGrid: React.FC<Props> = ({ metrics, values, comparisonValues, comparisonLabel }) => {
-  const metricsByKey = metrics.reduce<Record<string, MetricStatistic>>((acc, metric) => {
-    acc[metric.metric] = metric;
-    return acc;
-  }, {});
+const formatDuration = (seconds: number): string => {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const rounded = Math.round(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const secs = rounded % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
+  }
+  return `${minutes}m ${secs.toString().padStart(2, "0")}s`;
+};
 
-  const kpis = [
-    { key: "pageviews", label: "Pageviews", format: formatNumber },
-    { key: "uniques", label: "Unique Visitors", format: formatNumber },
-    { key: "sessions", label: "Sessions", format: formatNumber },
-    { key: "conversions", label: "Conversions", format: formatNumber },
-    { key: "revenue", label: "Revenue", format: formatCurrency },
-  ];
+const formatMetricValue = (metric: string, value: number) => {
+  if (!Number.isFinite(value)) return "—";
+  if (metric === "revenue") return formatCurrency(value);
+  if (metric === "visit_duration") return formatDuration(value);
+  if (metric.includes("rate")) return formatPercent(value);
+  if (metric === "avg_pages_per_visit") return value.toFixed(2);
+  return formatNumber(value);
+};
 
-  return (
-    <div className="border border-gray-200 bg-white">
-      <div className="grid grid-cols-2 md:grid-cols-5">
-        {kpis.map((kpi, index) => {
-          const metric = metricsByKey[kpi.key];
-          const rawValue = metric?.value ?? Number.NaN;
-          const valueFromTotals = values?.[kpi.key] ?? Number.NaN;
-          const value = Number.isFinite(valueFromTotals) ? valueFromTotals : rawValue;
-          const display = Number.isFinite(value) ? kpi.format(value) : "N/A";
-          const compareValue = comparisonValues?.[kpi.key];
-          const delta =
-            Number.isFinite(value) && Number.isFinite(compareValue) && (compareValue ?? 0) > 0
-              ? (value - (compareValue ?? 0)) / (compareValue ?? 1)
-              : Number.NaN;
-          const deltaDisplay = Number.isFinite(delta)
-            ? `${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%`
-            : "—";
-          const deltaClass = Number.isFinite(delta)
-            ? delta >= 0
-              ? "text-emerald-600"
-              : "text-rose-600"
-            : "text-gray-400";
+const cards = [
+  { key: "pageviews", label: "Pageviews" },
+  { key: "uniques", label: "Unique Visitors" },
+  { key: "sessions", label: "Sessions" },
+  { key: "conversions", label: "Conversions" },
+  { key: "revenue", label: "Revenue" },
+  { key: "avg_pages_per_visit", label: "Avg. Pages / Visit" },
+  { key: "visit_duration", label: "Visit Duration" },
+  { key: "bounce_rate", label: "Bounce Rate" },
+];
 
-          return (
-            <div
-              key={kpi.key}
-              className={`px-4 py-3 ${index === 0 ? "" : "border-l border-gray-200"}`}
-            >
-              <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                {kpi.label}
+export const KPIGrid: React.FC<Props> = ({
+  values,
+  comparisonValues,
+  comparisonLabel,
+  selectedMetric,
+  onSelectMetric,
+}) => (
+  <div className="border border-[#D9E2E8] bg-white">
+    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
+      {cards.map((card) => {
+        const value = values[card.key];
+        const compareValue = comparisonValues?.[card.key];
+        const delta =
+          Number.isFinite(value) && Number.isFinite(compareValue) && (compareValue ?? 0) > 0
+            ? (value - (compareValue ?? 0)) / (compareValue ?? 1)
+            : Number.NaN;
+        const deltaDisplay = Number.isFinite(delta)
+          ? `${delta >= 0 ? "↑" : "↓"} ${Math.abs(delta * 100).toFixed(1)}%`
+          : "—";
+        const deltaClass = Number.isFinite(delta)
+          ? delta >= 0
+            ? "text-[#0A5F6F]"
+            : "text-[#8B2635]"
+          : "text-gray-400";
+        const isActive = selectedMetric === card.key;
+
+        return (
+          <button
+            key={card.key}
+            type="button"
+            onClick={() => onSelectMetric?.(card.key)}
+            className={`flex min-h-[108px] flex-col justify-between border-b border-r px-3 py-3 text-left transition-colors ${
+              isActive ? "bg-[#E8F5F5]" : "bg-white hover:bg-[#F9FAFB]"
+            }`}
+          >
+            <div className={`text-[10px] uppercase tracking-[0.18em] ${isActive ? "text-[#0A5F6F]" : "text-gray-500"}`} style={fontBody}>
+              {card.label}
+            </div>
+            <div>
+              <div className="text-xl text-[#1F2937]" style={fontNumeric}>
+                {formatMetricValue(card.key, value)}
               </div>
-              <div className="mt-1 text-2xl text-[#1F2937]" style={fontNumeric}>
-                {display}
+              <div className={`mt-1 text-[11px] ${deltaClass}`} style={fontBody}>
+                {deltaDisplay}
               </div>
               {comparisonLabel && (
-                <div className="mt-1">
-                  <div className={`text-[10px] uppercase tracking-[0.2em] ${deltaClass}`} style={fontBody}>
-                    {deltaDisplay}
-                  </div>
-                  <div className="mt-1 text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
-                    {comparisonLabel}
-                  </div>
+                <div className="mt-1 text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
+                  {comparisonLabel}
                 </div>
               )}
             </div>
-          );
-        })}
-      </div>
+          </button>
+        );
+      })}
     </div>
-  );
-};
+  </div>
+);
