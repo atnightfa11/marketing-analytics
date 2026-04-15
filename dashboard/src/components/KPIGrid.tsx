@@ -10,11 +10,13 @@ interface Props {
 }
 
 const fontBody: React.CSSProperties = {
-  fontFamily: '"Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+  fontFamily: "var(--font-sans)",
 };
-const fontNumeric: React.CSSProperties = {
-  fontFamily:
-    '"Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+const fontMetric: React.CSSProperties = {
+  fontFamily: "var(--font-sans)",
+  fontVariantNumeric: "tabular-nums lining-nums",
+  fontFeatureSettings: '"tnum" 1, "lnum" 1',
+  letterSpacing: "0em",
 };
 
 const formatCurrency = (value: number): string =>
@@ -47,14 +49,14 @@ const formatMetricValue = (metric: string, value: number) => {
 };
 
 const cards = [
-  { key: "pageviews", label: "Pageviews" },
-  { key: "uniques", label: "Unique Visitors" },
-  { key: "sessions", label: "Sessions" },
-  { key: "conversions", label: "Conversions" },
-  { key: "revenue", label: "Revenue" },
-  { key: "avg_pages_per_visit", label: "Avg. Pages / Visit" },
-  { key: "visit_duration", label: "Visit Duration" },
-  { key: "bounce_rate", label: "Bounce Rate" },
+  { key: "pageviews", label: "Pageviews", tier: "primary" as const },
+  { key: "uniques", label: "Unique Visitors", tier: "primary" as const },
+  { key: "sessions", label: "Sessions", tier: "primary" as const },
+  { key: "conversions", label: "Conversions", tier: "primary" as const },
+  { key: "revenue", label: "Revenue", tier: "primary" as const },
+  { key: "avg_pages_per_visit", label: "Avg. Pages / Visit", tier: "secondary" as const },
+  { key: "visit_duration", label: "Visit Duration", tier: "secondary" as const },
+  { key: "bounce_rate", label: "Bounce Rate", tier: "secondary" as const },
 ];
 
 export const KPIGrid: React.FC<Props> = ({
@@ -64,7 +66,7 @@ export const KPIGrid: React.FC<Props> = ({
   selectedMetric,
   onSelectMetric,
 }) => (
-  <div className="border border-[#D9E2E8] bg-white">
+  <div className="border border-[var(--color-border-subtle)] bg-white">
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
       {cards.map((card) => {
         const value = values[card.key];
@@ -82,24 +84,28 @@ export const KPIGrid: React.FC<Props> = ({
             : "text-[#8B2635]"
           : "text-gray-400";
         const isActive = selectedMetric === card.key;
+        const isPrimary = card.tier === "primary";
 
         return (
           <button
             key={card.key}
             type="button"
             onClick={() => onSelectMetric?.(card.key)}
-            className={`flex min-h-[108px] flex-col justify-between border-b border-r px-3 py-3 text-left transition-colors ${
+            className={`flex min-h-[96px] flex-col justify-between border-b border-r border-[var(--color-border-subtle)] px-4 py-2 text-left transition-colors ${
               isActive ? "bg-[#E8F5F5]" : "bg-white hover:bg-[#F9FAFB]"
             }`}
           >
-            <div className={`text-[10px] uppercase tracking-[0.18em] ${isActive ? "text-[#0A5F6F]" : "text-gray-500"}`} style={fontBody}>
+            <div className={`label-tight ${isActive ? "text-[#0A5F6F]" : "text-gray-500"}`} style={fontBody}>
               {card.label}
             </div>
             <div>
-              <div className="text-xl text-[#1F2937]" style={fontNumeric}>
+              <div
+                className={`${isPrimary ? "text-[var(--type-kpi-primary)] font-semibold text-[#111827]" : "text-[var(--type-kpi-secondary)] font-medium text-[#374151]"} metric-number leading-tight`}
+                style={fontMetric}
+              >
                 {formatMetricValue(card.key, value)}
               </div>
-              <div className={`mt-1 text-[11px] ${deltaClass}`} style={fontBody}>
+              <div className={`mt-1 text-[11px] ${deltaClass} metric-number leading-tight`} style={fontMetric}>
                 {deltaDisplay}
               </div>
               {comparisonLabel && (

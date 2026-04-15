@@ -12,6 +12,15 @@
   --color-neutral-dark: #1f2937;
   --color-neutral-light: #f9fafb;
   --color-border: #d9e2e8;
+  --color-border-subtle: #e5ecf0;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  --type-kpi-primary: 1.5rem;
+  --type-kpi-secondary: 1.125rem;
+  --type-label-size: 0.625rem;
+  --type-label-track: 0.1em;
+  --type-meta-size: 0.6875rem;
 }
 
 *,
@@ -24,7 +33,26 @@ body {
   margin: 0;
   background-color: var(--color-neutral-light);
   color: var(--color-neutral-dark);
-  font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  font-family: var(--font-sans);
+}
+
+.metric-number {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  letter-spacing: 0;
+}
+
+.meta-number {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.label-tight {
+  font-size: var(--type-label-size);
+  letter-spacing: var(--type-label-track);
+  text-transform: uppercase;
 }
 
 @media print {

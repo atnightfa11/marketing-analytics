@@ -33,11 +33,19 @@ import en from "./locales/en.json";
 
 const fontHeading: React.CSSProperties = { fontFamily: '"Playfair Display", serif' };
 const fontBody: React.CSSProperties = {
-  fontFamily: '"Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif',
+  fontFamily: "var(--font-sans)",
 };
-const fontNumeric: React.CSSProperties = {
-  fontFamily:
-    '"Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+const fontMetric: React.CSSProperties = {
+  fontFamily: "var(--font-sans)",
+  fontVariantNumeric: "tabular-nums lining-nums",
+  fontFeatureSettings: '"tnum" 1, "lnum" 1',
+  letterSpacing: "0em",
+};
+const fontMeta: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontVariantNumeric: "tabular-nums lining-nums",
+  fontFeatureSettings: '"tnum" 1, "lnum" 1',
+  letterSpacing: "0.01em",
 };
 
 const metricLabels: Record<string, string> = {
@@ -242,7 +250,7 @@ const TableBlock: React.FC<{
               <div key={row.label} className="py-2">
                 <div className="flex items-center justify-between text-sm text-gray-700">
                   <span style={fontBody}>{row.label}</span>
-                  <span className="text-right text-gray-900" style={fontNumeric}>
+                  <span className="text-right text-gray-900" style={fontMetric}>
                     {formatMetricValue(metricKey, row.value)}
                   </span>
                 </div>
@@ -255,7 +263,7 @@ const TableBlock: React.FC<{
                       <div className="uppercase tracking-[0.2em]" style={fontBody}>
                         Sessions
                       </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontNumeric}>
+                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
                         {formatNumber(detailSessions)}
                       </div>
                     </div>
@@ -263,7 +271,7 @@ const TableBlock: React.FC<{
                       <div className="uppercase tracking-[0.2em]" style={fontBody}>
                         Bounce
                       </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontNumeric}>
+                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
                         {formatPercent(bounce)}
                       </div>
                     </div>
@@ -271,7 +279,7 @@ const TableBlock: React.FC<{
                       <div className="uppercase tracking-[0.2em]" style={fontBody}>
                         Conversions
                       </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontNumeric}>
+                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
                         {formatNumber(detailConversions)}
                       </div>
                     </div>
@@ -279,7 +287,7 @@ const TableBlock: React.FC<{
                       <div className="uppercase tracking-[0.2em]" style={fontBody}>
                         Revenue
                       </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontNumeric}>
+                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
                         {formatMetricValue("revenue", detailRevenue)}
                       </div>
                     </div>
@@ -1307,38 +1315,58 @@ const Overview: React.FC = () => {
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
         />
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="border-b border-gray-200 pb-3">
-            <div className="flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-[0.2em] text-gray-500">
-              <span style={fontBody}>
-                Live visitors{" "}
-                <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
-                  {formatNumber(liveValue)}
-                </span>
-              </span>
-              <span style={fontBody}>
-                Last updated{" "}
-                <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
-                  {lastActualDay ? formatShortDate(lastActualDay) : "—"}
-                </span>
-              </span>
-              <span style={fontBody}>
-                Forecast {forecastLabel}{" "}
-                <span className="ml-1 text-[#1F2937]" style={fontNumeric}>
-                  {forecast.length > 0 ? formatMetricValue(selectedMetric, forecastTotal) : "—"}
-                </span>
-              </span>
-              <span style={fontBody}>
-                MAPE{" "}
-                <span className={`ml-1 ${mapeClass}`} style={fontNumeric}>
-                  {forecastMape}
-                </span>
-              </span>
-              {forecastMeta?.has_anomaly && (
-                <span className="text-[#8B2635]" style={fontBody}>
-                  Anomaly flagged
-                </span>
-              )}
+        <section className="border border-[var(--color-border-subtle)] bg-white p-4">
+          <div className="border-b border-[var(--color-border-subtle)] pb-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-sm border border-[var(--color-border-subtle)] bg-[#F9FAFB] px-4 py-4">
+                <div className="label-tight text-gray-500" style={fontBody}>
+                  Operational Status
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
+                  <span style={fontBody}>
+                    Live visitors
+                    <span className="ml-1 text-[#111827] metric-number" style={fontMetric}>
+                      {formatNumber(liveValue)}
+                    </span>
+                  </span>
+                  <span style={fontBody}>
+                    Last updated
+                    <span className="ml-1 text-[#111827] meta-number" style={fontMeta}>
+                      {lastActualDay ? formatShortDate(lastActualDay) : "—"}
+                    </span>
+                  </span>
+                  {forecastMeta?.has_anomaly && (
+                    <span className="text-[#8B2635]" style={fontBody}>
+                      Anomaly flagged
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-sm border border-[var(--color-border-subtle)] bg-[#F9FAFB] px-4 py-4 md:text-right">
+                <div className="label-tight text-gray-500" style={fontBody}>
+                  Forecast Summary
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600 md:justify-end">
+                  <span style={fontBody}>
+                    Horizon
+                    <span className="ml-1 text-[#111827] metric-number" style={fontMetric}>
+                      {forecastLabel}
+                    </span>
+                  </span>
+                  <span style={fontBody}>
+                    Projected
+                    <span className="ml-1 text-[#111827] metric-number" style={fontMetric}>
+                      {forecast.length > 0 ? formatMetricValue(selectedMetric, forecastTotal) : "—"}
+                    </span>
+                  </span>
+                  <span style={fontBody}>
+                    MAPE
+                    <span className={`ml-1 metric-number ${mapeClass}`} style={fontMetric}>
+                      {forecastMape}
+                    </span>
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
           <div className="mt-4">
@@ -1353,7 +1381,7 @@ const Overview: React.FC = () => {
                   <XAxis
                     dataKey="day"
                     tickFormatter={formatAxisDate}
-                    tick={{ fill: "#6B7280", fontSize: 10 }}
+                    tick={{ fill: "#6B7280", fontSize: 10, fontFamily: "var(--font-sans)" }}
                     axisLine={false}
                     tickLine={false}
                     minTickGap={24}
@@ -1362,7 +1390,7 @@ const Overview: React.FC = () => {
                   />
                   <YAxis
                     tickFormatter={chartFormatter}
-                    tick={{ fill: "#6B7280", fontSize: 10 }}
+                    tick={{ fill: "#6B7280", fontSize: 10, fontFamily: "var(--font-sans)" }}
                     axisLine={false}
                     tickLine={false}
                     width={48}
@@ -1386,9 +1414,11 @@ const Overview: React.FC = () => {
                     labelFormatter={(label) => formatShortDate(String(label))}
                     contentStyle={{
                       borderRadius: 0,
-                      borderColor: "#E5E7EB",
+                      borderColor: "var(--color-border-subtle)",
                       fontSize: "12px",
-                      fontFamily: fontBody.fontFamily,
+                      fontFamily: "var(--font-sans)",
+                      fontVariantNumeric: "tabular-nums lining-nums",
+                      fontFeatureSettings: '"tnum" 1, "lnum" 1',
                     }}
                     cursor={{ stroke: "#E5E7EB" }}
                   />
@@ -1579,10 +1609,10 @@ const Overview: React.FC = () => {
                   className="grid grid-cols-[minmax(0,1fr)_120px_140px] items-center py-2 text-sm text-gray-700"
                 >
                   <span style={fontBody}>{event.label}</span>
-                  <span className="text-right text-gray-900" style={fontNumeric}>
+                  <span className="text-right text-gray-900" style={fontMetric}>
                     {formatNumber(event.count)}
                   </span>
-                  <span className="text-right text-gray-900" style={fontNumeric}>
+                  <span className="text-right text-gray-900" style={fontMetric}>
                     {formatPercent(event.rate)}
                   </span>
                 </div>
@@ -1671,7 +1701,7 @@ const BillingSuccess: React.FC = () => {
           </p>
           {sessionId ? (
             <p className="mt-3 text-xs text-gray-500" style={fontBody}>
-              Session ID: <span style={fontNumeric}>{sessionId}</span>
+              Session ID: <span className="meta-number" style={fontMeta}>{sessionId}</span>
             </p>
           ) : null}
           <div className="mt-6 flex flex-wrap gap-3">
