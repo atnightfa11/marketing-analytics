@@ -38,6 +38,7 @@ class Settings(BaseSettings):
   FORECAST_HORIZON_DAYS: int = Field(default=90)
   ENABLE_PROD_SCHEDULER: bool = Field(default=False)
   PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
+  PROD_REDUCER_INTERVAL_MINUTES: int = Field(default=60)
   MODEL_ARTIFACT_BUCKET: str | None = None
   DASHBOARD_AUTH_ENABLED: bool = Field(default=False)
   DASHBOARD_AUTH_USERNAME: str = Field(default="admin")

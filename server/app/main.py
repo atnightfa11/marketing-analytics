@@ -174,10 +174,9 @@ async def on_startup():
 
             prod_scheduler.add_job(
                 reduce_job,
-                "cron",
-                hour=settings.PROD_SCHEDULER_HOUR_UTC,
-                minute=0,
-                id="prod_reducer_daily",
+                "interval",
+                minutes=max(1, settings.PROD_REDUCER_INTERVAL_MINUTES),
+                id="prod_reducer_interval",
                 replace_existing=True,
             )
             prod_scheduler.add_job(
@@ -191,8 +190,11 @@ async def on_startup():
             prod_scheduler.start()
             app.state.prod_scheduler = prod_scheduler
             logger.info(
-                "Started production scheduler (daily reducer + forecast)",
-                extra={"hour_utc": settings.PROD_SCHEDULER_HOUR_UTC},
+                "Started production scheduler (hourly reducer + daily forecast)",
+                extra={
+                    "reducer_interval_minutes": settings.PROD_REDUCER_INTERVAL_MINUTES,
+                    "forecast_hour_utc": settings.PROD_SCHEDULER_HOUR_UTC,
+                },
             )
         except Exception:
             logger.exception("Failed to start production scheduler")

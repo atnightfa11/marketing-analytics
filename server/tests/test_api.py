@@ -929,6 +929,13 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             params={"site_id": site_id, "dimension": "pages"},
         )
         assert unauthorized_breakdown.status_code == 401
+        unauthorized_jobs = client.get("/api/jobs/status")
+        assert unauthorized_jobs.status_code == 401
+        unauthorized_checkout = client.post(
+            "/api/checkout/session",
+            json={"site_id": site_id, "plan": "standard"},
+        )
+        assert unauthorized_checkout.status_code == 401
 
         bad_login = client.post("/api/auth/login", json={"username": "owner", "password": "wrong"})
         assert bad_login.status_code == 401
@@ -954,6 +961,14 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert authorized_breakdown.status_code == 200
+        authorized_jobs = client.get("/api/jobs/status", headers={"Authorization": f"Bearer {access_token}"})
+        assert authorized_jobs.status_code == 200
+        authorized_checkout = client.post(
+            "/api/checkout/session",
+            json={"site_id": site_id, "plan": "standard"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert authorized_checkout.status_code == 503
     finally:
         (
             dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
