@@ -866,7 +866,7 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
     sources_resp = client.get("/api/breakdown", params={**query, "dimension": "sources"})
     assert sources_resp.status_code == 200
     assert sources_resp.json()["rows"] == [
-        {"label": "google.com", "value": 2.0},
+        {"label": "Google", "value": 2.0},
         {"label": "Direct", "value": 1.0},
     ]
 

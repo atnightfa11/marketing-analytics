@@ -19,6 +19,15 @@ router = APIRouter(tags=["metrics"])
 BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions"]
 settings = get_settings()
 
+COMMON_SOURCE_HOST_MAP = {
+    "google.com": "Google",
+    "duckduckgo.com": "DuckDuckGo",
+    "reddit.com": "Reddit",
+    "x.com": "X",
+    "t.co": "X",
+    "linkedin.com": "LinkedIn",
+}
+
 
 def _parse_iso_date(value: str, field_name: str) -> dt.date:
     try:
@@ -79,7 +88,7 @@ def _normalize_source_bucket(raw_value: object) -> str:
     value = raw_value.strip().lower()
     mapping = {
         "direct": "Direct",
-        "external": "External",
+        "external": "Referral",
         "organic": "Organic",
         "referral": "Referral",
         "social": "Social",
@@ -89,15 +98,41 @@ def _normalize_source_bucket(raw_value: object) -> str:
     return mapping.get(value, "Unknown")
 
 
+def _normalize_host(raw_value: str) -> str:
+    value = raw_value.strip().lower()
+    if not value:
+        return ""
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    host = value.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
 def _normalize_source_label(raw_value: object) -> str:
     if not isinstance(raw_value, str):
         return "Unknown"
     value = raw_value.strip().lower()
     if not value:
         return "Unknown"
-    if value == "direct":
+    if value in {"direct", "(direct)"}:
         return "Direct"
-    return value[:120]
+    if value in {"external", "unknown"}:
+        return "Referral"
+
+    host = _normalize_host(value)
+    if host:
+        for known_host, label in COMMON_SOURCE_HOST_MAP.items():
+            if host == known_host or host.endswith(f".{known_host}"):
+                return label
+        if "." in host:
+            return host[:120]
+
+    normalized = " ".join(value.replace("_", " ").replace("-", " ").split())
+    if normalized:
+        return normalized.title()[:120]
+    return "Unknown"
 
 
 def _normalize_device_bucket(raw_value: object) -> str:

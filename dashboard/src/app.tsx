@@ -1,6 +1,7 @@
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  Area,
   CartesianGrid,
   Line,
   LineChart,
@@ -29,6 +30,7 @@ import { TopCountries } from "./components/TopCountries";
 import { TopSources } from "./components/TopSources";
 import { useAuth } from "./hooks/useAuth";
 import { formatNumber, formatPercent, formatShortDate } from "./utils/format";
+import { normalizeSourceLabel } from "./utils/sourceAttribution";
 import en from "./locales/en.json";
 
 const fontHeading: React.CSSProperties = { fontFamily: '"Playfair Display", serif' };
@@ -70,6 +72,13 @@ const metricOptions = [
   { key: "bounce_rate", label: "Bounce Rate" },
 ];
 const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
+const breakdownMetricOptions = [
+  { key: "pageviews", label: "Pageviews" },
+  { key: "sessions", label: "Sessions" },
+  { key: "conversions", label: "Conversions" },
+  { key: "revenue", label: "Revenue" },
+] as const;
+type BreakdownMetricKey = (typeof breakdownMetricOptions)[number]["key"];
 const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions"];
 
 const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
@@ -199,114 +208,106 @@ interface TableRow {
   value: number;
 }
 
-interface DetailTotals {
-  sessions: number;
-  conversions: number;
-  revenue: number;
-  bounceRate: number;
-}
-
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const toIsoDate = (value: Date) => value.toISOString().slice(0, 10);
+
+const resolveRangeBounds = (
+  rangeKey: RangeOption,
+  custom: DateRange
+): { start: string; end: string } | null => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const end = new Date(today);
+  const start = new Date(today);
+
+  if (rangeKey === "Custom") {
+    if (!custom.start || !custom.end) return null;
+    const startDate = parseDay(custom.start);
+    const endDate = parseDay(custom.end);
+    const from = startDate <= endDate ? startDate : endDate;
+    const to = startDate <= endDate ? endDate : startDate;
+    return { start: toIsoDate(from), end: toIsoDate(to) };
+  }
+
+  if (rangeKey === "Today") {
+    return { start: toIsoDate(start), end: toIsoDate(end) };
+  }
+  if (rangeKey === "Yesterday") {
+    start.setDate(start.getDate() - 1);
+    end.setDate(end.getDate() - 1);
+    return { start: toIsoDate(start), end: toIsoDate(end) };
+  }
+  if (rangeKey === "Last 7") {
+    start.setDate(start.getDate() - 6);
+    return { start: toIsoDate(start), end: toIsoDate(end) };
+  }
+  if (rangeKey === "Last 30") {
+    start.setDate(start.getDate() - 29);
+    return { start: toIsoDate(start), end: toIsoDate(end) };
+  }
+  if (rangeKey === "Last 90") {
+    start.setDate(start.getDate() - 89);
+    return { start: toIsoDate(start), end: toIsoDate(end) };
+  }
+  if (rangeKey === "MTD") {
+    const first = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { start: toIsoDate(first), end: toIsoDate(end) };
+  }
+  if (rangeKey === "YTD") {
+    const jan1 = new Date(today.getFullYear(), 0, 1);
+    return { start: toIsoDate(jan1), end: toIsoDate(end) };
+  }
+  return null;
+};
+
+const enumerateDays = (startDay: string, endDay: string): string[] => {
+  const start = parseDay(startDay);
+  const end = parseDay(endDay);
+  const from = start <= end ? start : end;
+  const to = start <= end ? end : start;
+  const days: string[] = [];
+  for (let cursor = new Date(from); cursor <= to; cursor.setDate(cursor.getDate() + 1)) {
+    days.push(formatIsoDate(cursor));
+  }
+  return days;
+};
 
 const TableBlock: React.FC<{
   title: string;
-  labelHeader: string;
   rows: TableRow[];
-  valueLabel: string;
-  metricKey: string;
-  detailTotals: DetailTotals;
+  metricKey: "pageviews" | "sessions" | "conversions" | "revenue";
   emptyState?: string;
-}> = ({ title, labelHeader, rows, valueLabel, metricKey, detailTotals, emptyState }) => {
-  const [showDetails, setShowDetails] = useState(false);
+}> = ({ title, rows, metricKey, emptyState }) => {
   const maxValue = rows.reduce((max, row) => Math.max(max, row.value), 0);
-  const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
 
   return (
-    <div className="border border-gray-200 bg-white p-4">
-      <div className="mb-3 text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+    <div className="border border-[var(--color-border-subtle)] bg-white p-4">
+      <div className="mb-3 text-sm font-semibold text-[#1F2937]" style={fontBody}>
         {title}
-      </div>
-      <div className="flex items-center justify-between border-b border-gray-200 pb-2 text-xs text-gray-500">
-        <span style={fontBody}>{labelHeader}</span>
-        <span style={fontBody}>{valueLabel}</span>
       </div>
       {rows.length === 0 ? (
         <div className="py-6 text-xs text-gray-400" style={fontBody}>
           {emptyState ?? "Awaiting events. This table will populate after data arrives."}
         </div>
       ) : (
-        <div className="divide-y divide-gray-100">
-          {rows.map((row, index) => {
+        <div className="space-y-2">
+          {rows.map((row) => {
             const width = maxValue > 0 ? Math.max(4, (row.value / maxValue) * 100) : 0;
-            const share = totalValue > 0 ? row.value / totalValue : 0;
-            const bounce =
-              totalValue > 0
-                ? clamp(detailTotals.bounceRate + (index - (rows.length - 1) / 2) * 0.018, 0.1, 0.9)
-                : detailTotals.bounceRate;
-            const detailSessions = detailTotals.sessions * share;
-            const detailConversions = detailTotals.conversions * share;
-            const detailRevenue = detailTotals.revenue * share;
             return (
-              <div key={row.label} className="py-2">
+              <div key={row.label} className="py-1">
                 <div className="flex items-center justify-between text-sm text-gray-700">
-                  <span style={fontBody}>{row.label}</span>
-                  <span className="text-right text-gray-900" style={fontMetric}>
+                  <span className="truncate pr-4" style={fontBody}>{row.label}</span>
+                  <span className="text-right text-gray-900 metric-number" style={fontMetric}>
                     {formatMetricValue(metricKey, row.value)}
                   </span>
                 </div>
-                <div className="mt-1 h-1 w-full bg-gray-100">
-                  <div className="h-1 bg-gray-400" style={{ width: `${width}%` }} />
+                <div className="mt-1 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
+                  <div className="h-1.5 rounded-sm bg-[#A9C7CF]" style={{ width: `${width}%` }} />
                 </div>
-                {showDetails && (
-                  <div className="mt-2 grid grid-cols-4 gap-2 text-[10px] text-gray-500">
-                    <div>
-                      <div className="uppercase tracking-[0.2em]" style={fontBody}>
-                        Sessions
-                      </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
-                        {formatNumber(detailSessions)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="uppercase tracking-[0.2em]" style={fontBody}>
-                        Bounce
-                      </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
-                        {formatPercent(bounce)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="uppercase tracking-[0.2em]" style={fontBody}>
-                        Conversions
-                      </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
-                        {formatNumber(detailConversions)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="uppercase tracking-[0.2em]" style={fontBody}>
-                        Revenue
-                      </div>
-                      <div className="mt-1 text-xs text-gray-900" style={fontMetric}>
-                        {formatMetricValue("revenue", detailRevenue)}
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
-      )}
-      {rows.length > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowDetails((prev) => !prev)}
-          className="mx-auto mt-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-gray-500"
-          style={fontBody}
-        >
-          {showDetails ? "[x] Details" : "[ ] Details"}
-        </button>
       )}
     </div>
   );
@@ -349,6 +350,7 @@ const Overview: React.FC = () => {
   const [compareEnabled, setCompareEnabled] = useState(false);
   const [compareMode, setCompareMode] = useState<"previous" | "custom">("previous");
   const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
+  const [breakdownMetric, setBreakdownMetric] = useState<BreakdownMetricKey>("pageviews");
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
   useEffect(() => {
     if (!canQuery) return;
@@ -412,63 +414,9 @@ const Overview: React.FC = () => {
     custom: DateRange = customRange
   ) => {
     if (entries.length === 0) return entries;
-    const minDate = parseDay(entries[0].day);
-    const maxDate = parseDay(entries[entries.length - 1].day);
-    const clampDate = (date: Date) =>
-      new Date(Math.min(Math.max(date.getTime(), minDate.getTime()), maxDate.getTime()));
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const endDate = clampDate(today);
-
-    if (rangeKey === "Custom") {
-      if (!custom.start || !custom.end) return entries;
-      const startCandidate = clampDate(parseDay(custom.start));
-      const endCandidate = clampDate(parseDay(custom.end));
-      const start = startCandidate <= endCandidate ? startCandidate : endCandidate;
-      const end = startCandidate <= endCandidate ? endCandidate : startCandidate;
-      return entries.filter((entry) => {
-        const day = parseDay(entry.day);
-        return day >= start && day <= end;
-      });
-    }
-    if (rangeKey === "Today") {
-      return entries.filter((entry) => {
-        const day = parseDay(entry.day);
-        return day >= endDate && day <= endDate;
-      });
-    }
-    if (rangeKey === "Yesterday") {
-      const start = new Date(endDate);
-      start.setDate(start.getDate() - 1);
-      return entries.filter((entry) => {
-        const day = parseDay(entry.day);
-        return day >= start && day <= start;
-      });
-    }
-    if (rangeKey === "Last 7" || rangeKey === "Last 30" || rangeKey === "Last 90") {
-      const days = rangeKey === "Last 7" ? 7 : rangeKey === "Last 30" ? 30 : 90;
-      const start = new Date(endDate);
-      start.setDate(start.getDate() - (days - 1));
-      return entries.filter((entry) => {
-        const day = parseDay(entry.day);
-        return day >= start && day <= endDate;
-      });
-    }
-    if (rangeKey === "MTD") {
-      const start = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
-      return entries.filter((entry) => {
-        const day = parseDay(entry.day);
-        return day >= start && day <= endDate;
-      });
-    }
-    if (rangeKey === "YTD") {
-      const start = new Date(endDate.getFullYear(), 0, 1);
-      return entries.filter((entry) => {
-        const day = parseDay(entry.day);
-        return day >= start && day <= endDate;
-      });
-    }
-    return entries;
+    const bounds = resolveRangeBounds(rangeKey, custom);
+    if (!bounds) return entries;
+    return entries.filter((entry) => entry.day >= bounds.start && entry.day <= bounds.end);
   };
 
   const buildRows = (labels: string[], weights: number[], total: number) => {
@@ -762,12 +710,14 @@ const Overview: React.FC = () => {
     });
   }, [availableBounds, compareMode, compareRange.start, compareRange.end]);
 
-  const primaryLabel = metricLabels[selectedMetric] ?? selectedMetric;
+  const selectedRangeBounds = useMemo(() => resolveRangeBounds(range, customRange), [range, customRange.start, customRange.end]);
   const lastActualDay = dailySelected.length > 0 ? dailySelected[dailySelected.length - 1].day : null;
+  const firstActualDay = dailySelected.length > 0 ? dailySelected[0].day : null;
   const primaryRangeBounds = useMemo(() => {
+    if (selectedRangeBounds) return selectedRangeBounds;
     if (dailySelected.length === 0) return null;
     return { start: dailySelected[0].day, end: dailySelected[dailySelected.length - 1].day };
-  }, [dailySelected]);
+  }, [selectedRangeBounds, dailySelected]);
 
   const selectedForecast =
     (forecastOptions.find((option) => option.key === forecastKey) as ForecastOption) ??
@@ -889,73 +839,143 @@ const Overview: React.FC = () => {
     : previousBounds
       ? "vs previous period"
       : null;
-  const chartData = useMemo(() => {
-    const actualSeries = dailySelected.map((row) => ({
-      day: row.day,
-      actual: row.value,
-      compare: comparisonAligned.get(row.day) ?? null,
-      projected: null,
-      upper: null,
-      lower: null,
-    }));
-    const lastActual = actualSeries.length > 0 ? actualSeries[actualSeries.length - 1].day : null;
-    const projectedSeries = forecastHorizon
-      .filter((entry) => (!lastActual ? true : entry.day > lastActual))
-      .map((entry) => ({
-        day: entry.day,
-        actual: null,
-        projected: entry.yhat,
-        upper: entry.yhat_upper,
-        lower: entry.yhat_lower,
-      }));
-    return [...actualSeries, ...projectedSeries].sort((a, b) => a.day.localeCompare(b.day));
-  }, [dailySelected, forecastHorizon, comparisonAligned]);
+  const chartDomainDays = useMemo(() => {
+    if (primaryRangeBounds) return enumerateDays(primaryRangeBounds.start, primaryRangeBounds.end);
+    if (dailySelected.length > 0) return dailySelected.map((entry) => entry.day);
+    return [];
+  }, [primaryRangeBounds, dailySelected]);
+  const actualByDay = useMemo(() => new Map(dailySelected.map((row) => [row.day, row.value])), [dailySelected]);
+  const forecastCandidates = useMemo(
+    () => forecastHorizon.filter((entry) => (!lastActualDay ? true : entry.day > lastActualDay)),
+    [forecastHorizon, lastActualDay]
+  );
+  const forecastByDay = useMemo(() => {
+    const map = new Map<string, ForecastEntry>();
+    forecastCandidates.forEach((entry) => {
+      map.set(entry.day, entry);
+    });
+    return map;
+  }, [forecastCandidates]);
+  const forecastStartDay = useMemo(() => {
+    for (const day of chartDomainDays) {
+      if (forecastByDay.has(day)) return day;
+    }
+    return null;
+  }, [chartDomainDays, forecastByDay]);
+  const chartData = useMemo(
+    () =>
+      chartDomainDays.map((day) => {
+        const forecastEntry = forecastByDay.get(day);
+        const lower = forecastEntry?.yhat_lower;
+        const upper = forecastEntry?.yhat_upper;
+        const hasBand = Number.isFinite(lower) && Number.isFinite(upper);
+        return {
+          day,
+          actual: actualByDay.get(day) ?? null,
+          compare: comparisonAligned.get(day) ?? null,
+          forecast: forecastEntry?.yhat ?? null,
+          forecastLower: hasBand ? lower : null,
+          forecastUpper: hasBand ? upper : null,
+          forecastBand: hasBand ? [lower, upper] : null,
+        };
+      }),
+    [chartDomainDays, forecastByDay, actualByDay, comparisonAligned]
+  );
 
   const hasActual = chartData.some((point) => point.actual !== null);
   const hasCompare = chartData.some((point) => point.compare !== null);
-  const hasProjected = chartData.some((point) => point.projected !== null);
-  const hasBounds = chartData.some((point) => point.upper !== null || point.lower !== null);
+  const hasForecast = chartData.some((point) => point.forecast !== null);
+  const hasForecastBand = chartData.some((point) => point.forecastBand !== null);
+  const hasAnyForecastData = forecastCandidates.length > 0;
+  const selectedRangeEnd = primaryRangeBounds?.end ?? null;
+  const actualIsStale = Boolean(lastActualDay && selectedRangeEnd && lastActualDay < selectedRangeEnd);
+  const actualCoverageText =
+    firstActualDay && lastActualDay
+      ? `${formatShortDate(firstActualDay)}–${formatShortDate(lastActualDay)}`
+      : lastActualDay
+        ? formatShortDate(lastActualDay)
+        : "none in selected range";
+  const forecastAvailabilityText = hasForecast
+    ? `Forecast starts ${forecastStartDay ? formatShortDate(forecastStartDay) : "soon"}`
+    : hasAnyForecastData
+      ? "Forecast is outside the selected date range."
+      : "Forecast unavailable until more history is collected.";
+  const forecastMutedNote = hasAnyForecastData
+    ? "Forecast unavailable in selected date range."
+    : "Forecast unavailable until more history is collected.";
 
-  const selectedTotal = totals.pageviews ?? 0;
-  const topSources = useMemo(
+  const selectedBreakdownTotal = useMemo(() => {
+    if (breakdownMetric === "sessions") return totals.sessions;
+    if (breakdownMetric === "conversions") return totals.conversions;
+    if (breakdownMetric === "revenue") return totals.revenue;
+    return totals.pageviews;
+  }, [breakdownMetric, totals.sessions, totals.conversions, totals.revenue, totals.pageviews]);
+  const sourceRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["Organic Search", "Direct", "Referral", "Social", "Email"], [0.36, 0.22, 0.16, 0.14, 0.12], selectedTotal)
-        : breakdownRows.sources,
-    [showSeededBreakdowns, selectedTotal, breakdownRows.sources]
+        ? buildRows(["Organic Search", "Direct", "Google", "Reddit", "LinkedIn"], [0.34, 0.24, 0.18, 0.14, 0.1], selectedBreakdownTotal)
+        : breakdownRows.sources.map((row) => ({ ...row, label: normalizeSourceLabel(row.label) })),
+    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.sources]
   );
-  const topPages = useMemo(
+  const pageRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"], [0.3, 0.22, 0.18, 0.16, 0.14], selectedTotal)
+        ? buildRows(["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"], [0.3, 0.22, 0.18, 0.16, 0.14], selectedBreakdownTotal)
         : breakdownRows.pages,
-    [showSeededBreakdowns, selectedTotal, breakdownRows.pages]
+    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.pages]
   );
   const deviceRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedTotal)
+        ? buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedBreakdownTotal)
         : breakdownRows.devices,
-    [showSeededBreakdowns, selectedTotal, breakdownRows.devices]
+    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.devices]
   );
-  const regionRows = useMemo(
+  const countryRows = useMemo(
     () =>
       showSeededBreakdowns
         ? buildRows(
             ["United States", "United Kingdom", "Canada", "Germany", "France", "Netherlands", "Australia", "Sweden", "India", "Japan"],
             [0.28, 0.12, 0.09, 0.08, 0.07, 0.06, 0.06, 0.05, 0.1, 0.09],
-            selectedTotal
+            selectedBreakdownTotal
           )
         : breakdownRows.countries,
-    [showSeededBreakdowns, selectedTotal, breakdownRows.countries]
+    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.countries]
   );
-  const overallBounceRate = Number.isFinite(totals.bounce_rate) ? clamp(totals.bounce_rate, 0, 1) : 0.5;
-  const detailTotals: DetailTotals = {
-    sessions: totals.sessions,
-    conversions: totals.conversions,
-    revenue: totals.revenue,
-    bounceRate: overallBounceRate,
-  };
+  const goalRows = useMemo(
+    () =>
+      showSeededBreakdowns
+        ? buildRows(["Demo Request", "Contact Us", "Trial Signup", "Purchase", "Newsletter"], [0.34, 0.22, 0.18, 0.16, 0.1], selectedBreakdownTotal)
+        : breakdownRows.conversions,
+    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.conversions]
+  );
+  const breakdownCards = useMemo(() => {
+    if (showSeededBreakdowns) {
+      return [
+        { title: "Sources", rows: sourceRows, empty: "No source data yet for the selected range." },
+        { title: "Pages", rows: pageRows, empty: "No page data yet for the selected range." },
+        { title: "Countries", rows: countryRows, empty: "No country data yet for the selected range." },
+        { title: "Devices", rows: deviceRows, empty: "No device data yet for the selected range." },
+        { title: "Goals", rows: goalRows, empty: "No goal events yet for the selected range." },
+      ];
+    }
+
+    const unavailableMessage = `Metric "${metricLabels[breakdownMetric] ?? breakdownMetric}" is not available for this breakdown yet.`;
+    const sourceMetricRows = breakdownMetric === "sessions" ? sourceRows : [];
+    const pageMetricRows = breakdownMetric === "pageviews" ? pageRows : [];
+    const countryMetricRows = breakdownMetric === "pageviews" ? countryRows : [];
+    const deviceMetricRows = breakdownMetric === "pageviews" ? deviceRows : [];
+    const goalMetricRows = breakdownMetric === "conversions" ? goalRows : [];
+
+    return [
+      { title: "Sources", rows: sourceMetricRows, empty: breakdownMetric === "sessions" ? "No source data yet for the selected range." : unavailableMessage },
+      { title: "Pages", rows: pageMetricRows, empty: breakdownMetric === "pageviews" ? "No page data yet for the selected range." : unavailableMessage },
+      { title: "Countries", rows: countryMetricRows, empty: breakdownMetric === "pageviews" ? "No country data yet for the selected range." : unavailableMessage },
+      { title: "Devices", rows: deviceMetricRows, empty: breakdownMetric === "pageviews" ? "No device data yet for the selected range." : unavailableMessage },
+      { title: "Goals", rows: goalMetricRows, empty: breakdownMetric === "conversions" ? "No goal events yet for the selected range." : unavailableMessage },
+    ];
+  }, [showSeededBreakdowns, sourceRows, pageRows, countryRows, deviceRows, goalRows, breakdownMetric]);
+
   const mapeValue = forecastMeta?.mape ?? Number.NaN;
   const forecastMape = Number.isFinite(mapeValue) ? `${(mapeValue * 100).toFixed(1)}%` : "—";
   const mapeClass = Number.isFinite(mapeValue)
@@ -971,10 +991,7 @@ const Overview: React.FC = () => {
     return formatNumber(value);
   };
   const todayKey = new Date().toISOString().slice(0, 10);
-  const showTodayLine =
-    chartData.length > 0 &&
-    todayKey >= chartData[0].day &&
-    todayKey <= chartData[chartData.length - 1].day;
+  const showTodayLine = chartDomainDays.length > 0 && todayKey >= chartDomainDays[0] && todayKey <= chartDomainDays[chartDomainDays.length - 1];
 
   const slugify = (value: string) => value.toLowerCase().replace(/\s+/g, "-");
   const downloadCsv = (lines: string[], filename: string) => {
@@ -1009,7 +1026,7 @@ const Overview: React.FC = () => {
     const forecastMap = new Map(forecasts.map((item) => [item.metric, item.forecast]));
     const lines: string[] = [["date", "metric", "actual", "forecast", "forecast_lower", "forecast_upper"].join(",")];
     metricKeys.forEach((metric) => {
-      const actualEntries = getDailySeries(metric, range, customRange);
+      const actualEntries = getDailySeries(metric);
       const actualByDay = new Map(actualEntries.map((row) => [row.day, row.value]));
       const lastDay = actualEntries.length > 0 ? actualEntries[actualEntries.length - 1].day : null;
       const metricForecast = forecastMap.get(metric) ?? [];
@@ -1079,7 +1096,6 @@ const Overview: React.FC = () => {
   const handleExportPdf = () => {
     window.print();
   };
-  const forecastTotal = forecastHorizon.reduce((sum, entry) => sum + entry.yhat, 0);
   const csvRows = useMemo(() => {
     const actualByDay = new Map(dailySelected.map((row) => [row.day, row.value]));
     const forecastByDay = new Map(forecastHorizon.map((entry) => [entry.day, entry]));
@@ -1098,26 +1114,6 @@ const Overview: React.FC = () => {
       };
     });
   }, [dailySelected, forecastHorizon]);
-
-  const conversionEvents = useMemo(() => {
-    if (!showSeededBreakdowns) {
-      return breakdownRows.conversions.map((row) => ({
-        label: row.label,
-        count: row.value,
-        rate: totals.sessions > 0 ? row.value / totals.sessions : 0,
-      }));
-    }
-    if (!Number.isFinite(totals.conversions) || totals.conversions <= 0) return [];
-    const labels = ["Demo Request", "Contact Us", "Trial Signup", "Purchase", "Newsletter"];
-    const weights = [0.34, 0.22, 0.18, 0.16, 0.1];
-    const total = totals.conversions;
-    return labels.map((label, index) => {
-      const share = weights[index] / weights.reduce((sum, value) => sum + value, 0);
-      const count = Math.max(1, Math.round(total * share));
-      const rate = totals.sessions > 0 ? count / totals.sessions : 0;
-      return { label, count, rate };
-    });
-  }, [showSeededBreakdowns, breakdownRows.conversions, totals.conversions, totals.sessions]);
 
   return (
     <div className="min-h-screen bg-[#F9FAFB] print-bg">
@@ -1238,26 +1234,30 @@ const Overview: React.FC = () => {
                 )}
               </>
             )}
-            <span className="ml-3 text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-              Forecast
-            </span>
-            <select
-              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
-              style={fontBody}
-              value={forecastKey}
-              onChange={(event) => setForecastKey(event.target.value as (typeof forecastOptions)[number]["key"])}
-            >
-              {forecastOptions.map((option) => {
-                const referenceDate = lastActualDay ? parseDay(lastActualDay) : new Date();
-                const optionLabel =
-                  option.kind === "quarter" ? getQuarterWindow(option.quarter, referenceDate).label : option.label;
-                return (
-                  <option key={option.key} value={option.key}>
-                    {optionLabel}
-                  </option>
-                );
-              })}
-            </select>
+            {forecast.length > 0 && (
+              <>
+                <span className="ml-3 text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+                  Forecast
+                </span>
+                <select
+                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                  style={fontBody}
+                  value={forecastKey}
+                  onChange={(event) => setForecastKey(event.target.value as (typeof forecastOptions)[number]["key"])}
+                >
+                  {forecastOptions.map((option) => {
+                    const referenceDate = lastActualDay ? parseDay(lastActualDay) : new Date();
+                    const optionLabel =
+                      option.kind === "quarter" ? getQuarterWindow(option.quarter, referenceDate).label : option.label;
+                    return (
+                      <option key={option.key} value={option.key}>
+                        {optionLabel}
+                      </option>
+                    );
+                  })}
+                </select>
+              </>
+            )}
             <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
               CSV
             </span>
@@ -1316,56 +1316,30 @@ const Overview: React.FC = () => {
           onSelectMetric={setSelectedMetric}
         />
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
-          <div className="border-b border-[var(--color-border-subtle)] pb-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-sm border border-[var(--color-border-subtle)] bg-[#F9FAFB] px-4 py-4">
-                <div className="label-tight text-gray-500" style={fontBody}>
-                  Operational Status
+          <div className="mb-4 border-b border-[var(--color-border-subtle)] pb-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className="text-base font-semibold text-[#1F2937]" style={fontBody}>
+                  Trend
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
-                  <span style={fontBody}>
-                    Live visitors
-                    <span className="ml-1 text-[#111827] metric-number" style={fontMetric}>
-                      {formatNumber(liveValue)}
-                    </span>
-                  </span>
-                  <span style={fontBody}>
-                    Last updated
-                    <span className="ml-1 text-[#111827] meta-number" style={fontMeta}>
-                      {lastActualDay ? formatShortDate(lastActualDay) : "—"}
-                    </span>
-                  </span>
-                  {forecastMeta?.has_anomaly && (
-                    <span className="text-[#8B2635]" style={fontBody}>
-                      Anomaly flagged
-                    </span>
-                  )}
+                <div className="mt-1 text-xs text-gray-500" style={fontBody}>
+                  Actual coverage: {actualCoverageText}. {forecastAvailabilityText}
                 </div>
+                {actualIsStale && lastActualDay && (
+                  <div className="mt-1 text-xs text-gray-400" style={fontBody}>
+                    Actual data through {formatShortDate(lastActualDay)}.
+                  </div>
+                )}
               </div>
-              <div className="rounded-sm border border-[var(--color-border-subtle)] bg-[#F9FAFB] px-4 py-4 md:text-right">
-                <div className="label-tight text-gray-500" style={fontBody}>
-                  Forecast Summary
+              <div className="text-right text-[11px] text-gray-500" style={fontBody}>
+                <div>
+                  Live visitors: <span className="metric-number text-[#111827]" style={fontMetric}>{formatNumber(liveValue)}</span>
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600 md:justify-end">
-                  <span style={fontBody}>
-                    Horizon
-                    <span className="ml-1 text-[#111827] metric-number" style={fontMetric}>
-                      {forecastLabel}
-                    </span>
-                  </span>
-                  <span style={fontBody}>
-                    Projected
-                    <span className="ml-1 text-[#111827] metric-number" style={fontMetric}>
-                      {forecast.length > 0 ? formatMetricValue(selectedMetric, forecastTotal) : "—"}
-                    </span>
-                  </span>
-                  <span style={fontBody}>
-                    MAPE
-                    <span className={`ml-1 metric-number ${mapeClass}`} style={fontMetric}>
-                      {forecastMape}
-                    </span>
-                  </span>
-                </div>
+                {hasForecast && (
+                  <div className="mt-1">
+                    Forecast quality: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1396,19 +1370,24 @@ const Overview: React.FC = () => {
                     width={48}
                   />
                   <Tooltip
-                    formatter={(value: number, name: string) => {
+                    formatter={(value: number | [number, number], name: string) => {
+                      if (Array.isArray(value)) {
+                        const low = formatMetricValue(selectedMetric, value[0]);
+                        const high = formatMetricValue(selectedMetric, value[1]);
+                        return [`${low} to ${high}`, "Forecast interval"];
+                      }
                       const label =
                         name === "actual"
                           ? "Actual"
                           : name === "compare"
                             ? "Comparison"
-                          : name === "projected"
-                            ? "Forecast"
-                            : name === "upper"
-                              ? "Upper"
-                              : name === "lower"
-                                ? "Lower"
-                                : name;
+                            : name === "forecast"
+                              ? "Forecast"
+                              : name === "forecastUpper"
+                                ? "Forecast upper"
+                                : name === "forecastLower"
+                                  ? "Forecast lower"
+                                  : name;
                       return [formatMetricValue(selectedMetric, value), label];
                     }}
                     labelFormatter={(label) => formatShortDate(String(label))}
@@ -1436,6 +1415,30 @@ const Overview: React.FC = () => {
                       }}
                     />
                   )}
+                  {hasForecast && forecastStartDay && (
+                    <ReferenceLine
+                      x={forecastStartDay}
+                      stroke="#9CA3AF"
+                      strokeDasharray="4 4"
+                      label={{
+                        value: "Forecast starts",
+                        position: "insideTopLeft",
+                        fill: "#6B7280",
+                        fontSize: 10,
+                        fontFamily: "var(--font-sans)",
+                      }}
+                    />
+                  )}
+                  {hasForecastBand && (
+                    <Area
+                      type="monotone"
+                      dataKey="forecastBand"
+                      stroke="none"
+                      fill="#4DB8B8"
+                      fillOpacity={0.16}
+                      isAnimationActive={false}
+                    />
+                  )}
                   {hasActual && (
                     <Line
                       type="monotone"
@@ -1453,172 +1456,90 @@ const Overview: React.FC = () => {
                       stroke="#9CA3AF"
                       strokeWidth={1.5}
                       strokeDasharray="4 6"
-                      strokeOpacity={0.7}
+                      strokeOpacity={0.75}
                       dot={false}
                       isAnimationActive={false}
                     />
                   )}
-                  {hasProjected && (
+                  {hasForecast && (
                     <Line
                       type="monotone"
-                      dataKey="projected"
+                      dataKey="forecast"
                       stroke="#0A5F6F"
                       strokeWidth={2}
                       strokeDasharray="6 6"
-                      strokeOpacity={0.85}
+                      strokeOpacity={0.9}
                       dot={false}
                       isAnimationActive={false}
                     />
-                  )}
-                  {hasBounds && (
-                    <>
-                      <Line
-                        type="monotone"
-                        dataKey="upper"
-                        stroke="#1B7F8E"
-                        strokeWidth={1.5}
-                        strokeDasharray="2 6"
-                        strokeOpacity={0.4}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="lower"
-                        stroke="#1B7F8E"
-                        strokeWidth={1.5}
-                        strokeDasharray="2 6"
-                        strokeOpacity={0.4}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </>
                   )}
                 </LineChart>
               </ResponsiveContainer>
             )}
           </div>
-          <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-gray-500">
-            <div className="flex items-center gap-4" style={fontBody}>
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-gray-500" style={fontBody}>
+            {hasActual && (
               <span className="flex items-center gap-2">
                 <span className="h-0.5 w-5 bg-[#1B7F8E]" />
                 Actual
               </span>
-              {compareEnabled && hasCompare && (
-                <span className="flex items-center gap-2">
-                  <span className="h-0.5 w-5 border-b border-dashed border-gray-400 opacity-80" />
-                  Comparison
-                </span>
-              )}
+            )}
+            {compareEnabled && hasCompare && (
               <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 border-b border-dashed border-[#0A5F6F] opacity-80" />
-                Projected
-              </span>
-              <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 border-b border-dotted border-[#1B7F8E] opacity-40" />
-                Upper/Lower
-              </span>
-            </div>
-            {forecast.length > 0 && !hasProjected && (
-              <span style={fontBody} className="text-[10px] uppercase tracking-[0.2em] text-gray-400">
-                No projection available
+                <span className="h-0.5 w-5 border-b border-dashed border-gray-400" />
+                Comparison
               </span>
             )}
+            {hasForecast && (
+              <span className="flex items-center gap-2">
+                <span className="h-0.5 w-5 border-b border-dashed border-[#0A5F6F]" />
+                Forecast
+              </span>
+            )}
+            {hasForecastBand && (
+              <span className="flex items-center gap-2">
+                <span className="h-2 w-5 bg-[#4DB8B8]/30" />
+                Forecast interval
+              </span>
+            )}
+            {!hasForecast && <span className="text-xs text-gray-400">{forecastMutedNote}</span>}
           </div>
         </section>
 
-        <section className="grid gap-6 md:grid-cols-2">
-          <TableBlock
-            title="Top Sources"
-            labelHeader="Referrer"
-            rows={topSources}
-            valueLabel={showSeededBreakdowns ? primaryLabel : "Sessions"}
-            metricKey={showSeededBreakdowns ? selectedMetric : "sessions"}
-            detailTotals={detailTotals}
-            emptyState={
-              showSeededBreakdowns
-                ? "Awaiting events. This table will populate after data arrives."
-                : "No source data yet for the selected range."
-            }
-          />
-          <TableBlock
-            title="Top Pages"
-            labelHeader="Path"
-            rows={topPages}
-            valueLabel={showSeededBreakdowns ? primaryLabel : "Pageviews"}
-            metricKey={showSeededBreakdowns ? selectedMetric : "pageviews"}
-            detailTotals={detailTotals}
-            emptyState={
-              showSeededBreakdowns
-                ? "Awaiting events. This table will populate after data arrives."
-                : "No page-path data yet for the selected range."
-            }
-          />
-          <TableBlock
-            title="Devices"
-            labelHeader="Device"
-            rows={deviceRows}
-            valueLabel={showSeededBreakdowns ? primaryLabel : "Pageviews"}
-            metricKey={showSeededBreakdowns ? selectedMetric : "pageviews"}
-            detailTotals={detailTotals}
-            emptyState={
-              showSeededBreakdowns
-                ? "Awaiting events. This table will populate after data arrives."
-                : "No device data yet for the selected range."
-            }
-          />
-          <TableBlock
-            title="Regions"
-            labelHeader="Country"
-            rows={regionRows}
-            valueLabel={showSeededBreakdowns ? primaryLabel : "Pageviews"}
-            metricKey={showSeededBreakdowns ? selectedMetric : "pageviews"}
-            detailTotals={detailTotals}
-            emptyState={
-              showSeededBreakdowns
-                ? "Awaiting events. This table will populate after data arrives."
-                : "No country data yet for the selected range."
-            }
-          />
-        </section>
-
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="mb-3 text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-            Conversion Events
-          </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_120px_140px] items-center border-b border-gray-200 pb-2 text-xs text-gray-500">
-            <span style={fontBody}>Event</span>
-            <span className="text-right" style={fontBody}>
-              Total
-            </span>
-            <span className="text-right" style={fontBody}>
-              Conversion Rate
-            </span>
-          </div>
-          {conversionEvents.length === 0 ? (
-            <div className="py-6 text-xs text-gray-400" style={fontBody}>
-              {showSeededBreakdowns
-                ? "Awaiting conversion events. This table will populate after data arrives."
-                : "No conversion events yet for the selected range."}
+        <section className="border border-[var(--color-border-subtle)] bg-white p-4">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+              Breakdowns
             </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {conversionEvents.map((event) => (
-                <div
-                  key={event.label}
-                  className="grid grid-cols-[minmax(0,1fr)_120px_140px] items-center py-2 text-sm text-gray-700"
-                >
-                  <span style={fontBody}>{event.label}</span>
-                  <span className="text-right text-gray-900" style={fontMetric}>
-                    {formatNumber(event.count)}
-                  </span>
-                  <span className="text-right text-gray-900" style={fontMetric}>
-                    {formatPercent(event.rate)}
-                  </span>
-                </div>
-              ))}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500" style={fontBody}>
+                Metric
+              </span>
+              <select
+                className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                style={fontBody}
+                value={breakdownMetric}
+                onChange={(event) => setBreakdownMetric(event.target.value as BreakdownMetricKey)}
+              >
+                {breakdownMetricOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
-          )}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {breakdownCards.map((card) => (
+              <TableBlock
+                key={card.title}
+                title={card.title}
+                rows={card.rows}
+                metricKey={breakdownMetric}
+                emptyState={card.empty}
+              />
+            ))}
+          </div>
         </section>
       </main>
     </div>
