@@ -954,7 +954,7 @@ const Overview: React.FC = () => {
     : previousBounds
       ? "vs previous period"
       : null;
-  const chartDomainDays = useMemo(() => {
+  const rangeDomainDays = useMemo(() => {
     if (primaryRangeBounds) return enumerateDays(primaryRangeBounds.start, primaryRangeBounds.end);
     if (dailySelected.length > 0) return dailySelected.map((entry) => entry.day);
     return [];
@@ -971,6 +971,12 @@ const Overview: React.FC = () => {
     });
     return map;
   }, [forecastCandidates]);
+  const chartDomainDays = useMemo(() => {
+    if (forecastCandidates.length === 0) return rangeDomainDays;
+    const merged = new Set<string>(rangeDomainDays);
+    forecastCandidates.forEach((entry) => merged.add(entry.day));
+    return Array.from(merged).sort((a, b) => a.localeCompare(b));
+  }, [rangeDomainDays, forecastCandidates]);
   const forecastStartDay = useMemo(() => {
     for (const day of chartDomainDays) {
       if (forecastByDay.has(day)) return day;
