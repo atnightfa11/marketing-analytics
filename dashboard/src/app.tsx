@@ -316,6 +316,40 @@ const buildSeededDailySeries = (days: number = 180) => {
   return seeded;
 };
 
+const buildSeededForecast = (entries: { day: string; value: number }[], horizonDays: number = 120): ForecastEntry[] => {
+  if (!entries.length) return [];
+  const sorted = [...entries].sort((a, b) => a.day.localeCompare(b.day));
+  const recent = sorted.slice(-Math.min(28, sorted.length)).map((row) => row.value);
+  const average = recent.reduce((sum, value) => sum + value, 0) / Math.max(1, recent.length);
+  const firstRecent = recent[0] ?? average;
+  const lastRecent = recent[recent.length - 1] ?? average;
+  const trendPerDay = (lastRecent - firstRecent) / Math.max(1, recent.length - 1);
+  const variance =
+    recent.reduce((sum, value) => {
+      const delta = value - average;
+      return sum + delta * delta;
+    }, 0) / Math.max(1, recent.length);
+  const sigma = Math.max(1, Math.sqrt(variance));
+  const lastDay = parseDay(sorted[sorted.length - 1].day);
+
+  const forecast: ForecastEntry[] = [];
+  const cappedHorizon = Math.max(1, horizonDays);
+  for (let i = 1; i <= cappedHorizon; i += 1) {
+    const day = new Date(lastDay);
+    day.setDate(day.getDate() + i);
+    const seasonal = 1 + Math.sin(((sorted.length + i) / 7) * Math.PI * 2) * 0.09;
+    const yhat = Math.max(0, (average + trendPerDay * i) * seasonal);
+    const band = 1.2816 * sigma;
+    forecast.push({
+      day: formatIsoDate(day),
+      yhat,
+      yhat_lower: Math.max(0, yhat - band),
+      yhat_upper: Math.max(0, yhat + band),
+    });
+  }
+  return forecast;
+};
+
 const aggregateRowsByLabel = (rows: TableRow[]) => {
   const bucket = new Map<string, number>();
   rows.forEach((row) => {
@@ -458,19 +492,30 @@ const Overview: React.FC = () => {
   }, [canQuery, token, siteId]);
 
   useEffect(() => {
-    if (!canQuery) return;
     if (!aggregateMetricKeys.includes(selectedMetric as (typeof aggregateMetricKeys)[number])) {
       setForecast([]);
       setForecastMeta(null);
       return;
     }
+    if (showSeededBreakdowns) {
+      let seededMetricSeries: { day: string; value: number }[] = [];
+      if (selectedMetric === "pageviews") seededMetricSeries = seededSeries.pageviews;
+      else if (selectedMetric === "uniques") seededMetricSeries = seededSeries.uniques;
+      else if (selectedMetric === "sessions") seededMetricSeries = seededSeries.sessions;
+      else if (selectedMetric === "conversions") seededMetricSeries = seededSeries.conversions;
+      else if (selectedMetric === "revenue") seededMetricSeries = seededSeries.revenue;
+      setForecast(buildSeededForecast(seededMetricSeries, 120));
+      setForecastMeta({ mape: 0.08, has_anomaly: false });
+      return;
+    }
+    if (!canQuery) return;
     fetchForecast(token, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
         setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly });
       })
       .catch(console.error);
-  }, [canQuery, token, selectedMetric, siteId]);
+  }, [canQuery, token, selectedMetric, siteId, showSeededBreakdowns]);
 
   useEffect(() => {
     if (!canQuery) return;
