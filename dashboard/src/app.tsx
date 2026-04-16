@@ -56,16 +56,16 @@ const metricLabels: Record<string, string> = {
   sessions: "Sessions",
   pageviews: "Pageviews",
   conversions: "Conversions",
-  avg_pages_per_visit: "Avg. Pages per Visit",
+  avg_pages_per_visit: "Average Pages per Visit",
   bounce_rate: "Bounce Rate",
   visit_duration: "Visit Duration",
   revenue: "Revenue",
 };
 const breakdownMetricInlineLabels: Record<BreakdownMetricKey, string> = {
-  uniques: "vis",
-  sessions: "ses",
-  pageviews: "pv",
-  conversions: "conv",
+  uniques: "Visitors",
+  sessions: "Sessions",
+  pageviews: "Pageviews",
+  conversions: "Conversions",
 };
 const hourOfDayLabels = [
   "12 AM",
@@ -101,7 +101,7 @@ const metricOptions = [
   { key: "sessions", label: "Sessions" },
   { key: "conversions", label: "Conversions" },
   { key: "revenue", label: "Revenue" },
-  { key: "avg_pages_per_visit", label: "Avg. Pages per Visit" },
+  { key: "avg_pages_per_visit", label: "Average Pages per Visit" },
   { key: "visit_duration", label: "Visit Duration" },
   { key: "bounce_rate", label: "Bounce Rate" },
 ];
@@ -110,10 +110,10 @@ const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices"
 
 const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
 const forecastOptions = [
-  { key: "7d", label: "7 days", kind: "days", days: 7 },
-  { key: "30d", label: "30d", kind: "days", days: 30 },
-  { key: "60d", label: "60d", kind: "days", days: 60 },
-  { key: "90d", label: "90d", kind: "days", days: 90 },
+  { key: "7d", label: "Next 7 Days", kind: "days", days: 7 },
+  { key: "30d", label: "Next 30 Days", kind: "days", days: 30 },
+  { key: "60d", label: "Next 60 Days", kind: "days", days: 60 },
+  { key: "90d", label: "Next 90 Days", kind: "days", days: 90 },
   { key: "q1", label: "Q1", kind: "quarter", quarter: 1 },
   { key: "q2", label: "Q2", kind: "quarter", quarter: 2 },
   { key: "q3", label: "Q3", kind: "quarter", quarter: 3 },
@@ -287,10 +287,61 @@ interface TrendChartPoint {
   compare: number | null;
   compareDay: string | null;
   forecast: number | null;
+  forecastLine: number | null;
   forecastLower: number | null;
   forecastUpper: number | null;
   forecastBandSpan: number | null;
 }
+
+const DeviceIcon: React.FC<{ label: string }> = ({ label }) => {
+  const commonProps = {
+    width: 14,
+    height: 14,
+    viewBox: "0 0 14 14",
+    fill: "none",
+    stroke: "#94A3B8",
+    strokeWidth: 1.3,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (label === "Mobile") {
+    return (
+      <svg {...commonProps}>
+        <rect x="4" y="1.5" width="6" height="11" rx="1.6" />
+        <path d="M6.3 10.2h1.4" />
+      </svg>
+    );
+  }
+
+  if (label === "Tablet") {
+    return (
+      <svg {...commonProps}>
+        <rect x="2.7" y="1.7" width="8.6" height="10.6" rx="1.2" />
+        <path d="M6.2 10.4h1.6" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...commonProps}>
+      <rect x="1.7" y="2" width="10.6" height="7" rx="1" />
+      <path d="M4.7 11.5h4.6" />
+      <path d="M7 9v2.5" />
+    </svg>
+  );
+};
+
+const renderBreakdownLabel = (dimension: string | undefined, label: string) => {
+  if (dimension !== "device") return label;
+  return (
+    <span className="inline-flex min-w-0 items-center gap-2">
+      <DeviceIcon label={label} />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+};
 
 const createEmptyBreakdownData = (
   primaryMetric: BreakdownMetricKey,
@@ -475,7 +526,7 @@ const TableBlock: React.FC<{
 
   return (
     <div className="border border-[var(--color-border-subtle)] bg-white p-4">
-      <div className="mb-3 text-sm font-semibold text-[#1F2937]" style={fontBody}>
+      <div className="mb-3 text-[13px] font-semibold text-[#1F2937]" style={fontBody}>
         {title}
       </div>
       {rows.length === 0 ? (
@@ -491,11 +542,11 @@ const TableBlock: React.FC<{
               activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
             );
             return (
-              <div key={row.label} className="rounded-sm border border-[#EEF3F6] px-3 py-3">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+              <div key={row.label} className="rounded-sm border border-[#E3EBEF] px-3 py-2.5">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5">
                   <button
                     type="button"
-                    className={`min-w-0 truncate whitespace-nowrap text-left text-sm text-gray-700 transition-colors ${
+                    className={`min-w-0 truncate whitespace-nowrap text-left text-[13px] text-[#374151] transition-colors ${
                       rowDimension && onToggleFilter
                         ? isActive
                           ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
@@ -508,22 +559,22 @@ const TableBlock: React.FC<{
                       onToggleFilter(rowDimension, row, totalValue, primaryMetric);
                     }}
                   >
-                    {row.label}
+                    {renderBreakdownLabel(rowDimension, row.label)}
                   </button>
-                  <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap text-right">
+                  <div className="flex items-center gap-3 whitespace-nowrap text-right">
                     {metricKeys.map((metricKey) => (
                       <div key={metricKey} className="flex items-baseline gap-1 text-right">
-                        <div className="text-sm text-gray-900 metric-number" style={fontMetric}>
+                        <div className="text-[13px] font-medium text-[#111827] metric-number" style={fontMetric}>
                           {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
                         </div>
-                        <div className="text-[10px] uppercase tracking-[0.14em] text-gray-400" style={fontMeta}>
+                        <div className="text-[10px] text-[#6B7280]" style={fontBody}>
                           {breakdownMetricInlineLabels[metricKey]}
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
-                <div className="mt-3 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
+                <div className="mt-2.5 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
                   <div className="h-1.5 rounded-sm bg-[#A9C7CF]" style={{ width: `${width}%` }} />
                 </div>
               </div>
@@ -575,7 +626,7 @@ const Overview: React.FC = () => {
   const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
   const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">("channels");
   const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">("campaign");
-  const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">("hour_of_day");
+  const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">("day_of_week");
   const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
 
@@ -1157,12 +1208,21 @@ const Overview: React.FC = () => {
     });
     return map;
   }, [forecastCandidates]);
+  const forecastAnchorDay = useMemo(() => {
+    if (!lastActualDay || forecastCandidates.length === 0) return null;
+    const rangeStartDay = rangeDomainDays[0];
+    if (rangeStartDay && lastActualDay < rangeStartDay) return null;
+    return lastActualDay;
+  }, [lastActualDay, forecastCandidates.length, rangeDomainDays]);
   const chartDomainDays = useMemo(() => {
     if (forecastCandidates.length === 0) return rangeDomainDays;
     const merged = new Set<string>(rangeDomainDays);
+    if (forecastAnchorDay) {
+      merged.add(forecastAnchorDay);
+    }
     forecastCandidates.forEach((entry) => merged.add(entry.day));
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
-  }, [rangeDomainDays, forecastCandidates]);
+  }, [rangeDomainDays, forecastCandidates, forecastAnchorDay]);
   const forecastStartDay = useMemo(() => {
     for (const day of chartDomainDays) {
       if (forecastByDay.has(day)) return day;
@@ -1184,12 +1244,15 @@ const Overview: React.FC = () => {
           compare: comparisonEntry?.value ?? null,
           compareDay: comparisonEntry?.day ?? null,
           forecast: forecastEntry?.yhat ?? null,
+          forecastLine:
+            forecastEntry?.yhat ??
+            (forecastAnchorDay && day === forecastAnchorDay ? actualByDay.get(day) ?? null : null),
           forecastLower: hasBand ? (lower as number) : null,
           forecastUpper: hasBand ? (upper as number) : null,
           forecastBandSpan: hasBand ? bandSpan : null,
         } satisfies TrendChartPoint;
       }),
-    [chartDomainDays, forecastByDay, actualByDay, comparisonAligned]
+    [chartDomainDays, forecastByDay, actualByDay, comparisonAligned, forecastAnchorDay]
   );
 
   const scaledKpiComparisonValues = useMemo(() => {
@@ -1216,6 +1279,9 @@ const Overview: React.FC = () => {
           actual: Number.isFinite(point.actual ?? Number.NaN) ? (point.actual ?? 0) * trendScale : point.actual,
           compare: Number.isFinite(point.compare ?? Number.NaN) ? (point.compare ?? 0) * trendScale : point.compare,
           forecast: Number.isFinite(point.forecast ?? Number.NaN) ? (point.forecast ?? 0) * trendScale : point.forecast,
+          forecastLine: Number.isFinite(point.forecastLine ?? Number.NaN)
+            ? (point.forecastLine ?? 0) * trendScale
+            : point.forecastLine,
           forecastLower: Number.isFinite(point.forecastLower ?? Number.NaN)
             ? (point.forecastLower ?? 0) * trendScale
             : point.forecastLower,
@@ -1244,7 +1310,7 @@ const Overview: React.FC = () => {
         ? formatShortDate(lastActualDay)
         : "none in selected range";
   const forecastAvailabilityText = hasForecast
-    ? `Forecast starts ${forecastStartDay ? formatShortDate(forecastStartDay) : "soon"}`
+    ? `Forecast continues ${forecastStartDay ? formatShortDate(forecastStartDay) : "soon"}`
     : hasAnyForecastData
       ? "Forecast is outside the selected date range."
       : "Forecast unavailable until more history is collected.";
@@ -1774,30 +1840,6 @@ const Overview: React.FC = () => {
                 )}
               </>
             )}
-            {forecast.length > 0 && (
-              <>
-                <span className="ml-3 text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                  Forecast
-                </span>
-                <select
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
-                  style={fontBody}
-                  value={forecastKey}
-                  onChange={(event) => setForecastKey(event.target.value as (typeof forecastOptions)[number]["key"])}
-                >
-                  {forecastOptions.map((option) => {
-                    const referenceDate = lastActualDay ? parseDay(lastActualDay) : new Date();
-                    const optionLabel =
-                      option.kind === "quarter" ? getQuarterWindow(option.quarter, referenceDate).label : option.label;
-                    return (
-                      <option key={option.key} value={option.key}>
-                        {optionLabel}
-                      </option>
-                    );
-                  })}
-                </select>
-              </>
-            )}
             <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
               CSV
             </span>
@@ -1880,16 +1922,16 @@ const Overview: React.FC = () => {
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
           <div className="mb-4 border-b border-[var(--color-border-subtle)] pb-3">
             <div className="flex flex-wrap items-end justify-between gap-3">
-              <div className="text-xs text-gray-500" style={fontBody}>
+              <div className="text-[11px] text-[#4B5563]" style={fontBody}>
                 Actual coverage: {actualCoverageText}. {forecastAvailabilityText}
                 {actualIsStale && lastActualDay && (
-                  <div className="mt-1 text-xs text-gray-400" style={fontBody}>
+                  <div className="mt-1 text-[11px] text-[#6B7280]" style={fontBody}>
                     Actual data through {formatShortDate(lastActualDay)}.
                   </div>
                 )}
               </div>
               {hasForecast && (
-                <div className="text-right text-[11px] text-gray-500" style={fontBody}>
+                <div className="text-right text-[11px] text-[#4B5563]" style={fontBody}>
                   MAPE: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
                 </div>
               )}
@@ -1972,11 +2014,27 @@ const Overview: React.FC = () => {
                           {!Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(forecastValue ?? Number.NaN) && (
                             <div className="mt-2 border-t border-white/10 pt-2">
                               <div className="flex items-center justify-between gap-4 py-1 text-sm">
-                                <span className="text-gray-300" style={fontBody}>Projected</span>
+                                <span className="text-gray-200" style={fontBody}>{formatTooltipDate(String(label))}</span>
                                 <span className="metric-number text-white" style={fontMetric}>
                                   {formatMetricValue(selectedMetric, forecastValue ?? Number.NaN)}
                                 </span>
                               </div>
+                              {Number.isFinite(point.forecastLower ?? Number.NaN) && (
+                                <div className="flex items-center justify-between gap-4 py-1 text-sm">
+                                  <span className="text-gray-400" style={fontBody}>Lower interval</span>
+                                  <span className="metric-number text-gray-200" style={fontMetric}>
+                                    {formatMetricValue(selectedMetric, point.forecastLower ?? Number.NaN)}
+                                  </span>
+                                </div>
+                              )}
+                              {Number.isFinite(point.forecastUpper ?? Number.NaN) && (
+                                <div className="flex items-center justify-between gap-4 py-1 text-sm">
+                                  <span className="text-gray-400" style={fontBody}>Upper interval</span>
+                                  <span className="metric-number text-gray-200" style={fontMetric}>
+                                    {formatMetricValue(selectedMetric, point.forecastUpper ?? Number.NaN)}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2006,24 +2064,10 @@ const Overview: React.FC = () => {
                       }}
                     />
                   )}
-                  {hasForecast && forecastStartDay && (
-                    <ReferenceLine
-                      x={forecastStartDay}
-                      stroke="#9CA3AF"
-                      strokeDasharray="4 4"
-                      label={{
-                        value: "Forecast starts",
-                        position: "insideTopLeft",
-                        fill: "#6B7280",
-                        fontSize: 10,
-                        fontFamily: "var(--font-sans)",
-                      }}
-                    />
-                  )}
                   {hasForecastBand && (
                     <>
                       <Area
-                        type="monotone"
+                        type="linear"
                         dataKey="forecastLower"
                         stackId="forecast-band"
                         stroke="none"
@@ -2031,7 +2075,7 @@ const Overview: React.FC = () => {
                         isAnimationActive={false}
                       />
                       <Area
-                        type="monotone"
+                        type="linear"
                         dataKey="forecastBandSpan"
                         stackId="forecast-band"
                         stroke="none"
@@ -2043,7 +2087,7 @@ const Overview: React.FC = () => {
                   )}
                   {hasActual && (
                     <Line
-                      type="monotone"
+                      type="linear"
                       dataKey="actual"
                       stroke="#1B7F8E"
                       strokeWidth={2}
@@ -2053,7 +2097,7 @@ const Overview: React.FC = () => {
                   )}
                   {compareEnabled && hasCompare && (
                     <Line
-                      type="monotone"
+                      type="linear"
                       dataKey="compare"
                       stroke="#9CA3AF"
                       strokeWidth={1.5}
@@ -2065,8 +2109,8 @@ const Overview: React.FC = () => {
                   )}
                   {hasForecast && (
                     <Line
-                      type="monotone"
-                      dataKey="forecast"
+                      type="linear"
+                      dataKey="forecastLine"
                       stroke="#0A5F6F"
                       strokeWidth={2}
                       strokeDasharray="6 6"
@@ -2079,7 +2123,7 @@ const Overview: React.FC = () => {
               </ResponsiveContainer>
             )}
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-gray-500" style={fontBody}>
+          <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-[#4B5563]" style={fontBody}>
             {hasActual && (
               <span className="flex items-center gap-2">
                 <span className="h-0.5 w-5 bg-[#1B7F8E]" />
@@ -2104,19 +2148,33 @@ const Overview: React.FC = () => {
                 Forecast interval
               </span>
             )}
-            {!hasForecast && <span className="text-xs text-gray-400">{forecastMutedNote}</span>}
+            {!hasForecast && <span className="text-xs text-[#6B7280]">{forecastMutedNote}</span>}
           </div>
         </section>
-        {forecastSummary && (
-          <section className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                Forecast
-              </div>
-              <div className="text-[11px] text-gray-500" style={fontBody}>
-                {forecastLabel}
-              </div>
+        <section className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+              Forecast
             </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-[#6B7280]" style={fontMeta}>
+                Horizon
+              </span>
+              <select
+                className="border border-[#D6E1E7] bg-white px-2.5 py-1.5 text-xs text-[#1F2937]"
+                style={fontBody}
+                value={forecastKey}
+                onChange={(event) => setForecastKey(event.target.value as ForecastOption["key"])}
+              >
+                {forecastOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {forecastSummary ? (
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
                 <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
@@ -2135,16 +2193,17 @@ const Overview: React.FC = () => {
                 </div>
               </div>
             </div>
-          </section>
-        )}
+          ) : (
+            <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
+              {forecastMutedNote}
+            </div>
+          )}
+        </section>
 
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
               Breakdowns
-            </div>
-            <div className="text-[11px] text-gray-400" style={fontBody}>
-              Each card now shows its attributable metrics inline.
             </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
@@ -2205,35 +2264,6 @@ const Overview: React.FC = () => {
                 emptyState={acquisitionEmptyState}
               />
             </div>
-            <div className="border border-[var(--color-border-subtle)] bg-white p-4">
-              <div className="mb-3 flex flex-wrap items-center gap-4 text-xs font-semibold text-gray-500" style={fontBody}>
-                <button
-                  type="button"
-                  className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                  onClick={() => setTimePartingTab("hour_of_day")}
-                >
-                  Hour of Day
-                </button>
-                <button
-                  type="button"
-                  className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                  onClick={() => setTimePartingTab("day_of_week")}
-                >
-                  Day of Week
-                </button>
-              </div>
-              <TableBlock
-                title="Time Parting"
-                rows={timePartingRows}
-                metricKeys={timePartingMetricKeys}
-                primaryMetric={timePartingPrimaryMetric}
-                total={timePartingTotal}
-                rowDimension={timePartingTab}
-                activeFilter={activeFilter}
-                onToggleFilter={toggleFilter}
-                emptyState={timePartingEmptyState}
-              />
-            </div>
             <TableBlock
               title="Top Pages"
               rows={breakdownCards[0]?.rows ?? []}
@@ -2277,6 +2307,35 @@ const Overview: React.FC = () => {
               rowDimension={breakdownCards[3]?.dimension}
               activeFilter={activeFilter}
               onToggleFilter={toggleFilter}
+            />
+          </div>
+          <div className="mt-4 border border-[var(--color-border-subtle)] bg-white p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-4 text-xs font-semibold text-gray-500" style={fontBody}>
+              <button
+                type="button"
+                className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                onClick={() => setTimePartingTab("day_of_week")}
+              >
+                Day of Week
+              </button>
+              <button
+                type="button"
+                className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                onClick={() => setTimePartingTab("hour_of_day")}
+              >
+                Hour of Day
+              </button>
+            </div>
+            <TableBlock
+              title="Time Parting"
+              rows={timePartingRows}
+              metricKeys={timePartingMetricKeys}
+              primaryMetric={timePartingPrimaryMetric}
+              total={timePartingTotal}
+              rowDimension={timePartingTab}
+              activeFilter={activeFilter}
+              onToggleFilter={toggleFilter}
+              emptyState={timePartingEmptyState}
             />
           </div>
           {activeFilter && (
