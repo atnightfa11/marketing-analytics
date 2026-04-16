@@ -164,6 +164,42 @@ const formatAxisDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const formatTooltipDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+type ChartGranularity = "day" | "week" | "month";
+
+// Returns the ISO date (YYYY-MM-DD) marking the start of the bucket that contains `day`.
+// Weeks start on Monday so partial weeks line up with common analytics conventions.
+const bucketKeyFor = (day: string, granularity: ChartGranularity): string => {
+  if (granularity === "day") return day;
+  const date = new Date(`${day}T00:00:00Z`);
+  if (granularity === "month") {
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  }
+  const weekday = (date.getUTCDay() + 6) % 7;
+  const monday = new Date(date);
+  monday.setUTCDate(date.getUTCDate() - weekday);
+  return monday.toISOString().slice(0, 10);
+};
+
+const formatAxisDateGranular = (value: string, granularity: ChartGranularity): string => {
+  const d = new Date(value);
+  if (granularity === "month") return d.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+};
+
+const formatTooltipDateGranular = (value: string, granularity: ChartGranularity): string => {
+  const d = new Date(value);
+  if (granularity === "month") {
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }
+  if (granularity === "week") {
+    return `Week of ${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+  }
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+};
+
+const granularityLabel = (granularity: ChartGranularity): string =>
+  granularity === "month" ? "monthly" : granularity === "week" ? "weekly" : "daily";
 const formatRangeLabel = (start: string, end: string) => {
   const startDate = parseDay(start);
   const endDate = parseDay(end);
@@ -1531,9 +1567,91 @@ const Overview: React.FC = () => {
 
   const isCountTrendMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(selectedMetric);
   const trendScale = isCountTrendMetric ? activeFilterScale : 1;
+
+  // Auto-select chart granularity. Only metrics whose daily values are safely additive
+  // roll up to week/month; uniques (can't dedupe across days) and rate metrics
+  // (bounce_rate, avg_pages_per_visit, visit_duration — the reducer doesn't expose
+  // numerator/denominator) stay daily regardless of range.
+  const chartGranularity: ChartGranularity = useMemo(() => {
+    const canAggregate = ["pageviews", "sessions", "conversions", "revenue"].includes(selectedMetric);
+    if (!canAggregate) return "day";
+    const days = rangeDomainDays.length;
+    if (days > 365) return "month";
+    if (days > 90) return "week";
+    return "day";
+  }, [selectedMetric, rangeDomainDays.length]);
+
+  const bucketedChartData = useMemo<TrendChartPoint[]>(() => {
+    if (chartGranularity === "day") return baseChartData;
+    const buckets = new Map<
+      string,
+      {
+        actual: number | null;
+        compare: number | null;
+        forecast: number | null;
+        forecastLine: number | null;
+        forecastLower: number | null;
+        forecastUpper: number | null;
+      }
+    >();
+    const addTo = (acc: number | null, value: number | null | undefined): number | null => {
+      if (!Number.isFinite(value ?? Number.NaN)) return acc;
+      return (acc ?? 0) + (value as number);
+    };
+    for (const point of baseChartData) {
+      const key = bucketKeyFor(point.day, chartGranularity);
+      const current = buckets.get(key) ?? {
+        actual: null,
+        compare: null,
+        forecast: null,
+        forecastLine: null,
+        forecastLower: null,
+        forecastUpper: null,
+      };
+      buckets.set(key, {
+        actual: addTo(current.actual, point.actual),
+        compare: addTo(current.compare, point.compare),
+        forecast: addTo(current.forecast, point.forecast),
+        forecastLine: addTo(current.forecastLine, point.forecastLine),
+        forecastLower: addTo(current.forecastLower, point.forecastLower),
+        forecastUpper: addTo(current.forecastUpper, point.forecastUpper),
+      });
+    }
+    return Array.from(buckets.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, acc]) => {
+        const hasDelta =
+          Number.isFinite(acc.actual ?? Number.NaN) && Number.isFinite(acc.compare ?? Number.NaN);
+        const deltaPositiveRange: [number, number] | null = hasDelta
+          ? [acc.compare as number, Math.max(acc.actual as number, acc.compare as number)]
+          : null;
+        const deltaNegativeRange: [number, number] | null = hasDelta
+          ? [Math.min(acc.actual as number, acc.compare as number), acc.compare as number]
+          : null;
+        const hasBand =
+          Number.isFinite(acc.forecastLower ?? Number.NaN) &&
+          Number.isFinite(acc.forecastUpper ?? Number.NaN);
+        return {
+          day: key,
+          actual: acc.actual,
+          compare: acc.compare,
+          compareDay: null,
+          forecast: acc.forecast,
+          forecastLine: acc.forecastLine,
+          forecastLower: hasBand ? (acc.forecastLower as number) : null,
+          forecastUpper: hasBand ? (acc.forecastUpper as number) : null,
+          forecastBandSpan: hasBand
+            ? Math.max(0, (acc.forecastUpper as number) - (acc.forecastLower as number))
+            : null,
+          deltaPositiveRange,
+          deltaNegativeRange,
+        } satisfies TrendChartPoint;
+      });
+  }, [baseChartData, chartGranularity]);
+
   const chartData = useMemo(
     () =>
-      baseChartData.map((point) => {
+      bucketedChartData.map((point) => {
         if (trendScale >= 0.999) return point;
         const scaleRange = (range: [number, number] | null): [number, number] | null =>
           range ? [range[0] * trendScale, range[1] * trendScale] : null;
@@ -1558,7 +1676,7 @@ const Overview: React.FC = () => {
           deltaNegativeRange: scaleRange(point.deltaNegativeRange),
         };
       }),
-    [baseChartData, trendScale]
+    [bucketedChartData, trendScale]
   );
 
   const hasActual = chartData.some((point) => point.actual !== null);
@@ -2018,7 +2136,11 @@ const Overview: React.FC = () => {
     return formatNumber(value);
   };
   const todayKey = new Date().toISOString().slice(0, 10);
-  const showTodayLine = chartDomainDays.length > 0 && todayKey >= chartDomainDays[0] && todayKey <= chartDomainDays[chartDomainDays.length - 1];
+  const showTodayLine =
+    chartGranularity === "day" &&
+    chartDomainDays.length > 0 &&
+    todayKey >= chartDomainDays[0] &&
+    todayKey <= chartDomainDays[chartDomainDays.length - 1];
 
   const slugify = (value: string) => value.toLowerCase().replace(/\s+/g, "-");
   const downloadCsv = (lines: string[], filename: string) => {
@@ -2434,7 +2556,7 @@ const Overview: React.FC = () => {
                   <CartesianGrid stroke={chartGridStroke} strokeDasharray="2 6" vertical={false} />
                   <XAxis
                     dataKey="day"
-                    tickFormatter={formatAxisDate}
+                    tickFormatter={(value: string) => formatAxisDateGranular(value, chartGranularity)}
                     tick={{ fill: chartAxisTick, fontSize: 10, fontFamily: "var(--font-sans)" }}
                     axisLine={false}
                     tickLine={false}
@@ -2483,15 +2605,19 @@ const Overview: React.FC = () => {
                           </div>
                           {Number.isFinite(actualValue ?? Number.NaN) && (
                             <div className="flex items-center justify-between gap-4 py-1 text-sm">
-                              <span className="text-gray-200" style={fontBody}>{formatTooltipDate(String(label))}</span>
+                              <span className="text-gray-200" style={fontBody}>{formatTooltipDateGranular(String(label), chartGranularity)}</span>
                               <span className="metric-number text-white" style={fontMetric}>
                                 {formatMetricValue(selectedMetric, actualValue ?? Number.NaN)}
                               </span>
                             </div>
                           )}
-                          {compareEnabled && Number.isFinite(compareValue ?? Number.NaN) && point.compareDay && (
+                          {compareEnabled && Number.isFinite(compareValue ?? Number.NaN) && (
                             <div className="flex items-center justify-between gap-4 py-1 text-sm">
-                              <span className="text-gray-400" style={fontBody}>{formatTooltipDate(point.compareDay)}</span>
+                              <span className="text-gray-400" style={fontBody}>
+                                {point.compareDay
+                                  ? formatTooltipDateGranular(point.compareDay, chartGranularity)
+                                  : "Previous period"}
+                              </span>
                               <span className="metric-number text-gray-200" style={fontMetric}>
                                 {formatMetricValue(selectedMetric, compareValue ?? Number.NaN)}
                               </span>
@@ -2500,7 +2626,7 @@ const Overview: React.FC = () => {
                           {!Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(forecastValue ?? Number.NaN) && (
                             <div className="mt-2 border-t border-white/10 pt-2">
                               <div className="flex items-center justify-between gap-4 py-1 text-sm">
-                                <span className="text-gray-200" style={fontBody}>{formatTooltipDate(String(label))}</span>
+                                <span className="text-gray-200" style={fontBody}>{formatTooltipDateGranular(String(label), chartGranularity)}</span>
                                 <span className="metric-number text-white" style={fontMetric}>
                                   {formatMetricValue(selectedMetric, forecastValue ?? Number.NaN)}
                                 </span>
@@ -2669,8 +2795,16 @@ const Overview: React.FC = () => {
               </span>
             )}
             {!hasForecast && <span className="text-xs text-[#6B7280]">{forecastMutedNote}</span>}
+            {chartGranularity !== "day" && (
+              <span className="ml-auto text-[11px] italic text-[#6B7280]" style={fontBody}>
+                Viewing {granularityLabel(chartGranularity)} (auto)
+              </span>
+            )}
             {hasForecast && (
-              <span className="ml-auto text-[11px] text-[#4B5563]" style={fontBody}>
+              <span
+                className={`${chartGranularity !== "day" ? "" : "ml-auto"} text-[11px] text-[#4B5563]`}
+                style={fontBody}
+              >
                 MAPE: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
               </span>
             )}
