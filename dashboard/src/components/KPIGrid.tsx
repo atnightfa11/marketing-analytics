@@ -57,7 +57,7 @@ const cards = [
   { key: "sessions", label: "Sessions", tier: "primary" as const },
   { key: "conversions", label: "Conversions", tier: "primary" as const },
   { key: "revenue", label: "Revenue", tier: "primary" as const },
-  { key: "avg_pages_per_visit", label: "Average Pages per Visit", tier: "secondary" as const },
+  { key: "avg_pages_per_visit", label: "Pages per Visit", tier: "secondary" as const },
   { key: "visit_duration", label: "Visit Duration", tier: "secondary" as const },
   { key: "bounce_rate", label: "Bounce Rate", tier: "secondary" as const },
 ];
@@ -102,8 +102,11 @@ export const KPIGrid: React.FC<Props> = ({
               isActive ? "bg-[#E8F5F5]" : "bg-white hover:bg-[#F9FAFB]"
             }`}
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className={`label-tight ${isActive ? "text-[#0A5F6F]" : "text-[#4B5563]"}`} style={fontBody}>
+            <div className="flex items-start justify-between gap-2">
+              <div
+                className={`label-tight font-bold ${isActive ? "text-[#0A5F6F]" : "text-[#1F2937]"}`}
+                style={fontBody}
+              >
                 {card.label}
               </div>
               {showComparisonRows && (
@@ -121,16 +124,16 @@ export const KPIGrid: React.FC<Props> = ({
               </div>
               {showComparisonRows ? (
                 <>
-                  <div className="mt-1 text-[10px] text-[#6B7280] normal-case tracking-normal" style={fontBody}>
+                  <div className="mt-0.5 text-[10px] text-[#6B7280] normal-case tracking-normal" style={fontBody}>
                     {currentRangeLabel}
                   </div>
                   <div
-                    className={`mt-3 ${isPrimary ? "text-xl font-semibold text-[#4B5563]" : "text-base font-medium text-[#4B5563]"} metric-number leading-tight`}
+                    className="mt-2 text-sm font-medium text-[#4B5563] metric-number leading-tight"
                     style={fontMetric}
                   >
                     {formatMetricValue(card.key, compareValue ?? Number.NaN)}
                   </div>
-                  <div className="mt-1 text-[10px] text-[#9CA3AF] normal-case tracking-normal" style={fontBody}>
+                  <div className="mt-0.5 text-[10px] text-[#9CA3AF] normal-case tracking-normal" style={fontBody}>
                     {comparisonRangeLabel}
                   </div>
                 </>

@@ -56,7 +56,7 @@ const metricLabels: Record<string, string> = {
   sessions: "Sessions",
   pageviews: "Pageviews",
   conversions: "Conversions",
-  avg_pages_per_visit: "Average Pages per Visit",
+  avg_pages_per_visit: "Pages per Visit",
   bounce_rate: "Bounce Rate",
   visit_duration: "Visit Duration",
   revenue: "Revenue",
@@ -512,6 +512,7 @@ const aggregateRowsByLabel = (rows: BreakdownTableRow[]) => {
 
 const TableBlock: React.FC<{
   title: string;
+  header?: React.ReactNode;
   rows: BreakdownTableRow[];
   metricKeys: BreakdownMetricKey[];
   primaryMetric: BreakdownMetricKey;
@@ -520,15 +521,19 @@ const TableBlock: React.FC<{
   rowDimension?: string;
   activeFilter?: ActiveFilter | null;
   onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
-}> = ({ title, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
+}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
   const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
   const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
 
   return (
     <div className="border border-[var(--color-border-subtle)] bg-white p-4">
-      <div className="mb-3 text-[13px] font-semibold text-[#1F2937]" style={fontBody}>
-        {title}
-      </div>
+      {header ? (
+        <div className="mb-3">{header}</div>
+      ) : (
+        <div className="mb-3 text-[13px] font-semibold text-[#1F2937]" style={fontBody}>
+          {title}
+        </div>
+      )}
       {rows.length === 0 ? (
         <div className="py-6 text-xs text-gray-400" style={fontBody}>
           {emptyState ?? "Awaiting events. This table will populate after data arrives."}
@@ -542,7 +547,7 @@ const TableBlock: React.FC<{
               activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
             );
             return (
-              <div key={row.label} className="rounded-sm border border-[#E3EBEF] px-3 py-2.5">
+              <div key={row.label} className="py-1.5">
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5">
                   <button
                     type="button"
@@ -1049,7 +1054,6 @@ const Overview: React.FC = () => {
 
   const selectedRangeBounds = useMemo(() => resolveRangeBounds(range, customRange), [range, customRange.start, customRange.end]);
   const lastActualDay = dailySelected.length > 0 ? dailySelected[dailySelected.length - 1].day : null;
-  const firstActualDay = dailySelected.length > 0 ? dailySelected[0].day : null;
   const primaryRangeBounds = useMemo(() => {
     if (selectedRangeBounds) return selectedRangeBounds;
     if (dailySelected.length === 0) return null;
@@ -1301,19 +1305,6 @@ const Overview: React.FC = () => {
   const hasForecast = chartData.some((point) => point.forecast !== null);
   const hasForecastBand = chartData.some((point) => point.forecastBandSpan !== null);
   const hasAnyForecastData = forecastCandidates.length > 0;
-  const selectedRangeEnd = primaryRangeBounds?.end ?? null;
-  const actualIsStale = Boolean(lastActualDay && selectedRangeEnd && lastActualDay < selectedRangeEnd);
-  const actualCoverageText =
-    firstActualDay && lastActualDay
-      ? `${formatShortDate(firstActualDay)}–${formatShortDate(lastActualDay)}`
-      : lastActualDay
-        ? formatShortDate(lastActualDay)
-        : "none in selected range";
-  const forecastAvailabilityText = hasForecast
-    ? `Forecast continues ${forecastStartDay ? formatShortDate(forecastStartDay) : "soon"}`
-    : hasAnyForecastData
-      ? "Forecast is outside the selected date range."
-      : "Forecast unavailable until more history is collected.";
   const forecastMutedNote = hasAnyForecastData
     ? "Forecast unavailable in selected date range."
     : "Forecast unavailable until more history is collected.";
@@ -1920,24 +1911,7 @@ const Overview: React.FC = () => {
           </div>
         )}
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
-          <div className="mb-4 border-b border-[var(--color-border-subtle)] pb-3">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div className="text-[11px] text-[#4B5563]" style={fontBody}>
-                Actual coverage: {actualCoverageText}. {forecastAvailabilityText}
-                {actualIsStale && lastActualDay && (
-                  <div className="mt-1 text-[11px] text-[#6B7280]" style={fontBody}>
-                    Actual data through {formatShortDate(lastActualDay)}.
-                  </div>
-                )}
-              </div>
-              {hasForecast && (
-                <div className="text-right text-[11px] text-[#4B5563]" style={fontBody}>
-                  MAPE: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="mt-4">
+          <div>
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
                 No chart data yet. Seed events, run the reducer, and reload.
@@ -2149,6 +2123,11 @@ const Overview: React.FC = () => {
               </span>
             )}
             {!hasForecast && <span className="text-xs text-[#6B7280]">{forecastMutedNote}</span>}
+            {hasForecast && (
+              <span className="ml-auto text-[11px] text-[#4B5563]" style={fontBody}>
+                MAPE: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
+              </span>
+            )}
           </div>
         </section>
         <section className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
@@ -2178,7 +2157,7 @@ const Overview: React.FC = () => {
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
                 <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Projected Total
+                  Forecasted {metricLabels[selectedMetric] ?? selectedMetric}
                 </div>
                 <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
                   {formatMetricValue(selectedMetric, forecastSummary.total)}
@@ -2207,63 +2186,63 @@ const Overview: React.FC = () => {
             </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            <div className="border border-[var(--color-border-subtle)] bg-white p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-4 text-xs font-semibold text-gray-500" style={fontBody}>
-                  <button
-                    type="button"
-                    className={acquisitionTab === "channels" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                    onClick={() => setAcquisitionTab("channels")}
-                  >
-                    Channels
-                  </button>
-                  <button
-                    type="button"
-                    className={acquisitionTab === "sources" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                    onClick={() => setAcquisitionTab("sources")}
-                  >
-                    Sources
-                  </button>
-                  <button
-                    type="button"
-                    className={acquisitionTab === "source_medium" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                    onClick={() => setAcquisitionTab("source_medium")}
-                  >
-                    Source / Medium
-                  </button>
-                  <button
-                    type="button"
-                    className={acquisitionTab === "campaigns" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                    onClick={() => setAcquisitionTab("campaigns")}
-                  >
-                    Campaigns
-                  </button>
+            <TableBlock
+              title="Acquisition"
+              header={
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-4 text-[13px] font-semibold text-gray-500" style={fontBody}>
+                    <button
+                      type="button"
+                      className={acquisitionTab === "channels" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      onClick={() => setAcquisitionTab("channels")}
+                    >
+                      Channels
+                    </button>
+                    <button
+                      type="button"
+                      className={acquisitionTab === "sources" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      onClick={() => setAcquisitionTab("sources")}
+                    >
+                      Sources
+                    </button>
+                    <button
+                      type="button"
+                      className={acquisitionTab === "source_medium" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      onClick={() => setAcquisitionTab("source_medium")}
+                    >
+                      Source / Medium
+                    </button>
+                    <button
+                      type="button"
+                      className={acquisitionTab === "campaigns" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      onClick={() => setAcquisitionTab("campaigns")}
+                    >
+                      Campaigns
+                    </button>
+                  </div>
+                  {acquisitionTab === "campaigns" && (
+                    <select
+                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                      style={fontBody}
+                      value={campaignDimension}
+                      onChange={(event) => setCampaignDimension(event.target.value as "campaign" | "content" | "term")}
+                    >
+                      <option value="campaign">Campaign</option>
+                      <option value="content">Content</option>
+                      <option value="term">Term</option>
+                    </select>
+                  )}
                 </div>
-                {acquisitionTab === "campaigns" && (
-                  <select
-                    className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
-                    style={fontBody}
-                    value={campaignDimension}
-                    onChange={(event) => setCampaignDimension(event.target.value as "campaign" | "content" | "term")}
-                  >
-                    <option value="campaign">Campaign</option>
-                    <option value="content">Content</option>
-                    <option value="term">Term</option>
-                  </select>
-                )}
-              </div>
-              <TableBlock
-                title={acquisitionTab === "channels" ? "Channels" : acquisitionTab === "source_medium" ? "Source / Medium" : acquisitionTab === "campaigns" ? "Campaigns" : "Sources"}
-                rows={acquisitionRows}
-                metricKeys={acquisitionMetricKeys}
-                primaryMetric={acquisitionPrimaryMetric}
-                total={acquisitionTotal}
-                rowDimension={acquisitionDimensionKey}
-                activeFilter={activeFilter}
-                onToggleFilter={toggleFilter}
-                emptyState={acquisitionEmptyState}
-              />
-            </div>
+              }
+              rows={acquisitionRows}
+              metricKeys={acquisitionMetricKeys}
+              primaryMetric={acquisitionPrimaryMetric}
+              total={acquisitionTotal}
+              rowDimension={acquisitionDimensionKey}
+              activeFilter={activeFilter}
+              onToggleFilter={toggleFilter}
+              emptyState={acquisitionEmptyState}
+            />
             <TableBlock
               title="Top Pages"
               rows={breakdownCards[0]?.rows ?? []}
@@ -2308,26 +2287,26 @@ const Overview: React.FC = () => {
               activeFilter={activeFilter}
               onToggleFilter={toggleFilter}
             />
-          </div>
-          <div className="mt-4 border border-[var(--color-border-subtle)] bg-white p-4">
-            <div className="mb-3 flex flex-wrap items-center gap-4 text-xs font-semibold text-gray-500" style={fontBody}>
-              <button
-                type="button"
-                className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                onClick={() => setTimePartingTab("day_of_week")}
-              >
-                Day of Week
-              </button>
-              <button
-                type="button"
-                className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                onClick={() => setTimePartingTab("hour_of_day")}
-              >
-                Hour of Day
-              </button>
-            </div>
             <TableBlock
               title="Time Parting"
+              header={
+                <div className="flex flex-wrap items-center gap-4 text-[13px] font-semibold text-gray-500" style={fontBody}>
+                  <button
+                    type="button"
+                    className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                    onClick={() => setTimePartingTab("day_of_week")}
+                  >
+                    Day of Week
+                  </button>
+                  <button
+                    type="button"
+                    className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                    onClick={() => setTimePartingTab("hour_of_day")}
+                  >
+                    Hour of Day
+                  </button>
+                </div>
+              }
               rows={timePartingRows}
               metricKeys={timePartingMetricKeys}
               primaryMetric={timePartingPrimaryMetric}
