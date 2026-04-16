@@ -1972,7 +1972,11 @@ const Overview: React.FC = () => {
         const rowValue = getBreakdownMetricValue(row, primaryMetric);
         if (!Number.isFinite(rowValue) || rowValue <= 0) return filter;
         const share = clamp(rowValue / total, 0.01, 1);
-        if (Math.abs(share - filter.share) < 0.001) return filter;
+        // Tolerance must exceed the rounding noise from seeded buildMetricRows
+        // (which rounds each row independently, leaving the sum ~1 off the total).
+        // 0.01 (1 percentage point) is well above that noise and still tight enough
+        // to catch real share shifts from date-range changes.
+        if (Math.abs(share - filter.share) < 0.01) return filter;
         changed = true;
         return { ...filter, share };
       });
@@ -2383,8 +2387,8 @@ const Overview: React.FC = () => {
             </div>
           )}
         {activeFilters.length > 0 && (
-          <div className="sticky top-0 z-30 -mx-6 bg-[#0A5F6F] px-6 py-2 text-white shadow-sm no-print">
-            <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 text-[12px]" style={fontBody}>
+          <div className="sticky top-0 z-30 bg-[#0A5F6F] py-2 text-white shadow-sm no-print">
+            <div className="flex flex-wrap items-center gap-2 px-3 text-[12px]" style={fontBody}>
               <span className="text-[10px] uppercase tracking-[0.18em] text-white/70" style={fontMeta}>
                 Segment
               </span>
