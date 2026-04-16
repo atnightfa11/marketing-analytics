@@ -510,6 +510,41 @@ const aggregateRowsByLabel = (rows: BreakdownTableRow[]) => {
     });
 };
 
+const ExpandIcon: React.FC = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <polyline points="3 6.5 3 3 6.5 3" />
+    <polyline points="9.5 3 13 3 13 6.5" />
+    <polyline points="13 9.5 13 13 9.5 13" />
+    <polyline points="6.5 13 3 13 3 9.5" />
+  </svg>
+);
+
+const CloseIcon: React.FC = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    aria-hidden="true"
+  >
+    <line x1="4" y1="4" x2="12" y2="12" />
+    <line x1="12" y1="4" x2="4" y2="12" />
+  </svg>
+);
+
 const TableBlock: React.FC<{
   title: string;
   header?: React.ReactNode;
@@ -522,69 +557,137 @@ const TableBlock: React.FC<{
   activeFilter?: ActiveFilter | null;
   onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
 }> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
+  const [expanded, setExpanded] = useState(false);
   const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
   const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
 
-  return (
-    <div className="border border-[var(--color-border-subtle)] bg-white p-4">
-      {header ? (
-        <div className="mb-3">{header}</div>
-      ) : (
-        <div className="mb-3 text-[13px] font-semibold text-[#1F2937]" style={fontBody}>
-          {title}
-        </div>
-      )}
-      {rows.length === 0 ? (
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [expanded]);
+
+  const renderRows = (compact: boolean) => {
+    if (rows.length === 0) {
+      return (
         <div className="py-6 text-xs text-gray-400" style={fontBody}>
           {emptyState ?? "Awaiting events. This table will populate after data arrives."}
         </div>
-      ) : (
-        <div className="space-y-2">
-          {rows.map((row) => {
-            const primaryValue = getBreakdownMetricValue(row, primaryMetric);
-            const width = maxValue > 0 ? Math.max(4, (primaryValue / maxValue) * 100) : 0;
-            const isActive = Boolean(
-              activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
-            );
-            return (
-              <div key={row.label} className="py-1.5">
-                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5">
-                  <button
-                    type="button"
-                    className={`min-w-0 truncate whitespace-nowrap text-left text-[13px] text-[#374151] transition-colors ${
-                      rowDimension && onToggleFilter
-                        ? isActive
-                          ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
-                          : "hover:text-[#0A5F6F] hover:underline hover:decoration-[#0A5F6F] hover:underline-offset-2"
-                        : ""
-                    }`}
-                    style={fontBody}
-                    onClick={() => {
-                      if (!rowDimension || !onToggleFilter) return;
-                      onToggleFilter(rowDimension, row, totalValue, primaryMetric);
-                    }}
-                  >
-                    {renderBreakdownLabel(rowDimension, row.label)}
-                  </button>
-                  <div className="flex items-center gap-3 whitespace-nowrap text-right">
-                    {metricKeys.map((metricKey) => (
-                      <div key={metricKey} className="flex items-baseline gap-1 text-right">
-                        <div className="text-[13px] font-medium text-[#111827] metric-number" style={fontMetric}>
-                          {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
-                        </div>
-                        <div className="text-[10px] text-[#6B7280]" style={fontBody}>
-                          {breakdownMetricInlineLabels[metricKey]}
-                        </div>
+      );
+    }
+    return (
+      <div className="space-y-2">
+        {rows.map((row) => {
+          const primaryValue = getBreakdownMetricValue(row, primaryMetric);
+          const width = maxValue > 0 ? Math.max(4, (primaryValue / maxValue) * 100) : 0;
+          const isActive = Boolean(
+            activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
+          );
+          const labelClass = compact
+            ? "truncate whitespace-nowrap"
+            : "whitespace-normal break-words";
+          const textSize = compact ? "text-[13px]" : "text-sm";
+          return (
+            <div key={row.label} className={compact ? "py-1.5" : "py-2"}>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                <button
+                  type="button"
+                  className={`min-w-0 ${labelClass} text-left ${textSize} text-[#374151] transition-colors ${
+                    rowDimension && onToggleFilter
+                      ? isActive
+                        ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
+                        : "hover:text-[#0A5F6F] hover:underline hover:decoration-[#0A5F6F] hover:underline-offset-2"
+                      : ""
+                  }`}
+                  style={fontBody}
+                  onClick={() => {
+                    if (!rowDimension || !onToggleFilter) return;
+                    onToggleFilter(rowDimension, row, totalValue, primaryMetric);
+                  }}
+                >
+                  {renderBreakdownLabel(rowDimension, row.label)}
+                </button>
+                <div className="flex items-center gap-3 whitespace-nowrap text-right">
+                  {metricKeys.map((metricKey) => (
+                    <div key={metricKey} className="flex items-baseline gap-1 text-right">
+                      <div className={`${textSize} font-medium text-[#111827] metric-number`} style={fontMetric}>
+                        {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="mt-2.5 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
-                  <div className="h-1.5 rounded-sm bg-[#A9C7CF]" style={{ width: `${width}%` }} />
+                      <div className="text-[10px] text-[#6B7280]" style={fontBody}>
+                        {breakdownMetricInlineLabels[metricKey]}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            );
-          })}
+              <div className="mt-2.5 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
+                <div className="h-1.5 rounded-sm bg-[#A9C7CF]" style={{ width: `${width}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <div className="border border-[var(--color-border-subtle)] bg-white p-4">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          {header ? (
+            header
+          ) : (
+            <div className="text-[13px] font-semibold text-[#1F2937]" style={fontBody}>
+              {title}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          aria-label={`Expand ${title}`}
+          title="Expand"
+          onClick={() => setExpanded(true)}
+          className="shrink-0 p-1 text-gray-400 transition-colors hover:text-[#1F2937]"
+        >
+          <ExpandIcon />
+        </button>
+      </div>
+      {renderRows(true)}
+      {expanded && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${title} details`}
+          onClick={() => setExpanded(false)}
+        >
+          <div
+            className="flex max-h-[90vh] w-full max-w-3xl flex-col border border-[var(--color-border-subtle)] bg-white shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] px-5 py-3">
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                {title}
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => setExpanded(false)}
+                className="p-1 text-gray-400 transition-colors hover:text-[#1F2937]"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <div className="overflow-auto px-5 py-4">{renderRows(false)}</div>
+          </div>
         </div>
       )}
     </div>
