@@ -36,6 +36,19 @@ export interface AggregateWindow {
 export interface BreakdownRow {
   label: string;
   value: number;
+  metrics: Record<string, number>;
+}
+
+export type BreakdownMetricKey = "uniques" | "sessions" | "pageviews" | "conversions";
+
+export interface BreakdownResponse {
+  site_id: string;
+  dimension: BreakdownDimension;
+  total: number;
+  primary_metric: BreakdownMetricKey;
+  metric_keys: BreakdownMetricKey[];
+  totals: Partial<Record<BreakdownMetricKey, number>>;
+  rows: BreakdownRow[];
 }
 
 export type BreakdownDimension = "pages" | "sources" | "devices" | "countries" | "conversions";
@@ -125,11 +138,11 @@ export async function fetchBreakdown(
   start?: string,
   end?: string,
   limit: number = 10
-): Promise<BreakdownRow[]> {
+): Promise<BreakdownResponse> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/breakdown", {
     headers: authHeaders(token),
     params: { site_id: resolvedSiteId, dimension, start, end, limit },
   });
-  return response.data.rows ?? [];
+  return response.data;
 }

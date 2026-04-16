@@ -135,12 +135,16 @@ class ConfidenceInterval(BaseModel):
 class BreakdownRow(BaseModel):
     label: str
     value: float
+    metrics: dict[str, float] = Field(default_factory=dict)
 
 
 class BreakdownResponse(BaseModel):
     site_id: str
     dimension: Literal["pages", "sources", "devices", "countries", "conversions"]
     total: float
+    primary_metric: str
+    metric_keys: list[str] = Field(default_factory=list)
+    totals: dict[str, float] = Field(default_factory=dict)
     rows: list[BreakdownRow]
 
 

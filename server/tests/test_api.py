@@ -818,20 +818,110 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
     await _set_site_plan(site_id, "standard")
 
     pageview_payloads = [
-        {"url": "/", "_device_bucket": "mobile", "_country_code": "US"},
-        {"url": "/", "_device_bucket": "desktop", "_country_code": "US"},
-        {"url": "/pricing", "_device_bucket": "desktop", "_country_code": "CA"},
-        {"url": "https://neurotypicaltranslator.com/blog/post-1?utm_source=test", "_device_bucket": "mobile", "_country_code": "US"},
-        {"url": "/should-ignore", "_device_bucket": "mobile", "_country_code": "US", "historical_import": True},
+        (
+            {
+                "url": "/",
+                "_device_bucket": "mobile",
+                "_country_code": "US",
+                "_session_hmac": "sess-a",
+                "_visitor_day_hmac": "visitor-a",
+            },
+            datetime(2026, 4, 11, 9, 1, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "url": "/",
+                "_device_bucket": "desktop",
+                "_country_code": "US",
+                "_session_hmac": "sess-b",
+                "_visitor_day_hmac": "visitor-b",
+            },
+            datetime(2026, 4, 11, 9, 6, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "url": "/pricing",
+                "_device_bucket": "desktop",
+                "_country_code": "CA",
+                "_session_hmac": "sess-c",
+                "_visitor_day_hmac": "visitor-c",
+            },
+            datetime(2026, 4, 11, 9, 36, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "url": "https://neurotypicaltranslator.com/blog/post-1?utm_source=test",
+                "_device_bucket": "mobile",
+                "_country_code": "US",
+                "_session_hmac": "sess-a",
+                "_visitor_day_hmac": "visitor-a",
+            },
+            datetime(2026, 4, 11, 9, 20, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "url": "/should-ignore",
+                "_device_bucket": "mobile",
+                "_country_code": "US",
+                "_session_hmac": "sess-z",
+                "_visitor_day_hmac": "visitor-z",
+                "historical_import": True,
+            },
+            datetime(2026, 4, 11, 9, 45, tzinfo=timezone.utc),
+        ),
     ]
-    for payload in pageview_payloads:
-        await _insert_raw_report(site_id=site_id, kind="pageviews", payload=payload, day=target_day)
+    for payload, received_at in pageview_payloads:
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload=payload,
+            day=target_day,
+            server_received_at=received_at,
+        )
 
     session_payloads = [
-        ({"referrer_bucket": "organic", "referrer_source": "google.com", "_session_hmac": "sess-a"}, datetime(2026, 4, 11, 9, 0, tzinfo=timezone.utc)),
-        ({"referrer_bucket": "external", "_session_hmac": "sess-a"}, datetime(2026, 4, 11, 9, 5, tzinfo=timezone.utc)),
-        ({"referrer_bucket": "direct", "_session_hmac": "sess-b"}, datetime(2026, 4, 11, 9, 6, tzinfo=timezone.utc)),
-        ({"referrer_bucket": "organic", "referrer_source": "google.com", "_session_hmac": "sess-a"}, datetime(2026, 4, 11, 9, 35, tzinfo=timezone.utc)),
+        (
+            {
+                "referrer_bucket": "organic",
+                "referrer_source": "google.com",
+                "_session_hmac": "sess-a",
+                "_visitor_day_hmac": "visitor-a",
+                "_device_bucket": "mobile",
+                "_country_code": "US",
+            },
+            datetime(2026, 4, 11, 9, 0, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "referrer_bucket": "external",
+                "_session_hmac": "sess-a",
+                "_visitor_day_hmac": "visitor-a",
+                "_device_bucket": "mobile",
+                "_country_code": "US",
+            },
+            datetime(2026, 4, 11, 9, 5, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "referrer_bucket": "direct",
+                "_session_hmac": "sess-b",
+                "_visitor_day_hmac": "visitor-b",
+                "_device_bucket": "desktop",
+                "_country_code": "US",
+            },
+            datetime(2026, 4, 11, 9, 6, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "referrer_bucket": "organic",
+                "referrer_source": "google.com",
+                "_session_hmac": "sess-c",
+                "_visitor_day_hmac": "visitor-c",
+                "_device_bucket": "desktop",
+                "_country_code": "CA",
+            },
+            datetime(2026, 4, 11, 9, 35, tzinfo=timezone.utc),
+        ),
     ]
     for payload, received_at in session_payloads:
         await _insert_raw_report(
@@ -843,13 +933,54 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
         )
 
     conversion_payloads = [
-        {"conversion_type": "demo_request"},
-        {"conversion_type": "demo_request"},
-        {"conversion_type": "contact_us"},
-        {"conversion_type": "", "historical_import": True},
+        (
+            {
+                "conversion_type": "demo_request",
+                "_session_hmac": "sess-a",
+                "_visitor_day_hmac": "visitor-a",
+                "_device_bucket": "mobile",
+                "_country_code": "US",
+            },
+            datetime(2026, 4, 11, 9, 2, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "conversion_type": "demo_request",
+                "_session_hmac": "sess-c",
+                "_visitor_day_hmac": "visitor-c",
+                "_device_bucket": "desktop",
+                "_country_code": "CA",
+            },
+            datetime(2026, 4, 11, 9, 38, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "conversion_type": "contact_us",
+                "_session_hmac": "sess-b",
+                "_visitor_day_hmac": "visitor-b",
+                "_device_bucket": "desktop",
+                "_country_code": "US",
+            },
+            datetime(2026, 4, 11, 9, 7, tzinfo=timezone.utc),
+        ),
+        (
+            {
+                "conversion_type": "",
+                "_session_hmac": "sess-z",
+                "_visitor_day_hmac": "visitor-z",
+                "historical_import": True,
+            },
+            datetime(2026, 4, 11, 9, 50, tzinfo=timezone.utc),
+        ),
     ]
-    for payload in conversion_payloads:
-        await _insert_raw_report(site_id=site_id, kind="conversions", payload=payload, day=target_day)
+    for payload, received_at in conversion_payloads:
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="conversions",
+            payload=payload,
+            day=target_day,
+            server_received_at=received_at,
+        )
 
     query = {"site_id": site_id, "start": target_day.isoformat(), "end": target_day.isoformat(), "limit": 10}
 
@@ -857,38 +988,73 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
     assert pages_resp.status_code == 200
     pages_body = pages_resp.json()
     assert pages_body["total"] == 4.0
+    assert pages_body["primary_metric"] == "pageviews"
+    assert pages_body["metric_keys"] == ["uniques", "sessions", "pageviews"]
     assert pages_body["rows"][:3] == [
-        {"label": "/", "value": 2.0},
-        {"label": "/blog/post-1", "value": 1.0},
-        {"label": "/pricing", "value": 1.0},
+        {"label": "/", "value": 2.0, "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 2.0}},
+        {"label": "/blog/post-1", "value": 1.0, "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0}},
+        {"label": "/pricing", "value": 1.0, "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0}},
     ]
 
     sources_resp = client.get("/api/breakdown", params={**query, "dimension": "sources"})
     assert sources_resp.status_code == 200
+    assert sources_resp.json()["primary_metric"] == "sessions"
     assert sources_resp.json()["rows"] == [
-        {"label": "Google", "value": 2.0},
-        {"label": "Direct", "value": 1.0},
+        {
+            "label": "Google",
+            "value": 2.0,
+            "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 3.0, "conversions": 2.0},
+        },
+        {
+            "label": "Direct",
+            "value": 1.0,
+            "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0, "conversions": 1.0},
+        },
     ]
 
     devices_resp = client.get("/api/breakdown", params={**query, "dimension": "devices"})
     assert devices_resp.status_code == 200
     assert devices_resp.json()["rows"] == [
-        {"label": "Desktop", "value": 2.0},
-        {"label": "Mobile", "value": 2.0},
+        {
+            "label": "Desktop",
+            "value": 2.0,
+            "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 2.0, "conversions": 2.0},
+        },
+        {
+            "label": "Mobile",
+            "value": 2.0,
+            "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 2.0, "conversions": 1.0},
+        },
     ]
 
     countries_resp = client.get("/api/breakdown", params={**query, "dimension": "countries"})
     assert countries_resp.status_code == 200
     assert countries_resp.json()["rows"] == [
-        {"label": "US", "value": 3.0},
-        {"label": "CA", "value": 1.0},
+        {
+            "label": "US",
+            "value": 3.0,
+            "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 3.0, "conversions": 2.0},
+        },
+        {
+            "label": "CA",
+            "value": 1.0,
+            "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0, "conversions": 1.0},
+        },
     ]
 
     conversions_resp = client.get("/api/breakdown", params={**query, "dimension": "conversions"})
     assert conversions_resp.status_code == 200
     assert conversions_resp.json()["rows"] == [
-        {"label": "Demo Request", "value": 2.0},
-        {"label": "Contact Us", "value": 1.0},
+        {
+            "label": "Demo Request",
+            "value": 2.0,
+            "metrics": {"uniques": 2.0, "sessions": 2.0, "conversions": 2.0},
+        },
+        {
+            "label": "Contact Us",
+            "value": 1.0,
+            "metrics": {"uniques": 1.0, "sessions": 1.0, "conversions": 1.0},
+        },
     ]
 
 

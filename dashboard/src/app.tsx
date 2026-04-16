@@ -14,6 +14,7 @@ import {
 import {
   AggregateWindow,
   BreakdownDimension,
+  BreakdownMetricKey,
   BreakdownRow,
   fetchAggregate,
   fetchBreakdown,
@@ -60,6 +61,12 @@ const metricLabels: Record<string, string> = {
   visit_duration: "Visit Duration",
   revenue: "Revenue",
 };
+const breakdownMetricLabels: Record<BreakdownMetricKey, string> = {
+  uniques: "Visitors",
+  sessions: "Sessions",
+  pageviews: "Pageviews",
+  conversions: "Conversions",
+};
 
 const metricOptions = [
   { key: "pageviews", label: "Pageviews" },
@@ -72,13 +79,6 @@ const metricOptions = [
   { key: "bounce_rate", label: "Bounce Rate" },
 ];
 const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
-const breakdownMetricOptions = [
-  { key: "pageviews", label: "Pageviews" },
-  { key: "sessions", label: "Sessions" },
-  { key: "conversions", label: "Conversions" },
-  { key: "revenue", label: "Revenue" },
-] as const;
-type BreakdownMetricKey = (typeof breakdownMetricOptions)[number]["key"];
 const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions"];
 
 const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
@@ -203,9 +203,11 @@ const resolveForecastWindow = (
   return { label, entries: windowEntries };
 };
 
-interface TableRow {
+type BreakdownMetricTotals = Partial<Record<BreakdownMetricKey, number>>;
+
+interface BreakdownTableRow {
   label: string;
-  value: number;
+  metrics: BreakdownMetricTotals;
 }
 
 interface ActiveFilter {
@@ -213,6 +215,23 @@ interface ActiveFilter {
   value: string;
   share: number;
 }
+
+interface BreakdownData {
+  rows: BreakdownTableRow[];
+  total: number;
+  primaryMetric: BreakdownMetricKey;
+  metricKeys: BreakdownMetricKey[];
+}
+
+const createEmptyBreakdownData = (
+  primaryMetric: BreakdownMetricKey,
+  metricKeys: BreakdownMetricKey[] = [primaryMetric]
+): BreakdownData => ({
+  rows: [],
+  total: 0,
+  primaryMetric,
+  metricKeys,
+});
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const toIsoDate = (value: Date) => value.toISOString().slice(0, 10);
@@ -350,27 +369,40 @@ const buildSeededForecast = (entries: { day: string; value: number }[], horizonD
   return forecast;
 };
 
-const aggregateRowsByLabel = (rows: TableRow[]) => {
-  const bucket = new Map<string, number>();
+const getBreakdownMetricValue = (row: BreakdownTableRow, metric: BreakdownMetricKey) => row.metrics[metric] ?? 0;
+
+const aggregateRowsByLabel = (rows: BreakdownTableRow[]) => {
+  const bucket = new Map<string, BreakdownMetricTotals>();
   rows.forEach((row) => {
-    bucket.set(row.label, (bucket.get(row.label) ?? 0) + row.value);
+    const existing = bucket.get(row.label) ?? {};
+    const next: BreakdownMetricTotals = { ...existing };
+    Object.entries(row.metrics).forEach(([metric, value]) => {
+      next[metric as BreakdownMetricKey] = (next[metric as BreakdownMetricKey] ?? 0) + value;
+    });
+    bucket.set(row.label, next);
   });
   return Array.from(bucket.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([label, value]) => ({ label, value }));
+    .map(([label, metrics]) => ({ label, metrics }))
+    .sort((a, b) => {
+      const aPrimary = getBreakdownMetricValue(a, "sessions") || getBreakdownMetricValue(a, "pageviews");
+      const bPrimary = getBreakdownMetricValue(b, "sessions") || getBreakdownMetricValue(b, "pageviews");
+      return bPrimary - aPrimary || a.label.localeCompare(b.label);
+    });
 };
 
 const TableBlock: React.FC<{
   title: string;
-  rows: TableRow[];
-  metricKey: "pageviews" | "sessions" | "conversions" | "revenue";
+  rows: BreakdownTableRow[];
+  metricKeys: BreakdownMetricKey[];
+  primaryMetric: BreakdownMetricKey;
+  total?: number;
   emptyState?: string;
   rowDimension?: string;
   activeFilter?: ActiveFilter | null;
-  onToggleFilter?: (dimension: string, row: TableRow, total: number) => void;
-}> = ({ title, rows, metricKey, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
-  const maxValue = rows.reduce((max, row) => Math.max(max, row.value), 0);
-  const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
+  onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
+}> = ({ title, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
+  const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
+  const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
 
   return (
     <div className="border border-[var(--color-border-subtle)] bg-white p-4">
@@ -384,16 +416,17 @@ const TableBlock: React.FC<{
       ) : (
         <div className="space-y-2">
           {rows.map((row) => {
-            const width = maxValue > 0 ? Math.max(4, (row.value / maxValue) * 100) : 0;
+            const primaryValue = getBreakdownMetricValue(row, primaryMetric);
+            const width = maxValue > 0 ? Math.max(4, (primaryValue / maxValue) * 100) : 0;
             const isActive = Boolean(
               activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
             );
             return (
-              <div key={row.label} className="py-1">
-                <div className="flex items-center justify-between text-sm text-gray-700">
+              <div key={row.label} className="rounded-sm border border-[#EEF3F6] px-3 py-3">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <button
                     type="button"
-                    className={`truncate pr-4 text-left transition-colors ${
+                    className={`text-left text-sm text-gray-700 transition-colors md:max-w-[40%] ${
                       rowDimension && onToggleFilter
                         ? isActive
                           ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
@@ -403,16 +436,25 @@ const TableBlock: React.FC<{
                     style={fontBody}
                     onClick={() => {
                       if (!rowDimension || !onToggleFilter) return;
-                      onToggleFilter(rowDimension, row, totalValue);
+                      onToggleFilter(rowDimension, row, totalValue, primaryMetric);
                     }}
                   >
                     {row.label}
                   </button>
-                  <span className="text-right text-gray-900 metric-number" style={fontMetric}>
-                    {formatMetricValue(metricKey, row.value)}
-                  </span>
+                  <div className="flex flex-wrap gap-x-4 gap-y-2 md:justify-end">
+                    {metricKeys.map((metricKey) => (
+                      <div key={metricKey} className="min-w-[72px] text-left md:text-right">
+                        <div className="text-sm text-gray-900 metric-number" style={fontMetric}>
+                          {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-[0.16em] text-gray-400" style={fontMeta}>
+                          {breakdownMetricLabels[metricKey]}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="mt-1 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
+                <div className="mt-3 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
                   <div className="h-1.5 rounded-sm bg-[#A9C7CF]" style={{ width: `${width}%` }} />
                 </div>
               </div>
@@ -449,19 +491,18 @@ const Overview: React.FC = () => {
     null
   );
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
-  const [breakdownRows, setBreakdownRows] = useState<Record<BreakdownDimension, TableRow[]>>({
-    sources: [],
-    pages: [],
-    devices: [],
-    countries: [],
-    conversions: [],
+  const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>({
+    sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+    pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
+    devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+    countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+    conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
   });
   const [liveWindows, setLiveWindows] = useState<AggregateWindow[]>([]);
   const [customRange, setCustomRange] = useState<DateRange>({ start: "", end: "" });
   const [compareEnabled, setCompareEnabled] = useState(false);
   const [compareMode, setCompareMode] = useState<"previous" | "custom">("previous");
   const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
-  const [breakdownMetric, setBreakdownMetric] = useState<BreakdownMetricKey>("pageviews");
   const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">("channels");
   const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">("campaign");
   const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
@@ -469,7 +510,7 @@ const Overview: React.FC = () => {
 
   useEffect(() => {
     setActiveFilter(null);
-  }, [siteId, range, customRange.start, customRange.end, breakdownMetric, acquisitionTab, campaignDimension]);
+  }, [siteId, range, customRange.start, customRange.end, acquisitionTab, campaignDimension]);
   useEffect(() => {
     if (!canQuery) return;
     const metricsToFetch = [...aggregateMetricKeys];
@@ -509,7 +550,7 @@ const Overview: React.FC = () => {
       return;
     }
     if (!canQuery) return;
-    fetchForecast(token, selectedMetric, siteId)
+    fetchForecast(token ?? undefined, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
         setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly });
@@ -548,14 +589,21 @@ const Overview: React.FC = () => {
     return entries.filter((entry) => entry.day >= bounds.start && entry.day <= bounds.end);
   };
 
-  const buildRows = (labels: string[], weights: number[], total: number) => {
-    if (!Number.isFinite(total) || total <= 0) return [];
+  const buildMetricRows = (
+    labels: string[],
+    weights: number[],
+    totalsByMetric: BreakdownMetricTotals
+  ): BreakdownTableRow[] => {
     const weightSum = weights.reduce((sum, weight) => sum + weight, 0) || 1;
     return labels.map((label, index) => {
       const share = weights[index] / weightSum;
-      const rawValue = total * share;
-      const value = Math.round(rawValue);
-      return { label, value };
+      const metrics = Object.entries(totalsByMetric).reduce<BreakdownMetricTotals>((acc, [metric, totalValue]) => {
+        if (typeof totalValue === "number" && Number.isFinite(totalValue) && totalValue > 0) {
+          acc[metric as BreakdownMetricKey] = Math.round(totalValue * share);
+        }
+        return acc;
+      }, {});
+      return { label, metrics };
     });
   };
 
@@ -709,12 +757,12 @@ const Overview: React.FC = () => {
   useEffect(() => {
     if (!canQuery) return;
     if (showSeededBreakdowns) {
-      setBreakdownRows({
-        sources: [],
-        pages: [],
-        devices: [],
-        countries: [],
-        conversions: [],
+      setBreakdownData({
+        sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+        pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
+        devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+        countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+        conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
       });
       return;
     }
@@ -724,28 +772,33 @@ const Overview: React.FC = () => {
     const end = breakdownDateRange?.end;
     Promise.all(
       breakdownDimensions.map((dimension) =>
-        fetchBreakdown(dimension, token ?? undefined, siteId, start, end).then((rows) => ({
+        fetchBreakdown(dimension, token ?? undefined, siteId, start, end).then((response) => ({
           dimension,
-          rows,
+          response,
         }))
       )
     )
       .then((results) => {
         if (cancelled) return;
-        const next: Record<BreakdownDimension, TableRow[]> = {
-          sources: [],
-          pages: [],
-          devices: [],
-          countries: [],
-          conversions: [],
+        const next: Record<BreakdownDimension, BreakdownData> = {
+          sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+          pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
+          devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+          countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+          conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
         };
         results.forEach((result) => {
-          next[result.dimension] = result.rows.map((row: BreakdownRow) => ({
-            label: row.label,
-            value: row.value,
-          }));
+          next[result.dimension] = {
+            rows: result.response.rows.map((row: BreakdownRow) => ({
+              label: row.label,
+              metrics: row.metrics ?? {},
+            })),
+            total: result.response.total ?? 0,
+            primaryMetric: result.response.primary_metric,
+            metricKeys: result.response.metric_keys ?? [result.response.primary_metric],
+          };
         });
-        setBreakdownRows(next);
+        setBreakdownData(next);
       })
       .catch(console.error);
 
@@ -1009,6 +1062,17 @@ const Overview: React.FC = () => {
     () => forecastHorizon.filter((entry) => (!lastActualDay ? true : entry.day > lastActualDay)),
     [forecastHorizon, lastActualDay]
   );
+  const forecastSummary = useMemo(() => {
+    if (forecastCandidates.length === 0) return null;
+    const total = forecastCandidates.reduce((sum, entry) => sum + entry.yhat, 0);
+    return {
+      total,
+      average: total / forecastCandidates.length,
+      days: forecastCandidates.length,
+      start: forecastCandidates[0].day,
+      end: forecastCandidates[forecastCandidates.length - 1].day,
+    };
+  }, [forecastCandidates]);
   const forecastByDay = useMemo(() => {
     const map = new Map<string, ForecastEntry>();
     forecastCandidates.forEach((entry) => {
@@ -1070,13 +1134,17 @@ const Overview: React.FC = () => {
         if (trendScale >= 0.999) return point;
         return {
           ...point,
-          actual: Number.isFinite(point.actual) ? point.actual * trendScale : point.actual,
-          compare: Number.isFinite(point.compare) ? point.compare * trendScale : point.compare,
-          forecast: Number.isFinite(point.forecast) ? point.forecast * trendScale : point.forecast,
-          forecastLower: Number.isFinite(point.forecastLower) ? point.forecastLower * trendScale : point.forecastLower,
-          forecastUpper: Number.isFinite(point.forecastUpper) ? point.forecastUpper * trendScale : point.forecastUpper,
-          forecastBandSpan: Number.isFinite(point.forecastBandSpan)
-            ? point.forecastBandSpan * trendScale
+          actual: Number.isFinite(point.actual ?? Number.NaN) ? (point.actual ?? 0) * trendScale : point.actual,
+          compare: Number.isFinite(point.compare ?? Number.NaN) ? (point.compare ?? 0) * trendScale : point.compare,
+          forecast: Number.isFinite(point.forecast ?? Number.NaN) ? (point.forecast ?? 0) * trendScale : point.forecast,
+          forecastLower: Number.isFinite(point.forecastLower ?? Number.NaN)
+            ? (point.forecastLower ?? 0) * trendScale
+            : point.forecastLower,
+          forecastUpper: Number.isFinite(point.forecastUpper ?? Number.NaN)
+            ? (point.forecastUpper ?? 0) * trendScale
+            : point.forecastUpper,
+          forecastBandSpan: Number.isFinite(point.forecastBandSpan ?? Number.NaN)
+            ? (point.forecastBandSpan ?? 0) * trendScale
             : point.forecastBandSpan,
         };
       }),
@@ -1105,25 +1173,32 @@ const Overview: React.FC = () => {
     ? "Forecast unavailable in selected date range."
     : "Forecast unavailable until more history is collected.";
 
-  const selectedBreakdownTotal = useMemo(() => {
-    if (breakdownMetric === "sessions") return scaledTotals.sessions;
-    if (breakdownMetric === "conversions") return scaledTotals.conversions;
-    if (breakdownMetric === "revenue") return scaledTotals.revenue;
-    return scaledTotals.pageviews;
-  }, [breakdownMetric, scaledTotals.sessions, scaledTotals.conversions, scaledTotals.revenue, scaledTotals.pageviews]);
+  const seededBreakdownTotals = useMemo(
+    () => ({
+      uniques: scaledTotals.uniques,
+      sessions: scaledTotals.sessions,
+      pageviews: scaledTotals.pageviews,
+      conversions: scaledTotals.conversions,
+    }),
+    [scaledTotals.uniques, scaledTotals.sessions, scaledTotals.pageviews, scaledTotals.conversions]
+  );
   const sourceRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["Direct", "Google", "Reddit", "DuckDuckGo", "openai.com", "LinkedIn"], [0.31, 0.26, 0.14, 0.12, 0.1, 0.07], selectedBreakdownTotal)
-        : breakdownRows.sources.map((row) => ({ ...row, label: normalizeSourceLabel(row.label) })),
-    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.sources]
+        ? buildMetricRows(
+            ["Direct", "Google", "Reddit", "DuckDuckGo", "openai.com", "LinkedIn"],
+            [0.31, 0.26, 0.14, 0.12, 0.1, 0.07],
+            seededBreakdownTotals
+          )
+        : breakdownData.sources.rows.map((row) => ({ ...row, label: normalizeSourceLabel(row.label) })),
+    [showSeededBreakdowns, seededBreakdownTotals, breakdownData.sources.rows]
   );
   const channelRows = useMemo(
     () =>
       aggregateRowsByLabel(
         sourceRows.map((row) => ({
           label: classifyChannelLabel(row.label),
-          value: row.value,
+          metrics: row.metrics,
         }))
       ),
     [sourceRows]
@@ -1133,32 +1208,52 @@ const Overview: React.FC = () => {
       aggregateRowsByLabel(
         sourceRows.map((row) => ({
           label: buildSourceMediumLabel(row.label),
-          value: row.value,
+          metrics: row.metrics,
         }))
       ),
     [sourceRows]
   );
   const campaignRows = useMemo(() => {
-    if (!showSeededBreakdowns) return [];
+    if (!showSeededBreakdowns) return [] as BreakdownTableRow[];
     if (campaignDimension === "content") {
-      return buildRows(["hero-video", "cta-footer", "docs-banner", "homepage-hero"], [0.34, 0.24, 0.22, 0.2], selectedBreakdownTotal);
+      return buildMetricRows(
+        ["hero-video", "cta-footer", "docs-banner", "homepage-hero"],
+        [0.34, 0.24, 0.22, 0.2],
+        seededBreakdownTotals
+      );
     }
     if (campaignDimension === "term") {
-      return buildRows(["privacy analytics", "cookie-free analytics", "plausible alternative", "gdpr analytics"], [0.31, 0.27, 0.24, 0.18], selectedBreakdownTotal);
+      return buildMetricRows(
+        ["privacy analytics", "cookie-free analytics", "plausible alternative", "gdpr analytics"],
+        [0.31, 0.27, 0.24, 0.18],
+        seededBreakdownTotals
+      );
     }
-    return buildRows(["spring_launch", "brand_search", "product_update", "partner_referral"], [0.36, 0.26, 0.2, 0.18], selectedBreakdownTotal);
-  }, [showSeededBreakdowns, campaignDimension, selectedBreakdownTotal]);
+    return buildMetricRows(
+      ["spring_launch", "brand_search", "product_update", "partner_referral"],
+      [0.36, 0.26, 0.2, 0.18],
+      seededBreakdownTotals
+    );
+  }, [showSeededBreakdowns, campaignDimension, seededBreakdownTotals]);
   const acquisitionRows = useMemo(() => {
-    if (!showSeededBreakdowns && breakdownMetric !== "sessions") return [];
     if (acquisitionTab === "sources") return sourceRows;
     if (acquisitionTab === "source_medium") return sourceMediumRows;
     if (acquisitionTab === "campaigns") return campaignRows;
     return channelRows;
-  }, [showSeededBreakdowns, breakdownMetric, acquisitionTab, sourceRows, sourceMediumRows, campaignRows, channelRows]);
-  const acquisitionMetricKey = showSeededBreakdowns ? breakdownMetric : "sessions";
-  const acquisitionEmptyState = !showSeededBreakdowns && breakdownMetric !== "sessions"
-    ? `Metric "${metricLabels[breakdownMetric] ?? breakdownMetric}" is not available for acquisition breakdowns yet.`
+  }, [acquisitionTab, sourceRows, sourceMediumRows, campaignRows, channelRows]);
+  const acquisitionMetricKeys = showSeededBreakdowns
+    ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
     : acquisitionTab === "campaigns"
+      ? (["sessions"] as BreakdownMetricKey[])
+      : breakdownData.sources.metricKeys;
+  const acquisitionPrimaryMetric = showSeededBreakdowns
+    ? ("sessions" as BreakdownMetricKey)
+    : acquisitionTab === "campaigns"
+      ? ("sessions" as BreakdownMetricKey)
+      : breakdownData.sources.primaryMetric;
+  const acquisitionTotal = showSeededBreakdowns ? scaledTotals.sessions : breakdownData.sources.total;
+  const acquisitionEmptyState =
+    acquisitionTab === "campaigns"
       ? "Campaign and UTM metadata will appear after campaign parameters are collected."
       : "No acquisition data yet for the selected range.";
   const acquisitionDimensionKey = useMemo(() => {
@@ -1168,9 +1263,10 @@ const Overview: React.FC = () => {
     return "channel";
   }, [acquisitionTab, campaignDimension]);
 
-  const toggleFilter = (dimension: string, row: TableRow, total: number) => {
-    if (!Number.isFinite(total) || total <= 0) return;
-    const share = clamp(row.value / total, 0.01, 1);
+  const toggleFilter = (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => {
+    const rowValue = getBreakdownMetricValue(row, primaryMetric);
+    if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(rowValue) || rowValue <= 0) return;
+    const share = clamp(rowValue / total, 0.01, 1);
     setActiveFilter((prev) => {
       if (prev && prev.dimension === dimension && prev.value === row.label) return null;
       return { dimension, value: row.label, share };
@@ -1180,49 +1276,111 @@ const Overview: React.FC = () => {
   const pageRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"], [0.3, 0.22, 0.18, 0.16, 0.14], selectedBreakdownTotal)
-        : breakdownRows.pages,
-    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.pages]
+        ? buildMetricRows(["/", "/pricing", "/blog/privacy", "/docs/setup", "/about"], [0.3, 0.22, 0.18, 0.16, 0.14], {
+            uniques: scaledTotals.uniques,
+            sessions: scaledTotals.sessions,
+            pageviews: scaledTotals.pageviews,
+          })
+        : breakdownData.pages.rows,
+    [showSeededBreakdowns, scaledTotals.uniques, scaledTotals.sessions, scaledTotals.pageviews, breakdownData.pages.rows]
   );
   const deviceRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], selectedBreakdownTotal)
-        : breakdownRows.devices,
-    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.devices]
+        ? buildMetricRows(["Mobile", "Desktop", "Tablet"], [0.58, 0.34, 0.08], seededBreakdownTotals)
+        : breakdownData.devices.rows,
+    [showSeededBreakdowns, seededBreakdownTotals, breakdownData.devices.rows]
   );
   const countryRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(
+        ? buildMetricRows(
             ["United States", "United Kingdom", "Canada", "Germany", "France", "Netherlands", "Australia", "Sweden", "India", "Japan"],
             [0.28, 0.12, 0.09, 0.08, 0.07, 0.06, 0.06, 0.05, 0.1, 0.09],
-            selectedBreakdownTotal
+            seededBreakdownTotals
           )
-        : breakdownRows.countries,
-    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.countries]
+        : breakdownData.countries.rows,
+    [showSeededBreakdowns, seededBreakdownTotals, breakdownData.countries.rows]
   );
   const goalRows = useMemo(
     () =>
       showSeededBreakdowns
-        ? buildRows(["Demo Request", "Contact Us", "Trial Signup", "Purchase", "Newsletter"], [0.34, 0.22, 0.18, 0.16, 0.1], selectedBreakdownTotal)
-        : breakdownRows.conversions,
-    [showSeededBreakdowns, selectedBreakdownTotal, breakdownRows.conversions]
+        ? buildMetricRows(
+            ["Demo Request", "Contact Us", "Trial Signup", "Purchase", "Newsletter"],
+            [0.34, 0.22, 0.18, 0.16, 0.1],
+            { uniques: scaledTotals.uniques, sessions: scaledTotals.sessions, conversions: scaledTotals.conversions }
+          )
+        : breakdownData.conversions.rows,
+    [showSeededBreakdowns, scaledTotals.uniques, scaledTotals.sessions, scaledTotals.conversions, breakdownData.conversions.rows]
   );
   const breakdownCards = useMemo(() => {
-    const unavailableMessage = `Metric "${metricLabels[breakdownMetric] ?? breakdownMetric}" is not available for this breakdown yet.`;
-    const pageMetricRows = breakdownMetric === "pageviews" ? pageRows : [];
-    const countryMetricRows = breakdownMetric === "pageviews" ? countryRows : [];
-    const deviceMetricRows = breakdownMetric === "pageviews" ? deviceRows : [];
-    const goalMetricRows = breakdownMetric === "conversions" ? goalRows : [];
-
     return [
-      { title: "Top Pages", rows: pageMetricRows, empty: breakdownMetric === "pageviews" ? "No page data yet for the selected range." : unavailableMessage, dimension: "page" },
-      { title: "Countries", rows: countryMetricRows, empty: breakdownMetric === "pageviews" ? "No country data yet for the selected range." : unavailableMessage, dimension: "country" },
-      { title: "Devices", rows: deviceMetricRows, empty: breakdownMetric === "pageviews" ? "No device data yet for the selected range." : unavailableMessage, dimension: "device" },
-      { title: "Goals", rows: goalMetricRows, empty: breakdownMetric === "conversions" ? "No goal events yet for the selected range." : unavailableMessage, dimension: "goal" },
+      {
+        title: "Top Pages",
+        rows: pageRows,
+        empty: "No page data yet for the selected range.",
+        dimension: "page",
+        primaryMetric: showSeededBreakdowns ? ("pageviews" as BreakdownMetricKey) : breakdownData.pages.primaryMetric,
+        metricKeys: showSeededBreakdowns
+          ? (["uniques", "sessions", "pageviews"] as BreakdownMetricKey[])
+          : breakdownData.pages.metricKeys,
+        total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.pages.total,
+      },
+      {
+        title: "Countries",
+        rows: countryRows,
+        empty: "No country data yet for the selected range.",
+        dimension: "country",
+        primaryMetric: showSeededBreakdowns ? ("pageviews" as BreakdownMetricKey) : breakdownData.countries.primaryMetric,
+        metricKeys: showSeededBreakdowns
+          ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
+          : breakdownData.countries.metricKeys,
+        total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.countries.total,
+      },
+      {
+        title: "Devices",
+        rows: deviceRows,
+        empty: "No device data yet for the selected range.",
+        dimension: "device",
+        primaryMetric: showSeededBreakdowns ? ("pageviews" as BreakdownMetricKey) : breakdownData.devices.primaryMetric,
+        metricKeys: showSeededBreakdowns
+          ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
+          : breakdownData.devices.metricKeys,
+        total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.devices.total,
+      },
+      {
+        title: "Goals",
+        rows: goalRows,
+        empty: "No goal events yet for the selected range.",
+        dimension: "goal",
+        primaryMetric: showSeededBreakdowns ? ("conversions" as BreakdownMetricKey) : breakdownData.conversions.primaryMetric,
+        metricKeys: showSeededBreakdowns
+          ? (["uniques", "sessions", "conversions"] as BreakdownMetricKey[])
+          : breakdownData.conversions.metricKeys,
+        total: showSeededBreakdowns ? scaledTotals.conversions : breakdownData.conversions.total,
+      },
     ];
-  }, [pageRows, countryRows, deviceRows, goalRows, breakdownMetric]);
+  }, [
+    pageRows,
+    countryRows,
+    deviceRows,
+    goalRows,
+    showSeededBreakdowns,
+    scaledTotals.pageviews,
+    scaledTotals.conversions,
+    breakdownData.pages.primaryMetric,
+    breakdownData.pages.metricKeys,
+    breakdownData.pages.total,
+    breakdownData.countries.primaryMetric,
+    breakdownData.countries.metricKeys,
+    breakdownData.countries.total,
+    breakdownData.devices.primaryMetric,
+    breakdownData.devices.metricKeys,
+    breakdownData.devices.total,
+    breakdownData.conversions.primaryMetric,
+    breakdownData.conversions.metricKeys,
+    breakdownData.conversions.total,
+  ]);
 
   const mapeValue = forecastMeta?.mape ?? Number.NaN;
   const forecastMape = Number.isFinite(mapeValue) ? `${(mapeValue * 100).toFixed(1)}%` : "—";
@@ -1284,8 +1442,9 @@ const Overview: React.FC = () => {
         a.localeCompare(b)
       );
       const toCell = (value?: number) => {
-        if (!Number.isFinite(value)) return "";
-        return metric === "revenue" ? value.toFixed(2) : value.toFixed(0);
+        const safeValue = value ?? Number.NaN;
+        if (!Number.isFinite(safeValue)) return "";
+        return metric === "revenue" ? safeValue.toFixed(2) : safeValue.toFixed(0);
       };
       days.forEach((day) => {
         const actual = actualByDay.get(day);
@@ -1318,11 +1477,12 @@ const Overview: React.FC = () => {
     const isRatio = selectedMetric === "avg_pages_per_visit";
     const isDuration = selectedMetric === "visit_duration";
     const toCell = (value?: number) => {
-      if (!Number.isFinite(value)) return "";
-      if (isRate || isRatio) return value.toFixed(4);
-      if (isDuration) return value.toFixed(1);
-      if (isRevenue) return value.toFixed(2);
-      return value.toFixed(0);
+      const safeValue = value ?? Number.NaN;
+      if (!Number.isFinite(safeValue)) return "";
+      if (isRate || isRatio) return safeValue.toFixed(4);
+      if (isDuration) return safeValue.toFixed(1);
+      if (isRevenue) return safeValue.toFixed(2);
+      return safeValue.toFixed(0);
     };
     const lines = [
       ["date", "actual", "forecast", "forecast_lower", "forecast_upper"].join(","),
@@ -1610,6 +1770,54 @@ const Overview: React.FC = () => {
               </div>
             </div>
           </div>
+          {forecastSummary && (
+            <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
+                  Forecast Total
+                </div>
+                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                  {formatMetricValue(selectedMetric, forecastSummary.total)}
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                  {forecastLabel}
+                </div>
+              </div>
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
+                  Daily Avg
+                </div>
+                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                  {formatMetricValue(selectedMetric, forecastSummary.average)}
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                  Across the selected horizon
+                </div>
+              </div>
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
+                  Window
+                </div>
+                <div className="mt-2 text-sm text-[#111827]" style={fontBody}>
+                  {formatShortDate(forecastSummary.start)} to {formatShortDate(forecastSummary.end)}
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                  Future-only forecast range
+                </div>
+              </div>
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
+                  Forecast Days
+                </div>
+                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                  {formatNumber(forecastSummary.days)}
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                  Included in {forecastLabel}
+                </div>
+              </div>
+            </div>
+          )}
           <div className="mt-4">
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
@@ -1789,22 +1997,8 @@ const Overview: React.FC = () => {
             <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
               Breakdowns
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500" style={fontBody}>
-                Metric
-              </span>
-              <select
-                className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
-                style={fontBody}
-                value={breakdownMetric}
-                onChange={(event) => setBreakdownMetric(event.target.value as BreakdownMetricKey)}
-              >
-                {breakdownMetricOptions.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+            <div className="text-[11px] text-gray-400" style={fontBody}>
+              Each card now shows its attributable metrics inline.
             </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
@@ -1856,7 +2050,9 @@ const Overview: React.FC = () => {
               <TableBlock
                 title={acquisitionTab === "channels" ? "Channels" : acquisitionTab === "source_medium" ? "Source / Medium" : acquisitionTab === "campaigns" ? "Campaigns" : "Sources"}
                 rows={acquisitionRows}
-                metricKey={acquisitionMetricKey}
+                metricKeys={acquisitionMetricKeys}
+                primaryMetric={acquisitionPrimaryMetric}
+                total={acquisitionTotal}
                 rowDimension={acquisitionDimensionKey}
                 activeFilter={activeFilter}
                 onToggleFilter={toggleFilter}
@@ -1866,7 +2062,9 @@ const Overview: React.FC = () => {
             <TableBlock
               title="Top Pages"
               rows={breakdownCards[0]?.rows ?? []}
-              metricKey={breakdownMetric}
+              metricKeys={breakdownCards[0]?.metricKeys ?? (["pageviews"] as BreakdownMetricKey[])}
+              primaryMetric={breakdownCards[0]?.primaryMetric ?? "pageviews"}
+              total={breakdownCards[0]?.total}
               emptyState={breakdownCards[0]?.empty}
               rowDimension={breakdownCards[0]?.dimension}
               activeFilter={activeFilter}
@@ -1875,7 +2073,9 @@ const Overview: React.FC = () => {
             <TableBlock
               title="Countries"
               rows={breakdownCards[1]?.rows ?? []}
-              metricKey={breakdownMetric}
+              metricKeys={breakdownCards[1]?.metricKeys ?? (["pageviews"] as BreakdownMetricKey[])}
+              primaryMetric={breakdownCards[1]?.primaryMetric ?? "pageviews"}
+              total={breakdownCards[1]?.total}
               emptyState={breakdownCards[1]?.empty}
               rowDimension={breakdownCards[1]?.dimension}
               activeFilter={activeFilter}
@@ -1884,7 +2084,9 @@ const Overview: React.FC = () => {
             <TableBlock
               title="Devices"
               rows={breakdownCards[2]?.rows ?? []}
-              metricKey={breakdownMetric}
+              metricKeys={breakdownCards[2]?.metricKeys ?? (["pageviews"] as BreakdownMetricKey[])}
+              primaryMetric={breakdownCards[2]?.primaryMetric ?? "pageviews"}
+              total={breakdownCards[2]?.total}
               emptyState={breakdownCards[2]?.empty}
               rowDimension={breakdownCards[2]?.dimension}
               activeFilter={activeFilter}
@@ -1893,7 +2095,9 @@ const Overview: React.FC = () => {
             <TableBlock
               title="Goals"
               rows={breakdownCards[3]?.rows ?? []}
-              metricKey={breakdownMetric}
+              metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
+              primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
+              total={breakdownCards[3]?.total}
               emptyState={breakdownCards[3]?.empty}
               rowDimension={breakdownCards[3]?.dimension}
               activeFilter={activeFilter}

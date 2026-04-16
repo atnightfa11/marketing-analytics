@@ -17,7 +17,30 @@ from ..schemas import BreakdownResponse, BreakdownRow
 
 router = APIRouter(tags=["metrics"])
 BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions"]
+BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions"]
 settings = get_settings()
+
+BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = {
+    "pages": ("uniques", "sessions", "pageviews"),
+    "sources": ("uniques", "sessions", "pageviews", "conversions"),
+    "devices": ("uniques", "sessions", "pageviews", "conversions"),
+    "countries": ("uniques", "sessions", "pageviews", "conversions"),
+    "conversions": ("uniques", "sessions", "conversions"),
+}
+BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
+    "pages": "pageviews",
+    "sources": "sessions",
+    "devices": "pageviews",
+    "countries": "pageviews",
+    "conversions": "conversions",
+}
+BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
+    "pages": ("pageviews",),
+    "sources": ("sessions", "pageviews", "conversions"),
+    "devices": ("sessions", "pageviews", "conversions"),
+    "countries": ("sessions", "pageviews", "conversions"),
+    "conversions": ("conversions",),
+}
 
 COMMON_SOURCE_HOST_MAP = {
     "google.com": "Google",
@@ -59,6 +82,34 @@ def _session_bucket_start(timestamp: dt.datetime) -> dt.datetime:
     bucket_minutes = max(1, settings.SESSION_WINDOW_MINUTES)
     minute = timestamp.minute - (timestamp.minute % bucket_minutes)
     return timestamp.replace(minute=minute, second=0, microsecond=0)
+
+
+def _session_marker(server_received_at: dt.datetime, payload: dict) -> tuple[dt.datetime, str] | None:
+    session_hmac = payload.get("_session_hmac")
+    if not isinstance(session_hmac, str) or not session_hmac:
+        return None
+    return _session_bucket_start(server_received_at), session_hmac
+
+
+def _visitor_marker(day: dt.date, payload: dict) -> tuple[dt.date, str] | None:
+    visitor_hmac = payload.get("_visitor_day_hmac")
+    if not isinstance(visitor_hmac, str) or not visitor_hmac:
+        return None
+    return day, visitor_hmac
+
+
+def _blank_metric_map(metric_keys: tuple[BreakdownMetric, ...]) -> dict[str, float]:
+    return {metric: 0.0 for metric in metric_keys}
+
+
+def _increment_metric(
+    buckets: defaultdict[str, dict[str, float]],
+    totals: dict[str, float],
+    label: str,
+    metric: BreakdownMetric,
+):
+    buckets[label][metric] += 1.0
+    totals[metric] += 1.0
 
 
 def _normalize_page_path(raw_value: object) -> str:
@@ -194,41 +245,128 @@ async def breakdown(
 ):
     # Pro ingest currently does not retain raw per-dimension event context.
     if plan == "pro":
-        return BreakdownResponse(site_id=site_id, dimension=dimension, total=0.0, rows=[])
+        return BreakdownResponse(
+            site_id=site_id,
+            dimension=dimension,
+            total=0.0,
+            primary_metric=BREAKDOWN_PRIMARY_METRIC[dimension],
+            metric_keys=list(BREAKDOWN_METRIC_ORDER[dimension]),
+            totals={metric: 0.0 for metric in BREAKDOWN_METRIC_ORDER[dimension]},
+            rows=[],
+        )
 
     start_day, end_day = _resolve_window(start, end)
-    if dimension == "sources":
-        report_kind = "sessions"
-    elif dimension == "conversions":
-        report_kind = "conversions"
-    else:
-        report_kind = "pageviews"
+    report_kinds = BREAKDOWN_REPORT_KINDS[dimension]
+    metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
+    primary_metric = BREAKDOWN_PRIMARY_METRIC[dimension]
     stmt = (
         select(RawReport)
-        .where(RawReport.site_id == site_id, RawReport.kind == report_kind)
+        .where(RawReport.site_id == site_id, RawReport.kind.in_(report_kinds))
         .where(RawReport.day >= start_day, RawReport.day <= end_day)
         .order_by(RawReport.server_received_at, RawReport.id)
     )
     reports = (await session.execute(stmt)).scalars().all()
 
-    buckets: dict[str, float] = defaultdict(float)
-    seen_session_markers: set[tuple[dt.datetime, str]] = set()
-    total = 0.0
+    buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: _blank_metric_map(metric_keys))
+    totals = _blank_metric_map(metric_keys)
+    seen_sessions_by_label: defaultdict[str, set[tuple[dt.datetime, str]]] = defaultdict(set)
+    seen_visitors_by_label: defaultdict[str, set[tuple[dt.date, str]]] = defaultdict(set)
+    source_by_session: dict[tuple[dt.datetime, str], str] = {}
+
+    if dimension == "sources":
+        for report in reports:
+            if report.kind != "sessions":
+                continue
+            payload = report.payload if isinstance(report.payload, dict) else {}
+            if payload.get("historical_import"):
+                continue
+            marker = _session_marker(report.server_received_at, payload)
+            if marker and marker not in source_by_session:
+                source_by_session[marker] = _resolve_label(dimension, payload)
+
     for report in reports:
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
             continue
-        if dimension == "sources":
-            session_hmac = payload.get("_session_hmac")
-            if isinstance(session_hmac, str) and session_hmac:
-                marker = (_session_bucket_start(report.server_received_at), session_hmac)
-                if marker in seen_session_markers:
-                    continue
-                seen_session_markers.add(marker)
-        label = _resolve_label(dimension, payload)
-        buckets[label] += 1.0
-        total += 1.0
+        session_marker = _session_marker(report.server_received_at, payload)
+        visitor_marker = _visitor_marker(report.day, payload)
 
-    ordered = sorted(buckets.items(), key=lambda item: (-item[1], item[0]))[:limit]
-    rows = [BreakdownRow(label=label, value=value) for label, value in ordered]
-    return BreakdownResponse(site_id=site_id, dimension=dimension, total=total, rows=rows)
+        if dimension == "pages":
+            label = _resolve_label(dimension, payload)
+            _increment_metric(buckets, totals, label, "pageviews")
+            if session_marker and session_marker not in seen_sessions_by_label[label]:
+                seen_sessions_by_label[label].add(session_marker)
+                _increment_metric(buckets, totals, label, "sessions")
+            if visitor_marker and visitor_marker not in seen_visitors_by_label[label]:
+                seen_visitors_by_label[label].add(visitor_marker)
+                _increment_metric(buckets, totals, label, "uniques")
+            continue
+
+        if dimension == "sources":
+            if report.kind == "sessions":
+                label = source_by_session.get(session_marker, _resolve_label(dimension, payload))
+                if session_marker:
+                    if session_marker not in seen_sessions_by_label[label]:
+                        seen_sessions_by_label[label].add(session_marker)
+                        _increment_metric(buckets, totals, label, "sessions")
+                else:
+                    _increment_metric(buckets, totals, label, "sessions")
+                if visitor_marker and visitor_marker not in seen_visitors_by_label[label]:
+                    seen_visitors_by_label[label].add(visitor_marker)
+                    _increment_metric(buckets, totals, label, "uniques")
+                continue
+
+            label = source_by_session.get(session_marker, "Unknown")
+            if report.kind == "pageviews":
+                _increment_metric(buckets, totals, label, "pageviews")
+            elif report.kind == "conversions":
+                _increment_metric(buckets, totals, label, "conversions")
+            if visitor_marker and visitor_marker not in seen_visitors_by_label[label]:
+                seen_visitors_by_label[label].add(visitor_marker)
+                _increment_metric(buckets, totals, label, "uniques")
+            continue
+
+        label = _resolve_label(dimension, payload)
+        if report.kind == "pageviews":
+            _increment_metric(buckets, totals, label, "pageviews")
+        elif report.kind == "sessions":
+            if session_marker:
+                if session_marker not in seen_sessions_by_label[label]:
+                    seen_sessions_by_label[label].add(session_marker)
+                    _increment_metric(buckets, totals, label, "sessions")
+            else:
+                _increment_metric(buckets, totals, label, "sessions")
+        elif report.kind == "conversions":
+            _increment_metric(buckets, totals, label, "conversions")
+            if dimension == "conversions":
+                if session_marker:
+                    if session_marker not in seen_sessions_by_label[label]:
+                        seen_sessions_by_label[label].add(session_marker)
+                        _increment_metric(buckets, totals, label, "sessions")
+                else:
+                    _increment_metric(buckets, totals, label, "sessions")
+        if visitor_marker and visitor_marker not in seen_visitors_by_label[label]:
+            seen_visitors_by_label[label].add(visitor_marker)
+            _increment_metric(buckets, totals, label, "uniques")
+
+    ordered = sorted(
+        buckets.items(),
+        key=lambda item: (-item[1].get(primary_metric, 0.0), item[0]),
+    )[:limit]
+    rows = [
+        BreakdownRow(
+            label=label,
+            value=metrics.get(primary_metric, 0.0),
+            metrics={metric: metrics.get(metric, 0.0) for metric in metric_keys},
+        )
+        for label, metrics in ordered
+    ]
+    return BreakdownResponse(
+        site_id=site_id,
+        dimension=dimension,
+        total=totals.get(primary_metric, 0.0),
+        primary_metric=primary_metric,
+        metric_keys=list(metric_keys),
+        totals={metric: totals.get(metric, 0.0) for metric in metric_keys},
+        rows=rows,
+    )
