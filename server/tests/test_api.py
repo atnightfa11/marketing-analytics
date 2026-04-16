@@ -1042,6 +1042,26 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
         },
     ]
 
+    hour_resp = client.get("/api/breakdown", params={**query, "dimension": "hour_of_day"})
+    assert hour_resp.status_code == 200
+    assert hour_resp.json()["rows"] == [
+        {
+            "label": "9 AM",
+            "value": 3.0,
+            "metrics": {"uniques": 3.0, "sessions": 3.0, "pageviews": 4.0, "conversions": 3.0},
+        }
+    ]
+
+    weekday_resp = client.get("/api/breakdown", params={**query, "dimension": "day_of_week"})
+    assert weekday_resp.status_code == 200
+    assert weekday_resp.json()["rows"] == [
+        {
+            "label": "Saturday",
+            "value": 3.0,
+            "metrics": {"uniques": 3.0, "sessions": 3.0, "pageviews": 4.0, "conversions": 3.0},
+        }
+    ]
+
     conversions_resp = client.get("/api/breakdown", params={**query, "dimension": "conversions"})
     assert conversions_resp.status_code == 200
     assert conversions_resp.json()["rows"] == [

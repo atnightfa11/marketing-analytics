@@ -140,7 +140,7 @@ class BreakdownRow(BaseModel):
 
 class BreakdownResponse(BaseModel):
     site_id: str
-    dimension: Literal["pages", "sources", "devices", "countries", "conversions"]
+    dimension: Literal["pages", "sources", "devices", "countries", "conversions", "hour_of_day", "day_of_week"]
     total: float
     primary_metric: str
     metric_keys: list[str] = Field(default_factory=list)

@@ -61,12 +61,39 @@ const metricLabels: Record<string, string> = {
   visit_duration: "Visit Duration",
   revenue: "Revenue",
 };
-const breakdownMetricLabels: Record<BreakdownMetricKey, string> = {
-  uniques: "Visitors",
-  sessions: "Sessions",
-  pageviews: "Pageviews",
-  conversions: "Conversions",
+const breakdownMetricInlineLabels: Record<BreakdownMetricKey, string> = {
+  uniques: "vis",
+  sessions: "ses",
+  pageviews: "pv",
+  conversions: "conv",
 };
+const hourOfDayLabels = [
+  "12 AM",
+  "1 AM",
+  "2 AM",
+  "3 AM",
+  "4 AM",
+  "5 AM",
+  "6 AM",
+  "7 AM",
+  "8 AM",
+  "9 AM",
+  "10 AM",
+  "11 AM",
+  "12 PM",
+  "1 PM",
+  "2 PM",
+  "3 PM",
+  "4 PM",
+  "5 PM",
+  "6 PM",
+  "7 PM",
+  "8 PM",
+  "9 PM",
+  "10 PM",
+  "11 PM",
+] as const;
+const dayOfWeekLabels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
 const metricOptions = [
   { key: "pageviews", label: "Pageviews" },
@@ -79,7 +106,7 @@ const metricOptions = [
   { key: "bounce_rate", label: "Bounce Rate" },
 ];
 const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
-const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions"];
+const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions", "hour_of_day", "day_of_week"];
 
 const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
 const forecastOptions = [
@@ -134,6 +161,32 @@ const formatCompactCurrency = (value: number) => {
 
 const formatAxisDate = (value: string) =>
   new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const formatTooltipDate = (value: string) =>
+  new Date(value).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+const formatRangeLabel = (start: string, end: string) => {
+  const startDate = parseDay(start);
+  const endDate = parseDay(end);
+  const sameDay = start === end;
+  if (sameDay) {
+    return startDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+  if (startDate.getFullYear() === endDate.getFullYear()) {
+    if (startDate.getMonth() === endDate.getMonth()) {
+      return `${startDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${endDate.toLocaleDateString(
+        undefined,
+        { day: "numeric", year: "numeric" }
+      )}`;
+    }
+    return `${startDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${endDate.toLocaleDateString(
+      undefined,
+      { month: "short", day: "numeric", year: "numeric" }
+    )}`;
+  }
+  return `${startDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} - ${endDate.toLocaleDateString(
+    undefined,
+    { month: "short", day: "numeric", year: "numeric" }
+  )}`;
+};
 
 const safeRatio = (numerator: number, denominator: number) =>
   Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0 ? numerator / denominator : Number.NaN;
@@ -221,6 +274,22 @@ interface BreakdownData {
   total: number;
   primaryMetric: BreakdownMetricKey;
   metricKeys: BreakdownMetricKey[];
+}
+
+interface ComparisonPoint {
+  day: string;
+  value: number;
+}
+
+interface TrendChartPoint {
+  day: string;
+  actual: number | null;
+  compare: number | null;
+  compareDay: string | null;
+  forecast: number | null;
+  forecastLower: number | null;
+  forecastUpper: number | null;
+  forecastBandSpan: number | null;
 }
 
 const createEmptyBreakdownData = (
@@ -423,10 +492,10 @@ const TableBlock: React.FC<{
             );
             return (
               <div key={row.label} className="rounded-sm border border-[#EEF3F6] px-3 py-3">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
                   <button
                     type="button"
-                    className={`text-left text-sm text-gray-700 transition-colors md:max-w-[40%] ${
+                    className={`min-w-0 truncate whitespace-nowrap text-left text-sm text-gray-700 transition-colors ${
                       rowDimension && onToggleFilter
                         ? isActive
                           ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
@@ -441,14 +510,14 @@ const TableBlock: React.FC<{
                   >
                     {row.label}
                   </button>
-                  <div className="flex flex-wrap gap-x-4 gap-y-2 md:justify-end">
+                  <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap text-right">
                     {metricKeys.map((metricKey) => (
-                      <div key={metricKey} className="min-w-[72px] text-left md:text-right">
+                      <div key={metricKey} className="flex items-baseline gap-1 text-right">
                         <div className="text-sm text-gray-900 metric-number" style={fontMetric}>
                           {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
                         </div>
-                        <div className="text-[10px] uppercase tracking-[0.16em] text-gray-400" style={fontMeta}>
-                          {breakdownMetricLabels[metricKey]}
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-gray-400" style={fontMeta}>
+                          {breakdownMetricInlineLabels[metricKey]}
                         </div>
                       </div>
                     ))}
@@ -497,20 +566,22 @@ const Overview: React.FC = () => {
     devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
     countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
     conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
+    hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+    day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
   });
-  const [liveWindows, setLiveWindows] = useState<AggregateWindow[]>([]);
   const [customRange, setCustomRange] = useState<DateRange>({ start: "", end: "" });
   const [compareEnabled, setCompareEnabled] = useState(false);
   const [compareMode, setCompareMode] = useState<"previous" | "custom">("previous");
   const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
   const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">("channels");
   const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">("campaign");
+  const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">("hour_of_day");
   const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
 
   useEffect(() => {
     setActiveFilter(null);
-  }, [siteId, range, customRange.start, customRange.end, acquisitionTab, campaignDimension]);
+  }, [siteId, range, customRange.start, customRange.end, acquisitionTab, campaignDimension, timePartingTab]);
   useEffect(() => {
     if (!canQuery) return;
     const metricsToFetch = [...aggregateMetricKeys];
@@ -557,14 +628,6 @@ const Overview: React.FC = () => {
       })
       .catch(console.error);
   }, [canQuery, token, selectedMetric, siteId, showSeededBreakdowns]);
-
-  useEffect(() => {
-    if (!canQuery) return;
-    const loadLive = () => fetchAggregate("uniques", "live", token ?? undefined, siteId).then(setLiveWindows).catch(console.error);
-    loadLive();
-    const interval = setInterval(loadLive, 30000);
-    return () => clearInterval(interval);
-  }, [canQuery, token, siteId]);
 
   const toDaily = (windows: AggregateWindow[]) => {
     const bucket: Record<string, number> = {};
@@ -763,6 +826,8 @@ const Overview: React.FC = () => {
         devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
         countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
         conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
+        hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+        day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
       });
       return;
     }
@@ -772,7 +837,14 @@ const Overview: React.FC = () => {
     const end = breakdownDateRange?.end;
     Promise.all(
       breakdownDimensions.map((dimension) =>
-        fetchBreakdown(dimension, token ?? undefined, siteId, start, end).then((response) => ({
+        fetchBreakdown(
+          dimension,
+          token ?? undefined,
+          siteId,
+          start,
+          end,
+          dimension === "hour_of_day" ? 24 : dimension === "day_of_week" ? 7 : 10
+        ).then((response) => ({
           dimension,
           response,
         }))
@@ -786,6 +858,8 @@ const Overview: React.FC = () => {
           devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
           countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
           conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
+          hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+          day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
         };
         results.forEach((result) => {
           next[result.dimension] = {
@@ -861,7 +935,6 @@ const Overview: React.FC = () => {
       revenue: totals.revenue * activeFilterScale,
     };
   }, [totals, activeFilterScale]);
-  const liveValue = liveWindows.reduce((sum, window) => sum + window.value, 0);
   const availableBounds = useMemo(() => {
     if (dailySelectedAll.length === 0) return null;
     return {
@@ -1008,17 +1081,20 @@ const Overview: React.FC = () => {
   const getComparisonSeries = (metric: string) => getSeriesForBounds(metric, comparisonBounds);
 
   const comparisonAligned = useMemo(() => {
-    if (!compareEnabled) return new Map<string, number>();
+    if (!compareEnabled) return new Map<string, ComparisonPoint>();
     const compareEntries = getComparisonSeries(selectedMetric);
-    if (compareEntries.length === 0 || dailySelected.length === 0) return new Map<string, number>();
+    if (compareEntries.length === 0 || dailySelected.length === 0) return new Map<string, ComparisonPoint>();
     const minLength = Math.min(dailySelected.length, compareEntries.length);
     const primarySlice = dailySelected.slice(dailySelected.length - minLength);
     const compareSlice = compareEntries.slice(compareEntries.length - minLength);
-    const map = new Map<string, number>();
+    const map = new Map<string, ComparisonPoint>();
     primarySlice.forEach((row, index) => {
       const compareValue = compareSlice[index]?.value;
       if (Number.isFinite(compareValue)) {
-        map.set(row.day, compareValue);
+        map.set(row.day, {
+          day: compareSlice[index]?.day ?? row.day,
+          value: compareValue,
+        });
       }
     });
     return map;
@@ -1052,6 +1128,10 @@ const Overview: React.FC = () => {
     : previousBounds
       ? "vs previous period"
       : null;
+  const currentRangeLabel = primaryRangeBounds ? formatRangeLabel(primaryRangeBounds.start, primaryRangeBounds.end) : null;
+  const comparisonRangeLabel = compareEnabled && comparisonBounds
+    ? formatRangeLabel(comparisonBounds.start, comparisonBounds.end)
+    : null;
   const rangeDomainDays = useMemo(() => {
     if (primaryRangeBounds) return enumerateDays(primaryRangeBounds.start, primaryRangeBounds.end);
     if (dailySelected.length > 0) return dailySelected.map((entry) => entry.day);
@@ -1068,9 +1148,6 @@ const Overview: React.FC = () => {
     return {
       total,
       average: total / forecastCandidates.length,
-      days: forecastCandidates.length,
-      start: forecastCandidates[0].day,
-      end: forecastCandidates[forecastCandidates.length - 1].day,
     };
   }, [forecastCandidates]);
   const forecastByDay = useMemo(() => {
@@ -1096,6 +1173,7 @@ const Overview: React.FC = () => {
     () =>
       chartDomainDays.map((day) => {
         const forecastEntry = forecastByDay.get(day);
+        const comparisonEntry = comparisonAligned.get(day);
         const lower = forecastEntry?.yhat_lower;
         const upper = forecastEntry?.yhat_upper;
         const hasBand = Number.isFinite(lower) && Number.isFinite(upper);
@@ -1103,12 +1181,13 @@ const Overview: React.FC = () => {
         return {
           day,
           actual: actualByDay.get(day) ?? null,
-          compare: comparisonAligned.get(day) ?? null,
+          compare: comparisonEntry?.value ?? null,
+          compareDay: comparisonEntry?.day ?? null,
           forecast: forecastEntry?.yhat ?? null,
-          forecastLower: hasBand ? lower : null,
-          forecastUpper: hasBand ? upper : null,
+          forecastLower: hasBand ? (lower as number) : null,
+          forecastUpper: hasBand ? (upper as number) : null,
           forecastBandSpan: hasBand ? bandSpan : null,
-        };
+        } satisfies TrendChartPoint;
       }),
     [chartDomainDays, forecastByDay, actualByDay, comparisonAligned]
   );
@@ -1172,6 +1251,7 @@ const Overview: React.FC = () => {
   const forecastMutedNote = hasAnyForecastData
     ? "Forecast unavailable in selected date range."
     : "Forecast unavailable until more history is collected.";
+  const selectedRangeDayCount = rangeDomainDays.length;
 
   const seededBreakdownTotals = useMemo(
     () => ({
@@ -1313,6 +1393,58 @@ const Overview: React.FC = () => {
         : breakdownData.conversions.rows,
     [showSeededBreakdowns, scaledTotals.uniques, scaledTotals.sessions, scaledTotals.conversions, breakdownData.conversions.rows]
   );
+  const seededHourRows = useMemo(
+    () =>
+      buildMetricRows(
+        [...hourOfDayLabels],
+        [0.04, 0.02, 0.01, 0.01, 0.01, 0.02, 0.03, 0.06, 0.08, 0.09, 0.08, 0.07, 0.06, 0.05, 0.05, 0.05, 0.06, 0.07, 0.06, 0.05, 0.04, 0.04, 0.03, 0.02],
+        seededBreakdownTotals
+      ),
+    [seededBreakdownTotals]
+  );
+  const seededDayRows = useMemo(
+    () =>
+      buildMetricRows(
+        [...dayOfWeekLabels],
+        [0.12, 0.13, 0.13, 0.14, 0.17, 0.16, 0.15],
+        seededBreakdownTotals
+      ),
+    [seededBreakdownTotals]
+  );
+  const timePartingEligible = showSeededBreakdowns || selectedRangeDayCount >= 7;
+  const timePartingRows = useMemo(() => {
+    if (!timePartingEligible) return [] as BreakdownTableRow[];
+    if (showSeededBreakdowns) {
+      return timePartingTab === "hour_of_day" ? seededHourRows : seededDayRows;
+    }
+    return timePartingTab === "hour_of_day" ? breakdownData.hour_of_day.rows : breakdownData.day_of_week.rows;
+  }, [
+    timePartingEligible,
+    showSeededBreakdowns,
+    timePartingTab,
+    seededHourRows,
+    seededDayRows,
+    breakdownData.hour_of_day.rows,
+    breakdownData.day_of_week.rows,
+  ]);
+  const timePartingMetricKeys = showSeededBreakdowns
+    ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
+    : timePartingTab === "hour_of_day"
+      ? breakdownData.hour_of_day.metricKeys
+      : breakdownData.day_of_week.metricKeys;
+  const timePartingPrimaryMetric = showSeededBreakdowns
+    ? ("sessions" as BreakdownMetricKey)
+    : timePartingTab === "hour_of_day"
+      ? breakdownData.hour_of_day.primaryMetric
+      : breakdownData.day_of_week.primaryMetric;
+  const timePartingTotal = showSeededBreakdowns
+    ? scaledTotals.sessions
+    : timePartingTab === "hour_of_day"
+      ? breakdownData.hour_of_day.total
+      : breakdownData.day_of_week.total;
+  const timePartingEmptyState = timePartingEligible
+    ? "No time-parting data yet for the selected range."
+    : "Time-parting analysis becomes useful once you view at least 7 days.";
   const breakdownCards = useMemo(() => {
     return [
       {
@@ -1720,6 +1852,9 @@ const Overview: React.FC = () => {
           values={scaledTotals}
           comparisonValues={scaledKpiComparisonValues}
           comparisonLabel={kpiComparisonLabel}
+          currentRangeLabel={currentRangeLabel}
+          comparisonRangeLabel={comparisonRangeLabel}
+          showDetailedComparison={compareEnabled}
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
         />
@@ -1745,79 +1880,21 @@ const Overview: React.FC = () => {
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
           <div className="mb-4 border-b border-[var(--color-border-subtle)] pb-3">
             <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <div className="text-base font-semibold text-[#1F2937]" style={fontBody}>
-                  Trend
-                </div>
-                <div className="mt-1 text-xs text-gray-500" style={fontBody}>
-                  Actual coverage: {actualCoverageText}. {forecastAvailabilityText}
-                </div>
+              <div className="text-xs text-gray-500" style={fontBody}>
+                Actual coverage: {actualCoverageText}. {forecastAvailabilityText}
                 {actualIsStale && lastActualDay && (
                   <div className="mt-1 text-xs text-gray-400" style={fontBody}>
                     Actual data through {formatShortDate(lastActualDay)}.
                   </div>
                 )}
               </div>
-              <div className="text-right text-[11px] text-gray-500" style={fontBody}>
-                <div>
-                  Live visitors: <span className="metric-number text-[#111827]" style={fontMetric}>{formatNumber(liveValue)}</span>
+              {hasForecast && (
+                <div className="text-right text-[11px] text-gray-500" style={fontBody}>
+                  MAPE: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
                 </div>
-                {hasForecast && (
-                  <div className="mt-1">
-                    Forecast quality: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           </div>
-          {forecastSummary && (
-            <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Forecast Total
-                </div>
-                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                  {formatMetricValue(selectedMetric, forecastSummary.total)}
-                </div>
-                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                  {forecastLabel}
-                </div>
-              </div>
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Daily Avg
-                </div>
-                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                  {formatMetricValue(selectedMetric, forecastSummary.average)}
-                </div>
-                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                  Across the selected horizon
-                </div>
-              </div>
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Window
-                </div>
-                <div className="mt-2 text-sm text-[#111827]" style={fontBody}>
-                  {formatShortDate(forecastSummary.start)} to {formatShortDate(forecastSummary.end)}
-                </div>
-                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                  Future-only forecast range
-                </div>
-              </div>
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Forecast Days
-                </div>
-                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                  {formatNumber(forecastSummary.days)}
-                </div>
-                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                  Included in {forecastLabel}
-                </div>
-              </div>
-            </div>
-          )}
           <div className="mt-4">
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
@@ -1845,27 +1922,66 @@ const Overview: React.FC = () => {
                     width={48}
                   />
                   <Tooltip
-                    formatter={(value: number | [number, number], name: string) => {
-                      if (Array.isArray(value)) {
-                        const low = formatMetricValue(selectedMetric, value[0]);
-                        const high = formatMetricValue(selectedMetric, value[1]);
-                        return [`${low} to ${high}`, "Forecast interval"];
-                      }
-                      const label =
-                        name === "actual"
-                          ? "Actual"
-                          : name === "compare"
-                            ? "Comparison"
-                            : name === "forecast"
-                              ? "Forecast"
-                              : name === "forecastUpper"
-                                ? "Forecast upper"
-                                : name === "forecastLower"
-                                  ? "Forecast lower"
-                                  : name;
-                      return [formatMetricValue(selectedMetric, value), label];
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length || !label) return null;
+                      const point = payload[0]?.payload as TrendChartPoint | undefined;
+                      if (!point) return null;
+                      const actualValue = point.actual;
+                      const compareValue = point.compare;
+                      const forecastValue = point.forecast;
+                      const delta =
+                        Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(compareValue ?? Number.NaN) && (compareValue ?? 0) > 0
+                          ? ((actualValue ?? 0) - (compareValue ?? 0)) / (compareValue ?? 1)
+                          : Number.NaN;
+                      const deltaDisplay = Number.isFinite(delta)
+                        ? `${delta >= 0 ? "↑" : "↓"} ${Math.abs(delta * 100).toFixed(1)}%`
+                        : null;
+                      const deltaClass = Number.isFinite(delta)
+                        ? delta >= 0
+                          ? "text-[#6EE7B7]"
+                          : "text-[#FCA5A5]"
+                        : "text-gray-400";
+                      return (
+                        <div className="min-w-[208px] border border-[#111827] bg-[#111827] px-3 py-3 text-white shadow-lg">
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <div className="text-[10px] uppercase tracking-[0.18em] text-gray-300" style={fontBody}>
+                              {metricLabels[selectedMetric] ?? selectedMetric}
+                            </div>
+                            {deltaDisplay && (
+                              <div className={`text-[11px] metric-number ${deltaClass}`} style={fontMetric}>
+                                {deltaDisplay}
+                              </div>
+                            )}
+                          </div>
+                          {Number.isFinite(actualValue ?? Number.NaN) && (
+                            <div className="flex items-center justify-between gap-4 py-1 text-sm">
+                              <span className="text-gray-200" style={fontBody}>{formatTooltipDate(String(label))}</span>
+                              <span className="metric-number text-white" style={fontMetric}>
+                                {formatMetricValue(selectedMetric, actualValue ?? Number.NaN)}
+                              </span>
+                            </div>
+                          )}
+                          {compareEnabled && Number.isFinite(compareValue ?? Number.NaN) && point.compareDay && (
+                            <div className="flex items-center justify-between gap-4 py-1 text-sm">
+                              <span className="text-gray-400" style={fontBody}>{formatTooltipDate(point.compareDay)}</span>
+                              <span className="metric-number text-gray-200" style={fontMetric}>
+                                {formatMetricValue(selectedMetric, compareValue ?? Number.NaN)}
+                              </span>
+                            </div>
+                          )}
+                          {!Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(forecastValue ?? Number.NaN) && (
+                            <div className="mt-2 border-t border-white/10 pt-2">
+                              <div className="flex items-center justify-between gap-4 py-1 text-sm">
+                                <span className="text-gray-300" style={fontBody}>Projected</span>
+                                <span className="metric-number text-white" style={fontMetric}>
+                                  {formatMetricValue(selectedMetric, forecastValue ?? Number.NaN)}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
                     }}
-                    labelFormatter={(label) => formatShortDate(String(label))}
                     contentStyle={{
                       borderRadius: 0,
                       borderColor: "var(--color-border-subtle)",
@@ -1991,6 +2107,36 @@ const Overview: React.FC = () => {
             {!hasForecast && <span className="text-xs text-gray-400">{forecastMutedNote}</span>}
           </div>
         </section>
+        {forecastSummary && (
+          <section className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                Forecast
+              </div>
+              <div className="text-[11px] text-gray-500" style={fontBody}>
+                {forecastLabel}
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
+                  Projected Total
+                </div>
+                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                  {formatMetricValue(selectedMetric, forecastSummary.total)}
+                </div>
+              </div>
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
+                  Average Per Day
+                </div>
+                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                  {formatMetricValue(selectedMetric, forecastSummary.average)}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -2057,6 +2203,35 @@ const Overview: React.FC = () => {
                 activeFilter={activeFilter}
                 onToggleFilter={toggleFilter}
                 emptyState={acquisitionEmptyState}
+              />
+            </div>
+            <div className="border border-[var(--color-border-subtle)] bg-white p-4">
+              <div className="mb-3 flex flex-wrap items-center gap-4 text-xs font-semibold text-gray-500" style={fontBody}>
+                <button
+                  type="button"
+                  className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                  onClick={() => setTimePartingTab("hour_of_day")}
+                >
+                  Hour of Day
+                </button>
+                <button
+                  type="button"
+                  className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                  onClick={() => setTimePartingTab("day_of_week")}
+                >
+                  Day of Week
+                </button>
+              </div>
+              <TableBlock
+                title="Time Parting"
+                rows={timePartingRows}
+                metricKeys={timePartingMetricKeys}
+                primaryMetric={timePartingPrimaryMetric}
+                total={timePartingTotal}
+                rowDimension={timePartingTab}
+                activeFilter={activeFilter}
+                onToggleFilter={toggleFilter}
+                emptyState={timePartingEmptyState}
               />
             </div>
             <TableBlock

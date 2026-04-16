@@ -5,6 +5,9 @@ interface Props {
   values: Record<string, number>;
   comparisonValues?: Record<string, number> | null;
   comparisonLabel?: string | null;
+  currentRangeLabel?: string | null;
+  comparisonRangeLabel?: string | null;
+  showDetailedComparison?: boolean;
   selectedMetric?: string;
   onSelectMetric?: (metric: string) => void;
 }
@@ -63,6 +66,9 @@ export const KPIGrid: React.FC<Props> = ({
   values,
   comparisonValues,
   comparisonLabel,
+  currentRangeLabel,
+  comparisonRangeLabel,
+  showDetailedComparison = false,
   selectedMetric,
   onSelectMetric,
 }) => (
@@ -85,18 +91,26 @@ export const KPIGrid: React.FC<Props> = ({
           : "text-gray-400";
         const isActive = selectedMetric === card.key;
         const isPrimary = card.tier === "primary";
+        const showComparisonRows = showDetailedComparison && Boolean(currentRangeLabel && comparisonRangeLabel);
 
         return (
           <button
             key={card.key}
             type="button"
             onClick={() => onSelectMetric?.(card.key)}
-            className={`flex min-h-[96px] flex-col justify-between border-b border-r border-[var(--color-border-subtle)] px-4 py-2 text-left transition-colors ${
+            className={`flex ${showComparisonRows ? "min-h-[132px]" : "min-h-[96px]"} flex-col justify-between border-b border-r border-[var(--color-border-subtle)] px-4 py-2 text-left transition-colors ${
               isActive ? "bg-[#E8F5F5]" : "bg-white hover:bg-[#F9FAFB]"
             }`}
           >
-            <div className={`label-tight ${isActive ? "text-[#0A5F6F]" : "text-gray-500"}`} style={fontBody}>
-              {card.label}
+            <div className="flex items-start justify-between gap-3">
+              <div className={`label-tight ${isActive ? "text-[#0A5F6F]" : "text-gray-500"}`} style={fontBody}>
+                {card.label}
+              </div>
+              {showComparisonRows && (
+                <div className={`text-[10px] ${deltaClass} metric-number whitespace-nowrap`} style={fontMetric}>
+                  {deltaDisplay}
+                </div>
+              )}
             </div>
             <div>
               <div
@@ -105,13 +119,32 @@ export const KPIGrid: React.FC<Props> = ({
               >
                 {formatMetricValue(card.key, value)}
               </div>
-              <div className={`mt-1 text-[11px] ${deltaClass} metric-number leading-tight`} style={fontMetric}>
-                {deltaDisplay}
-              </div>
-              {comparisonLabel && (
-                <div className="mt-1 text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
-                  {comparisonLabel}
-                </div>
+              {showComparisonRows ? (
+                <>
+                  <div className="mt-1 text-[10px] text-gray-500 normal-case tracking-normal" style={fontBody}>
+                    {currentRangeLabel}
+                  </div>
+                  <div
+                    className={`mt-3 ${isPrimary ? "text-xl font-semibold text-[#6B7280]" : "text-base font-medium text-[#6B7280]"} metric-number leading-tight`}
+                    style={fontMetric}
+                  >
+                    {formatMetricValue(card.key, compareValue ?? Number.NaN)}
+                  </div>
+                  <div className="mt-1 text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
+                    {comparisonRangeLabel}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className={`mt-1 text-[11px] ${deltaClass} metric-number leading-tight`} style={fontMetric}>
+                    {deltaDisplay}
+                  </div>
+                  {comparisonLabel && (
+                    <div className="mt-1 text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
+                      {comparisonLabel}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </button>

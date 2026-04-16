@@ -16,9 +16,39 @@ from ..models import RawReport, get_session
 from ..schemas import BreakdownResponse, BreakdownRow
 
 router = APIRouter(tags=["metrics"])
-BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions"]
+BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions", "hour_of_day", "day_of_week"]
 BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions"]
 settings = get_settings()
+
+HOUR_OF_DAY_LABELS = [
+    "12 AM",
+    "1 AM",
+    "2 AM",
+    "3 AM",
+    "4 AM",
+    "5 AM",
+    "6 AM",
+    "7 AM",
+    "8 AM",
+    "9 AM",
+    "10 AM",
+    "11 AM",
+    "12 PM",
+    "1 PM",
+    "2 PM",
+    "3 PM",
+    "4 PM",
+    "5 PM",
+    "6 PM",
+    "7 PM",
+    "8 PM",
+    "9 PM",
+    "10 PM",
+    "11 PM",
+]
+HOUR_OF_DAY_ORDER = {label: index for index, label in enumerate(HOUR_OF_DAY_LABELS)}
+DAY_OF_WEEK_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAY_OF_WEEK_ORDER = {label: index for index, label in enumerate(DAY_OF_WEEK_LABELS)}
 
 BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = {
     "pages": ("uniques", "sessions", "pageviews"),
@@ -26,6 +56,8 @@ BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = 
     "devices": ("uniques", "sessions", "pageviews", "conversions"),
     "countries": ("uniques", "sessions", "pageviews", "conversions"),
     "conversions": ("uniques", "sessions", "conversions"),
+    "hour_of_day": ("uniques", "sessions", "pageviews", "conversions"),
+    "day_of_week": ("uniques", "sessions", "pageviews", "conversions"),
 }
 BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "pages": "pageviews",
@@ -33,6 +65,8 @@ BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "devices": "pageviews",
     "countries": "pageviews",
     "conversions": "conversions",
+    "hour_of_day": "sessions",
+    "day_of_week": "sessions",
 }
 BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "pages": ("pageviews",),
@@ -40,6 +74,8 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "devices": ("sessions", "pageviews", "conversions"),
     "countries": ("sessions", "pageviews", "conversions"),
     "conversions": ("conversions",),
+    "hour_of_day": ("sessions", "pageviews", "conversions"),
+    "day_of_week": ("sessions", "pageviews", "conversions"),
 }
 
 COMMON_SOURCE_HOST_MAP = {
@@ -217,7 +253,15 @@ def _normalize_conversion_event(raw_value: object) -> str:
     return normalized.title()[:120] if normalized else "Unknown"
 
 
-def _resolve_label(dimension: BreakdownDimension, payload: dict) -> str:
+def _hour_of_day_label(timestamp: dt.datetime) -> str:
+    return HOUR_OF_DAY_LABELS[timestamp.hour]
+
+
+def _day_of_week_label(timestamp: dt.datetime) -> str:
+    return DAY_OF_WEEK_LABELS[timestamp.weekday()]
+
+
+def _resolve_label(dimension: BreakdownDimension, payload: dict, server_received_at: dt.datetime) -> str:
     if dimension == "pages":
         return _normalize_page_path(payload.get("url"))
     if dimension == "sources":
@@ -229,7 +273,27 @@ def _resolve_label(dimension: BreakdownDimension, payload: dict) -> str:
         return _normalize_device_bucket(payload.get("_device_bucket"))
     if dimension == "conversions":
         return _normalize_conversion_event(payload.get("conversion_type"))
+    if dimension == "hour_of_day":
+        return _hour_of_day_label(server_received_at)
+    if dimension == "day_of_week":
+        return _day_of_week_label(server_received_at)
     return _normalize_country_code(payload.get("_country_code"))
+
+
+def _ordered_buckets(
+    dimension: BreakdownDimension,
+    buckets: defaultdict[str, dict[str, float]],
+    primary_metric: BreakdownMetric,
+    limit: int,
+) -> list[tuple[str, dict[str, float]]]:
+    items = list(buckets.items())
+    if dimension == "hour_of_day":
+        items.sort(key=lambda item: HOUR_OF_DAY_ORDER.get(item[0], 999))
+        return items[:limit]
+    if dimension == "day_of_week":
+        items.sort(key=lambda item: DAY_OF_WEEK_ORDER.get(item[0], 999))
+        return items[:limit]
+    return sorted(items, key=lambda item: (-item[1].get(primary_metric, 0.0), item[0]))[:limit]
 
 
 @router.get("/breakdown", response_model=BreakdownResponse)
@@ -282,7 +346,7 @@ async def breakdown(
                 continue
             marker = _session_marker(report.server_received_at, payload)
             if marker and marker not in source_by_session:
-                source_by_session[marker] = _resolve_label(dimension, payload)
+                source_by_session[marker] = _resolve_label(dimension, payload, report.server_received_at)
 
     for report in reports:
         payload = report.payload if isinstance(report.payload, dict) else {}
@@ -292,7 +356,7 @@ async def breakdown(
         visitor_marker = _visitor_marker(report.day, payload)
 
         if dimension == "pages":
-            label = _resolve_label(dimension, payload)
+            label = _resolve_label(dimension, payload, report.server_received_at)
             _increment_metric(buckets, totals, label, "pageviews")
             if session_marker and session_marker not in seen_sessions_by_label[label]:
                 seen_sessions_by_label[label].add(session_marker)
@@ -304,7 +368,7 @@ async def breakdown(
 
         if dimension == "sources":
             if report.kind == "sessions":
-                label = source_by_session.get(session_marker, _resolve_label(dimension, payload))
+                label = source_by_session.get(session_marker, _resolve_label(dimension, payload, report.server_received_at))
                 if session_marker:
                     if session_marker not in seen_sessions_by_label[label]:
                         seen_sessions_by_label[label].add(session_marker)
@@ -326,7 +390,7 @@ async def breakdown(
                 _increment_metric(buckets, totals, label, "uniques")
             continue
 
-        label = _resolve_label(dimension, payload)
+        label = _resolve_label(dimension, payload, report.server_received_at)
         if report.kind == "pageviews":
             _increment_metric(buckets, totals, label, "pageviews")
         elif report.kind == "sessions":
@@ -349,10 +413,7 @@ async def breakdown(
             seen_visitors_by_label[label].add(visitor_marker)
             _increment_metric(buckets, totals, label, "uniques")
 
-    ordered = sorted(
-        buckets.items(),
-        key=lambda item: (-item[1].get(primary_metric, 0.0), item[0]),
-    )[:limit]
+    ordered = _ordered_buckets(dimension, buckets, primary_metric, limit)
     rows = [
         BreakdownRow(
             label=label,
