@@ -30,6 +30,7 @@ import { PrivacyControls } from "./components/PrivacyControls";
 import { TopCountries } from "./components/TopCountries";
 import { TopSources } from "./components/TopSources";
 import { useAuth } from "./hooks/useAuth";
+import { useTheme } from "./hooks/useTheme";
 import { formatNumber, formatPercent, formatShortDate } from "./utils/format";
 import { buildSourceMediumLabel, classifyChannelLabel, normalizeSourceLabel } from "./utils/sourceAttribution";
 import en from "./locales/en.json";
@@ -343,6 +344,27 @@ const renderBreakdownLabel = (dimension: string | undefined, label: string) => {
   );
 };
 
+const filterDimensionLabels: Record<string, string> = {
+  channel: "Channel",
+  source: "Source",
+  source_medium: "Source / Medium",
+  campaign: "Campaign",
+  content: "Content",
+  term: "Term",
+  page: "Page",
+  country: "Country",
+  device: "Device",
+  goal: "Goal",
+  hour_of_day: "Hour",
+  day_of_week: "Day",
+};
+
+const renderFilterDimensionLabel = (dimension: string): string =>
+  filterDimensionLabels[dimension] ??
+  dimension
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
 const createEmptyBreakdownData = (
   primaryMetric: BreakdownMetricKey,
   metricKeys: BreakdownMetricKey[] = [primaryMetric]
@@ -510,6 +532,61 @@ const aggregateRowsByLabel = (rows: BreakdownTableRow[]) => {
     });
 };
 
+const SunIcon: React.FC = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    aria-hidden="true"
+  >
+    <circle cx="8" cy="8" r="3" />
+    <line x1="8" y1="1.5" x2="8" y2="3" />
+    <line x1="8" y1="13" x2="8" y2="14.5" />
+    <line x1="1.5" y1="8" x2="3" y2="8" />
+    <line x1="13" y1="8" x2="14.5" y2="8" />
+    <line x1="3.4" y1="3.4" x2="4.4" y2="4.4" />
+    <line x1="11.6" y1="11.6" x2="12.6" y2="12.6" />
+    <line x1="3.4" y1="12.6" x2="4.4" y2="11.6" />
+    <line x1="11.6" y1="4.4" x2="12.6" y2="3.4" />
+  </svg>
+);
+
+const MoonIcon: React.FC = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.4"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M13.5 9.5A5.5 5.5 0 1 1 6.5 2.5 a4.5 4.5 0 0 0 7 7Z" />
+  </svg>
+);
+
+const ThemeToggle: React.FC = () => {
+  const { theme, toggleTheme } = useTheme();
+  const isDark = theme === "dark";
+  return (
+    <button
+      type="button"
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      onClick={toggleTheme}
+      className="inline-flex h-7 w-7 items-center justify-center border border-gray-200 bg-white text-[#1F2937] transition-colors hover:text-[#0A5F6F] no-print"
+    >
+      {isDark ? <SunIcon /> : <MoonIcon />}
+    </button>
+  );
+};
+
 const ExpandIcon: React.FC = () => (
   <svg
     width="14"
@@ -554,9 +631,9 @@ const TableBlock: React.FC<{
   total?: number;
   emptyState?: string;
   rowDimension?: string;
-  activeFilter?: ActiveFilter | null;
+  activeFilters?: ActiveFilter[];
   onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
-}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilter, onToggleFilter }) => {
+}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilters, onToggleFilter }) => {
   const [expanded, setExpanded] = useState(false);
   const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
   const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
@@ -589,7 +666,7 @@ const TableBlock: React.FC<{
           const primaryValue = getBreakdownMetricValue(row, primaryMetric);
           const width = maxValue > 0 ? Math.max(4, (primaryValue / maxValue) * 100) : 0;
           const isActive = Boolean(
-            activeFilter && rowDimension && activeFilter.dimension === rowDimension && activeFilter.value === row.label
+            rowDimension && activeFilters?.some((f) => f.dimension === rowDimension && f.value === row.label)
           );
           const labelClass = compact
             ? "truncate whitespace-nowrap"
@@ -735,12 +812,18 @@ const Overview: React.FC = () => {
   const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">("channels");
   const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">("campaign");
   const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">("day_of_week");
-  const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
+  const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
+  const [dismissedAnomalies, setDismissedAnomalies] = useState<Set<string>>(() => new Set());
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const chartGridStroke = isDark ? "rgba(249,250,251,0.10)" : "#E5E7EB";
+  const chartAxisTick = isDark ? "rgba(249,250,251,0.55)" : "#6B7280";
+  const chartReferenceStroke = isDark ? "rgba(249,250,251,0.25)" : "#D1D5DB";
 
   useEffect(() => {
-    setActiveFilter(null);
-  }, [siteId, range, customRange.start, customRange.end, acquisitionTab, campaignDimension, timePartingTab]);
+    setActiveFilters([]);
+  }, [siteId, range, customRange.start, customRange.end]);
   useEffect(() => {
     if (!canQuery) return;
     const metricsToFetch = [...aggregateMetricKeys];
@@ -1082,7 +1165,10 @@ const Overview: React.FC = () => {
     revenue: dailyRevenue,
     visitDuration: dailyVisitDuration,
   });
-  const activeFilterScale = activeFilter?.share ?? 1;
+  const activeFilterScale = useMemo(
+    () => activeFilters.reduce((acc, filter) => acc * filter.share, 1),
+    [activeFilters]
+  );
   const scaledTotals = useMemo(() => {
     if (activeFilterScale >= 0.999) return totals;
     return {
@@ -1507,10 +1593,18 @@ const Overview: React.FC = () => {
     const rowValue = getBreakdownMetricValue(row, primaryMetric);
     if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(rowValue) || rowValue <= 0) return;
     const share = clamp(rowValue / total, 0.01, 1);
-    setActiveFilter((prev) => {
-      if (prev && prev.dimension === dimension && prev.value === row.label) return null;
-      return { dimension, value: row.label, share };
+    setActiveFilters((prev) => {
+      const match = prev.find((f) => f.dimension === dimension && f.value === row.label);
+      if (match) {
+        return prev.filter((f) => !(f.dimension === dimension && f.value === row.label));
+      }
+      const withoutSameDimension = prev.filter((f) => f.dimension !== dimension);
+      return [...withoutSameDimension, { dimension, value: row.label, share }];
     });
+  };
+
+  const removeFilter = (dimension: string, value: string) => {
+    setActiveFilters((prev) => prev.filter((f) => !(f.dimension === dimension && f.value === value)));
   };
 
   const pageRows = useMemo(
@@ -1827,6 +1921,7 @@ const Overview: React.FC = () => {
               Date Range
             </span>
             <select
+              aria-label="Date range"
               className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
               style={fontBody}
               value={range}
@@ -1842,6 +1937,7 @@ const Overview: React.FC = () => {
               <div className="flex items-center gap-1">
                 <input
                   type="date"
+                  aria-label="Custom range start date"
                   className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                   style={fontBody}
                   min={availableBounds?.min}
@@ -1861,6 +1957,7 @@ const Overview: React.FC = () => {
                 </span>
                 <input
                   type="date"
+                  aria-label="Custom range end date"
                   className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                   style={fontBody}
                   min={availableBounds?.min}
@@ -1887,6 +1984,7 @@ const Overview: React.FC = () => {
             {compareEnabled && (
               <>
                 <select
+                  aria-label="Comparison period"
                   className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                   style={fontBody}
                   value={compareMode}
@@ -1899,6 +1997,7 @@ const Overview: React.FC = () => {
                   <div className="flex items-center gap-1">
                     <input
                       type="date"
+                      aria-label="Comparison start date"
                       className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                       style={fontBody}
                       min={availableBounds?.min}
@@ -1917,6 +2016,7 @@ const Overview: React.FC = () => {
                     </span>
                     <input
                       type="date"
+                      aria-label="Comparison end date"
                       className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                       style={fontBody}
                       min={availableBounds?.min}
@@ -1938,6 +2038,7 @@ const Overview: React.FC = () => {
               CSV
             </span>
             <select
+              aria-label="CSV export scope"
               className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
               style={fontBody}
               value={exportMode}
@@ -1962,6 +2063,7 @@ const Overview: React.FC = () => {
             >
               Export PDF
             </button>
+            <ThemeToggle />
           </div>
         </div>
       </header>
@@ -1994,23 +2096,95 @@ const Overview: React.FC = () => {
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
         />
-        {activeFilter && (
-          <div className="flex flex-wrap items-center gap-3 border border-[var(--color-border-subtle)] bg-white px-3 py-2 text-xs text-gray-600">
-            <span style={fontBody}>
-              Filtered by <span className="font-semibold text-[#1F2937]">{activeFilter.dimension}</span>:
-              <span className="ml-1 font-semibold text-[#0A5F6F]">{activeFilter.value}</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setActiveFilter(null)}
-              className="border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600 hover:text-[#0A5F6F]"
+        {forecastMeta?.has_anomaly &&
+          !dismissedAnomalies.has(`${siteId}:${selectedMetric}`) && (
+            <div
+              role="status"
+              className="flex items-start gap-3 border-l-2 border-[#8B2635] bg-[#FBEFF1] px-4 py-3 text-[13px] text-[#1F2937]"
               style={fontBody}
             >
-              Clear filter
-            </button>
-            <span className="text-[11px] text-gray-400" style={fontBody}>
-              Trend and KPI views are scaled proportionally by selected dimension share.
-            </span>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="#8B2635"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className="mt-0.5 shrink-0"
+              >
+                <path d="M8 1.5 L14.5 13.5 L1.5 13.5 Z" />
+                <line x1="8" y1="6" x2="8" y2="9.5" />
+                <circle cx="8" cy="11.5" r="0.6" fill="#8B2635" stroke="none" />
+              </svg>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-[#8B2635]">
+                  Anomaly detected in {metricLabels[selectedMetric] ?? selectedMetric}
+                </div>
+                <div className="mt-0.5 text-[12px] text-[#4B5563]">
+                  Recent values deviated from the forecast band. The forecast interval may be temporarily wider until the trend stabilizes.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate("/alerts")}
+                className="shrink-0 border border-[#8B2635] bg-white px-2 py-1 text-[11px] font-medium text-[#8B2635] hover:bg-[#8B2635] hover:text-white"
+                style={fontBody}
+              >
+                View alerts
+              </button>
+              <button
+                type="button"
+                aria-label="Dismiss anomaly notice"
+                onClick={() =>
+                  setDismissedAnomalies((prev) => {
+                    const next = new Set(prev);
+                    next.add(`${siteId}:${selectedMetric}`);
+                    return next;
+                  })
+                }
+                className="shrink-0 p-1 text-[#8B2635]/70 transition-colors hover:text-[#8B2635]"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+          )}
+        {activeFilters.length > 0 && (
+          <div className="sticky top-0 z-30 -mx-6 bg-[#0A5F6F] px-6 py-2 text-white shadow-sm no-print">
+            <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 text-[12px]" style={fontBody}>
+              <span className="text-[10px] uppercase tracking-[0.18em] text-white/70" style={fontMeta}>
+                Segment
+              </span>
+              {activeFilters.map((filter) => (
+                <span
+                  key={`${filter.dimension}:${filter.value}`}
+                  className="inline-flex items-center gap-1.5 bg-white/15 px-2 py-0.5"
+                >
+                  <span className="text-white/70">{renderFilterDimensionLabel(filter.dimension)}:</span>
+                  <span className="font-semibold">{renderBreakdownLabel(filter.dimension, filter.value)}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${filter.dimension} filter`}
+                    onClick={() => removeFilter(filter.dimension, filter.value)}
+                    className="-mr-0.5 ml-0.5 p-0.5 text-white/70 hover:text-white"
+                  >
+                    <CloseIcon />
+                  </button>
+                </span>
+              ))}
+              <button
+                type="button"
+                onClick={() => setActiveFilters([])}
+                className="border border-white/40 bg-transparent px-2 py-0.5 text-[11px] text-white/90 hover:bg-white/10"
+              >
+                Clear all
+              </button>
+              <span className="ml-auto text-[11px] text-white/70">
+                Trend & KPI views scaled by dimension share (approx).
+              </span>
+            </div>
           </div>
         )}
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
@@ -2022,11 +2196,11 @@ const Overview: React.FC = () => {
             ) : (
               <ResponsiveContainer width="100%" height={280}>
                 <ComposedChart data={chartData}>
-                  <CartesianGrid stroke="#E5E7EB" strokeDasharray="2 6" vertical={false} />
+                  <CartesianGrid stroke={chartGridStroke} strokeDasharray="2 6" vertical={false} />
                   <XAxis
                     dataKey="day"
                     tickFormatter={formatAxisDate}
-                    tick={{ fill: "#6B7280", fontSize: 10, fontFamily: "var(--font-sans)" }}
+                    tick={{ fill: chartAxisTick, fontSize: 10, fontFamily: "var(--font-sans)" }}
                     axisLine={false}
                     tickLine={false}
                     minTickGap={24}
@@ -2035,7 +2209,7 @@ const Overview: React.FC = () => {
                   />
                   <YAxis
                     tickFormatter={chartFormatter}
-                    tick={{ fill: "#6B7280", fontSize: 10, fontFamily: "var(--font-sans)" }}
+                    tick={{ fill: chartAxisTick, fontSize: 10, fontFamily: "var(--font-sans)" }}
                     axisLine={false}
                     tickLine={false}
                     width={48}
@@ -2125,17 +2299,17 @@ const Overview: React.FC = () => {
                       fontVariantNumeric: "tabular-nums lining-nums",
                       fontFeatureSettings: '"tnum" 1, "lnum" 1',
                     }}
-                    cursor={{ stroke: "#E5E7EB" }}
+                    cursor={{ stroke: chartGridStroke }}
                   />
                   {showTodayLine && (
                     <ReferenceLine
                       x={todayKey}
-                      stroke="#D1D5DB"
+                      stroke={chartReferenceStroke}
                       strokeDasharray="3 6"
                       label={{
                         value: "Today",
                         position: "top",
-                        fill: "#6B7280",
+                        fill: chartAxisTick,
                         fontSize: 10,
                         fontFamily: fontBody.fontFamily,
                       }}
@@ -2243,6 +2417,7 @@ const Overview: React.FC = () => {
                 Horizon
               </span>
               <select
+                aria-label="Forecast horizon"
                 className="border border-[#D6E1E7] bg-white px-2.5 py-1.5 text-xs text-[#1F2937]"
                 style={fontBody}
                 value={forecastKey}
@@ -2325,6 +2500,7 @@ const Overview: React.FC = () => {
                   </div>
                   {acquisitionTab === "campaigns" && (
                     <select
+                      aria-label="Campaign dimension"
                       className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
                       style={fontBody}
                       value={campaignDimension}
@@ -2342,7 +2518,7 @@ const Overview: React.FC = () => {
               primaryMetric={acquisitionPrimaryMetric}
               total={acquisitionTotal}
               rowDimension={acquisitionDimensionKey}
-              activeFilter={activeFilter}
+              activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
               emptyState={acquisitionEmptyState}
             />
@@ -2354,7 +2530,7 @@ const Overview: React.FC = () => {
               total={breakdownCards[0]?.total}
               emptyState={breakdownCards[0]?.empty}
               rowDimension={breakdownCards[0]?.dimension}
-              activeFilter={activeFilter}
+              activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />
             <TableBlock
@@ -2365,7 +2541,7 @@ const Overview: React.FC = () => {
               total={breakdownCards[1]?.total}
               emptyState={breakdownCards[1]?.empty}
               rowDimension={breakdownCards[1]?.dimension}
-              activeFilter={activeFilter}
+              activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />
             <TableBlock
@@ -2376,7 +2552,7 @@ const Overview: React.FC = () => {
               total={breakdownCards[2]?.total}
               emptyState={breakdownCards[2]?.empty}
               rowDimension={breakdownCards[2]?.dimension}
-              activeFilter={activeFilter}
+              activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />
             <TableBlock
@@ -2387,7 +2563,7 @@ const Overview: React.FC = () => {
               total={breakdownCards[3]?.total}
               emptyState={breakdownCards[3]?.empty}
               rowDimension={breakdownCards[3]?.dimension}
-              activeFilter={activeFilter}
+              activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />
             <TableBlock
@@ -2415,16 +2591,11 @@ const Overview: React.FC = () => {
               primaryMetric={timePartingPrimaryMetric}
               total={timePartingTotal}
               rowDimension={timePartingTab}
-              activeFilter={activeFilter}
+              activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
               emptyState={timePartingEmptyState}
             />
           </div>
-          {activeFilter && (
-            <div className="mt-3 text-xs text-gray-500" style={fontBody}>
-              Active report filter: <span className="font-semibold text-[#0A5F6F]">{activeFilter.value}</span>
-            </div>
-          )}
           <div className="mt-2 text-[11px] text-gray-400" style={fontBody}>
             Channels are normalized into Direct, Organic Search, Organic Social, Paid Search, Paid Social, and Referral.
           </div>
@@ -2444,6 +2615,7 @@ const Charts: React.FC = () => (
         <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
+        <ThemeToggle />
       </div>
     </header>
     <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
@@ -2463,6 +2635,7 @@ const Alerts: React.FC = () => (
         <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
+        <ThemeToggle />
       </div>
     </header>
     <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
@@ -2480,6 +2653,7 @@ const Settings: React.FC = () => (
         <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
+        <ThemeToggle />
       </div>
     </header>
     <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
@@ -2605,6 +2779,7 @@ const LoginGate: React.FC = () => {
               </label>
               <input
                 type="text"
+                aria-label="Username"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 className="w-full border border-gray-300 px-3 py-2 text-sm text-[#111827]"
@@ -2618,6 +2793,7 @@ const LoginGate: React.FC = () => {
               </label>
               <input
                 type="password"
+                aria-label="Password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 className="w-full border border-gray-300 px-3 py-2 text-sm text-[#111827]"
@@ -2647,6 +2823,7 @@ const LoginGate: React.FC = () => {
 
 export const App: React.FC = () => {
   const { token, authEnabled, ready } = useAuth();
+  useTheme();
 
   if (!ready) {
     return <div className="p-6 text-sm text-gray-500">{en.loading}</div>;
