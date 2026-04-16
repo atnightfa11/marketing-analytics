@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Area,
@@ -292,6 +292,8 @@ interface TrendChartPoint {
   forecastLower: number | null;
   forecastUpper: number | null;
   forecastBandSpan: number | null;
+  deltaPositiveRange: [number, number] | null;
+  deltaNegativeRange: [number, number] | null;
 }
 
 const DeviceIcon: React.FC<{ label: string }> = ({ label }) => {
@@ -774,7 +776,7 @@ const TableBlock: React.FC<{
 const Overview: React.FC = () => {
   const { token, authEnabled } = useAuth();
   const canQuery = !authEnabled || Boolean(token);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
   const querySiteId = searchParams.get("site_id") ?? undefined;
@@ -788,9 +790,20 @@ const Overview: React.FC = () => {
       navigate(`/site/${encodeURIComponent(query)}`, { replace: true });
     }
   }, [navigate, pathSiteId, querySiteId]);
-  const [selectedMetric, setSelectedMetric] = useState("pageviews");
-  const [range, setRange] = useState<RangeOption>("Last 30");
-  const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>("30d");
+  const [selectedMetric, setSelectedMetric] = useState<string>(() => {
+    const m = searchParams.get("metric");
+    return m && metricLabels[m] ? m : "pageviews";
+  });
+  const [range, setRange] = useState<RangeOption>(() => {
+    const r = searchParams.get("range");
+    return r && (rangeOptions as readonly string[]).includes(r) ? (r as RangeOption) : "Last 30";
+  });
+  const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>(() => {
+    const fk = searchParams.get("forecast");
+    return fk && forecastOptions.some((opt) => opt.key === fk)
+      ? (fk as ForecastOption["key"])
+      : "30d";
+  });
   const [forecast, setForecast] = useState<ForecastEntry[]>([]);
   const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "mape" | "has_anomaly"> | null>(
     null
@@ -805,14 +818,49 @@ const Overview: React.FC = () => {
     hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
     day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
   });
-  const [customRange, setCustomRange] = useState<DateRange>({ start: "", end: "" });
-  const [compareEnabled, setCompareEnabled] = useState(false);
-  const [compareMode, setCompareMode] = useState<"previous" | "custom">("previous");
-  const [compareRange, setCompareRange] = useState<DateRange>({ start: "", end: "" });
-  const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">("channels");
-  const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">("campaign");
-  const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">("day_of_week");
-  const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
+  const [customRange, setCustomRange] = useState<DateRange>(() => ({
+    start: searchParams.get("start") ?? "",
+    end: searchParams.get("end") ?? "",
+  }));
+  const [compareEnabled, setCompareEnabled] = useState<boolean>(() => searchParams.get("cmp") === "1");
+  const [compareMode, setCompareMode] = useState<"previous" | "custom">(() => {
+    const m = searchParams.get("cmpMode");
+    return m === "custom" ? "custom" : "previous";
+  });
+  const [compareRange, setCompareRange] = useState<DateRange>(() => ({
+    start: searchParams.get("cmpStart") ?? "",
+    end: searchParams.get("cmpEnd") ?? "",
+  }));
+  const [acquisitionTab, setAcquisitionTab] = useState<"channels" | "sources" | "source_medium" | "campaigns">(() => {
+    const t = searchParams.get("tab");
+    if (t === "sources" || t === "source_medium" || t === "campaigns") return t;
+    return "channels";
+  });
+  const [campaignDimension, setCampaignDimension] = useState<"campaign" | "content" | "term">(() => {
+    const c = searchParams.get("camp");
+    if (c === "content" || c === "term") return c;
+    return "campaign";
+  });
+  const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">(() => {
+    const tp = searchParams.get("tp");
+    return tp === "hour_of_day" ? "hour_of_day" : "day_of_week";
+  });
+  const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>(() => {
+    const raw = searchParams.get("filter");
+    if (!raw) return [];
+    return raw
+      .split(",")
+      .filter(Boolean)
+      .map((pair): ActiveFilter | null => {
+        const idx = pair.indexOf(":");
+        if (idx < 0) return null;
+        const dim = pair.slice(0, idx);
+        const val = decodeURIComponent(pair.slice(idx + 1));
+        if (!dim || !val) return null;
+        return { dimension: dim, value: val, share: 1 };
+      })
+      .filter((x): x is ActiveFilter => Boolean(x));
+  });
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
   const [dismissedAnomalies, setDismissedAnomalies] = useState<Set<string>>(() => new Set());
   const { theme } = useTheme();
@@ -821,9 +869,17 @@ const Overview: React.FC = () => {
   const chartAxisTick = isDark ? "rgba(249,250,251,0.55)" : "#6B7280";
   const chartReferenceStroke = isDark ? "rgba(249,250,251,0.25)" : "#D1D5DB";
 
+  const previousSiteIdRef = useRef<string | null>(null);
   useEffect(() => {
-    setActiveFilters([]);
-  }, [siteId, range, customRange.start, customRange.end]);
+    if (previousSiteIdRef.current === null) {
+      previousSiteIdRef.current = siteId;
+      return;
+    }
+    if (previousSiteIdRef.current !== siteId) {
+      previousSiteIdRef.current = siteId;
+      setActiveFilters([]);
+    }
+  }, [siteId]);
   useEffect(() => {
     if (!canQuery) return;
     const metricsToFetch = [...aggregateMetricKeys];
@@ -1431,18 +1487,30 @@ const Overview: React.FC = () => {
         const upper = forecastEntry?.yhat_upper;
         const hasBand = Number.isFinite(lower) && Number.isFinite(upper);
         const bandSpan = hasBand ? Math.max(0, (upper as number) - (lower as number)) : null;
+        const actualValue = actualByDay.get(day) ?? null;
+        const compareValue = comparisonEntry?.value ?? null;
+        const hasDelta =
+          Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(compareValue ?? Number.NaN);
+        const deltaPositiveRange: [number, number] | null = hasDelta
+          ? [compareValue as number, Math.max(actualValue as number, compareValue as number)]
+          : null;
+        const deltaNegativeRange: [number, number] | null = hasDelta
+          ? [Math.min(actualValue as number, compareValue as number), compareValue as number]
+          : null;
         return {
           day,
-          actual: actualByDay.get(day) ?? null,
-          compare: comparisonEntry?.value ?? null,
+          actual: actualValue,
+          compare: compareValue,
           compareDay: comparisonEntry?.day ?? null,
           forecast: forecastEntry?.yhat ?? null,
           forecastLine:
             forecastEntry?.yhat ??
-            (forecastAnchorDay && day === forecastAnchorDay ? actualByDay.get(day) ?? null : null),
+            (forecastAnchorDay && day === forecastAnchorDay ? actualValue : null),
           forecastLower: hasBand ? (lower as number) : null,
           forecastUpper: hasBand ? (upper as number) : null,
           forecastBandSpan: hasBand ? bandSpan : null,
+          deltaPositiveRange,
+          deltaNegativeRange,
         } satisfies TrendChartPoint;
       }),
     [chartDomainDays, forecastByDay, actualByDay, comparisonAligned, forecastAnchorDay]
@@ -1467,6 +1535,8 @@ const Overview: React.FC = () => {
     () =>
       baseChartData.map((point) => {
         if (trendScale >= 0.999) return point;
+        const scaleRange = (range: [number, number] | null): [number, number] | null =>
+          range ? [range[0] * trendScale, range[1] * trendScale] : null;
         return {
           ...point,
           actual: Number.isFinite(point.actual ?? Number.NaN) ? (point.actual ?? 0) * trendScale : point.actual,
@@ -1484,6 +1554,8 @@ const Overview: React.FC = () => {
           forecastBandSpan: Number.isFinite(point.forecastBandSpan ?? Number.NaN)
             ? (point.forecastBandSpan ?? 0) * trendScale
             : point.forecastBandSpan,
+          deltaPositiveRange: scaleRange(point.deltaPositiveRange),
+          deltaNegativeRange: scaleRange(point.deltaNegativeRange),
         };
       }),
     [baseChartData, trendScale]
@@ -1766,6 +1838,165 @@ const Overview: React.FC = () => {
     breakdownData.conversions.primaryMetric,
     breakdownData.conversions.metricKeys,
     breakdownData.conversions.total,
+  ]);
+
+  // URL persistence: mirror dashboard state back into the query params (initial state is hydrated
+  // from the URL via lazy `useState` initializers above, so this just keeps the URL in sync).
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const managedKeys = [
+      "metric",
+      "range",
+      "start",
+      "end",
+      "cmp",
+      "cmpMode",
+      "cmpStart",
+      "cmpEnd",
+      "forecast",
+      "tab",
+      "camp",
+      "tp",
+      "filter",
+    ];
+    managedKeys.forEach((k) => next.delete(k));
+    if (selectedMetric !== "pageviews") next.set("metric", selectedMetric);
+    if (range !== "Last 30") next.set("range", range);
+    if (range === "Custom") {
+      if (customRange.start) next.set("start", customRange.start);
+      if (customRange.end) next.set("end", customRange.end);
+    }
+    if (compareEnabled) next.set("cmp", "1");
+    if (compareEnabled && compareMode !== "previous") next.set("cmpMode", compareMode);
+    if (compareEnabled && compareMode === "custom") {
+      if (compareRange.start) next.set("cmpStart", compareRange.start);
+      if (compareRange.end) next.set("cmpEnd", compareRange.end);
+    }
+    if (forecastKey !== "30d") next.set("forecast", forecastKey);
+    if (acquisitionTab !== "channels") next.set("tab", acquisitionTab);
+    if (campaignDimension !== "campaign") next.set("camp", campaignDimension);
+    if (timePartingTab !== "day_of_week") next.set("tp", timePartingTab);
+    if (activeFilters.length > 0) {
+      next.set(
+        "filter",
+        activeFilters
+          .map((f) => `${f.dimension}:${encodeURIComponent(f.value)}`)
+          .join(",")
+      );
+    }
+    const currentQs = searchParams.toString();
+    const nextQs = next.toString();
+    if (currentQs !== nextQs) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [
+    selectedMetric,
+    range,
+    customRange.start,
+    customRange.end,
+    compareEnabled,
+    compareMode,
+    compareRange.start,
+    compareRange.end,
+    forecastKey,
+    acquisitionTab,
+    campaignDimension,
+    timePartingTab,
+    activeFilters,
+    searchParams,
+    setSearchParams,
+  ]);
+
+  // Reconcile active filter shares against current breakdown data so URL-hydrated filters
+  // and range changes produce accurate KPI/trend scaling.
+  useEffect(() => {
+    if (activeFilters.length === 0) return;
+    const dimensionSources: Record<
+      string,
+      { rows: BreakdownTableRow[]; total: number; primaryMetric: BreakdownMetricKey } | undefined
+    > = {
+      channel: {
+        rows: channelRows,
+        total: acquisitionTotal,
+        primaryMetric: acquisitionPrimaryMetric,
+      },
+      source: { rows: sourceRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
+      source_medium: {
+        rows: sourceMediumRows,
+        total: acquisitionTotal,
+        primaryMetric: acquisitionPrimaryMetric,
+      },
+      campaign: { rows: campaignRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
+      content: { rows: campaignRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
+      term: { rows: campaignRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
+      page: {
+        rows: pageRows,
+        total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.pages.total,
+        primaryMetric: showSeededBreakdowns ? "pageviews" : breakdownData.pages.primaryMetric,
+      },
+      country: {
+        rows: countryRows,
+        total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.countries.total,
+        primaryMetric: showSeededBreakdowns ? "pageviews" : breakdownData.countries.primaryMetric,
+      },
+      device: {
+        rows: deviceRows,
+        total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.devices.total,
+        primaryMetric: showSeededBreakdowns ? "pageviews" : breakdownData.devices.primaryMetric,
+      },
+      goal: {
+        rows: goalRows,
+        total: showSeededBreakdowns ? scaledTotals.conversions : breakdownData.conversions.total,
+        primaryMetric: showSeededBreakdowns ? "conversions" : breakdownData.conversions.primaryMetric,
+      },
+      day_of_week: {
+        rows: showSeededBreakdowns ? seededDayRows : breakdownData.day_of_week.rows,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.day_of_week.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.day_of_week.primaryMetric,
+      },
+      hour_of_day: {
+        rows: showSeededBreakdowns ? seededHourRows : breakdownData.hour_of_day.rows,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.hour_of_day.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.hour_of_day.primaryMetric,
+      },
+    };
+    setActiveFilters((prev) => {
+      let changed = false;
+      const next = prev.map((filter) => {
+        const source = dimensionSources[filter.dimension];
+        if (!source) return filter;
+        const { rows, total, primaryMetric } = source;
+        if (!rows || rows.length === 0 || !Number.isFinite(total) || total <= 0) return filter;
+        const row = rows.find((r) => r.label === filter.value);
+        if (!row) return filter;
+        const rowValue = getBreakdownMetricValue(row, primaryMetric);
+        if (!Number.isFinite(rowValue) || rowValue <= 0) return filter;
+        const share = clamp(rowValue / total, 0.01, 1);
+        if (Math.abs(share - filter.share) < 0.001) return filter;
+        changed = true;
+        return { ...filter, share };
+      });
+      return changed ? next : prev;
+    });
+  }, [
+    activeFilters.length,
+    channelRows,
+    sourceRows,
+    sourceMediumRows,
+    campaignRows,
+    pageRows,
+    countryRows,
+    deviceRows,
+    goalRows,
+    seededDayRows,
+    seededHourRows,
+    acquisitionTotal,
+    acquisitionPrimaryMetric,
+    breakdownData,
+    showSeededBreakdowns,
+    scaledTotals.pageviews,
+    scaledTotals.conversions,
+    scaledTotals.sessions,
   ]);
 
   const mapeValue = forecastMeta?.mape ?? Number.NaN;
@@ -2336,6 +2567,30 @@ const Overview: React.FC = () => {
                       />
                     </>
                   )}
+                  {compareEnabled && hasCompare && (
+                    <>
+                      <Area
+                        type="linear"
+                        dataKey="deltaPositiveRange"
+                        stroke="none"
+                        fill="#1B7F8E"
+                        fillOpacity={0.14}
+                        isAnimationActive={false}
+                        activeDot={false}
+                        legendType="none"
+                      />
+                      <Area
+                        type="linear"
+                        dataKey="deltaNegativeRange"
+                        stroke="none"
+                        fill="#8B2635"
+                        fillOpacity={0.12}
+                        isAnimationActive={false}
+                        activeDot={false}
+                        legendType="none"
+                      />
+                    </>
+                  )}
                   {hasActual && (
                     <Line
                       type="linear"
@@ -2382,10 +2637,20 @@ const Overview: React.FC = () => {
               </span>
             )}
             {compareEnabled && hasCompare && (
-              <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 border-b border-dashed border-gray-400" />
-                Comparison
-              </span>
+              <>
+                <span className="flex items-center gap-2">
+                  <span className="h-0.5 w-5 border-b border-dashed border-gray-400" />
+                  Comparison
+                </span>
+                <span className="flex items-center gap-2">
+                  <span className="inline-block h-2.5 w-3 bg-[#1B7F8E]/20" />
+                  Ahead
+                </span>
+                <span className="flex items-center gap-2">
+                  <span className="inline-block h-2.5 w-3 bg-[#8B2635]/20" />
+                  Behind
+                </span>
+              </>
             )}
             {hasForecast && (
               <span className="flex items-center gap-2">

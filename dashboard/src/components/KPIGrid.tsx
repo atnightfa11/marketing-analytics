@@ -22,12 +22,18 @@ const fontMetric: React.CSSProperties = {
   letterSpacing: "0em",
 };
 
-const formatCurrency = (value: number): string =>
-  new Intl.NumberFormat("en-US", {
+const formatCurrency = (value: number): string => {
+  if (!Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 10_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(value);
+};
 
 const formatDuration = (seconds: number): string => {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
@@ -102,38 +108,41 @@ export const KPIGrid: React.FC<Props> = ({
               isActive ? "bg-[#E8F5F5]" : "bg-white hover:bg-[#F9FAFB]"
             }`}
           >
-            <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
               <div
-                className={`label-tight font-bold ${isActive ? "text-[#0A5F6F]" : "text-[#1F2937]"}`}
+                className={`label-tight truncate font-bold ${isActive ? "text-[#0A5F6F]" : "text-[#1F2937]"}`}
                 style={fontBody}
+                title={card.label}
               >
                 {card.label}
               </div>
-              {showComparisonRows && (
-                <div className={`text-[10px] ${deltaClass} metric-number whitespace-nowrap`} style={fontMetric}>
-                  {deltaDisplay}
-                </div>
-              )}
             </div>
-            <div>
+            <div className="min-w-0">
               <div
-                className={`${isPrimary ? "text-[var(--type-kpi-primary)] font-semibold text-[#111827]" : "text-[var(--type-kpi-secondary)] font-medium text-[#374151]"} metric-number leading-tight`}
+                className={`${isPrimary ? "text-[var(--type-kpi-primary)] font-semibold text-[#111827]" : "text-[var(--type-kpi-secondary)] font-medium text-[#374151]"} metric-number truncate leading-tight`}
                 style={fontMetric}
+                title={formatMetricValue(card.key, value)}
               >
                 {formatMetricValue(card.key, value)}
               </div>
               {showComparisonRows ? (
                 <>
-                  <div className="mt-0.5 text-[10px] text-[#6B7280] normal-case tracking-normal" style={fontBody}>
+                  <div className="mt-0.5 truncate text-[10px] text-[#6B7280] normal-case tracking-normal" style={fontBody}>
                     {currentRangeLabel}
                   </div>
-                  <div
-                    className="mt-2 text-sm font-medium text-[#4B5563] metric-number leading-tight"
-                    style={fontMetric}
-                  >
-                    {formatMetricValue(card.key, compareValue ?? Number.NaN)}
+                  <div className="mt-2 flex items-baseline gap-1.5">
+                    <div
+                      className="min-w-0 truncate text-sm font-medium text-[#4B5563] metric-number leading-tight"
+                      style={fontMetric}
+                      title={formatMetricValue(card.key, compareValue ?? Number.NaN)}
+                    >
+                      {formatMetricValue(card.key, compareValue ?? Number.NaN)}
+                    </div>
+                    <span className={`shrink-0 text-[10px] ${deltaClass} metric-number whitespace-nowrap`} style={fontMetric}>
+                      {deltaDisplay}
+                    </span>
                   </div>
-                  <div className="mt-0.5 text-[10px] text-[#9CA3AF] normal-case tracking-normal" style={fontBody}>
+                  <div className="mt-0.5 truncate text-[10px] text-[#9CA3AF] normal-case tracking-normal" style={fontBody}>
                     {comparisonRangeLabel}
                   </div>
                 </>
@@ -143,7 +152,7 @@ export const KPIGrid: React.FC<Props> = ({
                     {deltaDisplay}
                   </div>
                   {comparisonLabel && (
-                    <div className="mt-1 text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
+                    <div className="mt-1 truncate text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
                       {comparisonLabel}
                     </div>
                   )}
