@@ -1044,23 +1044,13 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
 
     hour_resp = client.get("/api/breakdown", params={**query, "dimension": "hour_of_day"})
     assert hour_resp.status_code == 200
-    assert hour_resp.json()["rows"] == [
-        {
-            "label": "9 AM",
-            "value": 3.0,
-            "metrics": {"uniques": 3.0, "sessions": 3.0, "pageviews": 4.0, "conversions": 3.0},
-        }
-    ]
+    assert hour_resp.json()["rows"] == []
+    assert hour_resp.json()["total"] == 0.0
 
     weekday_resp = client.get("/api/breakdown", params={**query, "dimension": "day_of_week"})
     assert weekday_resp.status_code == 200
-    assert weekday_resp.json()["rows"] == [
-        {
-            "label": "Saturday",
-            "value": 3.0,
-            "metrics": {"uniques": 3.0, "sessions": 3.0, "pageviews": 4.0, "conversions": 3.0},
-        }
-    ]
+    assert weekday_resp.json()["rows"] == []
+    assert weekday_resp.json()["total"] == 0.0
 
     conversions_resp = client.get("/api/breakdown", params={**query, "dimension": "conversions"})
     assert conversions_resp.status_code == 200
@@ -1075,6 +1065,84 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
             "value": 1.0,
             "metrics": {"uniques": 1.0, "sessions": 1.0, "conversions": 1.0},
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_time_parting_breakdown_requires_min_range_and_k_threshold(client):
+    site_id = "site-time-parting-private"
+    await _set_site_plan(site_id, "standard")
+
+    start_day = date(2026, 4, 5)
+    end_day = date(2026, 4, 11)
+    for offset in range(7):
+        day = start_day + timedelta(days=offset)
+        for session_index in range(2):
+            timestamp = datetime(2026, 4, 5 + offset, 9, 5 + session_index, tzinfo=timezone.utc)
+            await _insert_raw_report(
+                site_id=site_id,
+                kind="sessions",
+                payload={
+                    "referrer_bucket": "direct",
+                    "_session_hmac": f"sess-{offset}-{session_index}",
+                    "_visitor_day_hmac": f"visitor-{offset}-{session_index}",
+                },
+                day=day,
+                server_received_at=timestamp,
+            )
+
+    short_range_resp = client.get(
+        "/api/breakdown",
+        params={"site_id": site_id, "dimension": "hour_of_day", "start": "2026-04-11", "end": "2026-04-11"},
+    )
+    assert short_range_resp.status_code == 200
+    assert short_range_resp.json()["rows"] == []
+
+    full_range_resp = client.get(
+        "/api/breakdown",
+        params={"site_id": site_id, "dimension": "hour_of_day", "start": start_day.isoformat(), "end": end_day.isoformat()},
+    )
+    assert full_range_resp.status_code == 200
+    assert full_range_resp.json()["rows"] == [
+        {
+            "label": "9 AM",
+            "value": 14.0,
+            "metrics": {"uniques": 14.0, "sessions": 14.0, "pageviews": 0.0, "conversions": 0.0},
+        }
+    ]
+    assert full_range_resp.json()["total"] == 14.0
+
+    weekday_resp = client.get(
+        "/api/breakdown",
+        params={"site_id": site_id, "dimension": "day_of_week", "start": start_day.isoformat(), "end": end_day.isoformat()},
+    )
+    assert weekday_resp.status_code == 200
+    assert weekday_resp.json()["rows"] == []
+
+    for index in range(8):
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={
+                "referrer_bucket": "direct",
+                "_session_hmac": f"sess-sat-{index}",
+                "_visitor_day_hmac": f"visitor-sat-{index}",
+            },
+            day=end_day,
+            server_received_at=datetime(2026, 4, 11, 10, 10 + index, tzinfo=timezone.utc),
+        )
+
+    weekday_after_boost_resp = client.get(
+        "/api/breakdown",
+        params={"site_id": site_id, "dimension": "day_of_week", "start": start_day.isoformat(), "end": end_day.isoformat()},
+    )
+    assert weekday_after_boost_resp.status_code == 200
+    assert weekday_after_boost_resp.json()["rows"] == [
+        {
+            "label": "Saturday",
+            "value": 10.0,
+            "metrics": {"uniques": 10.0, "sessions": 10.0, "pageviews": 0.0, "conversions": 0.0},
+        }
     ]
 
 

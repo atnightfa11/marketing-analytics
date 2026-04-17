@@ -23,7 +23,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 ## Dimension breakdowns
 
 - Endpoint: `GET /api/breakdown`
-- Dimensions: `pages`, `sources`, `devices`, `countries`
+- Dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`
 - Query params:
   - `site_id` (required)
   - `dimension` (required)
@@ -36,11 +36,16 @@ Breakdown definitions:
 - `sources`: from session `payload.referrer_bucket` (for example `direct`, `external`).
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
 - `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`), fallback `Unknown`.
+- `hour_of_day`: from server receive hour, aggregated across selected date range.
+- `day_of_week`: from server receive weekday, aggregated across selected date range.
 
 Current caveats:
 
 - Existing historical data may show `Unknown` for device/country until new traffic is ingested.
 - Historical import rows are excluded from breakdown dimensions.
+- Time-parting (`hour_of_day`, `day_of_week`) has server-side privacy gates:
+  - minimum selected range: 7 days
+  - bucket suppression: rows require at least 10 sessions
 - Pro plan currently returns empty dimension rows (aggregate totals only). v2 target: local-DP sparse histograms with top-N + "Insufficient data for privacy" gating.
 
 Quality notes:

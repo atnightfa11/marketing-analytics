@@ -77,6 +77,9 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "hour_of_day": ("sessions", "pageviews", "conversions"),
     "day_of_week": ("sessions", "pageviews", "conversions"),
 }
+TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
+TIME_PARTING_MIN_DAYS = 7
+TIME_PARTING_MIN_SESSIONS = 10.0
 
 COMMON_SOURCE_HOST_MAP = {
     "google.com": "Google",
@@ -282,7 +285,7 @@ def _resolve_label(dimension: BreakdownDimension, payload: dict, server_received
 
 def _ordered_buckets(
     dimension: BreakdownDimension,
-    buckets: defaultdict[str, dict[str, float]],
+    buckets: dict[str, dict[str, float]],
     primary_metric: BreakdownMetric,
     limit: int,
 ) -> list[tuple[str, dict[str, float]]]:
@@ -296,6 +299,28 @@ def _ordered_buckets(
     return sorted(items, key=lambda item: (-item[1].get(primary_metric, 0.0), item[0]))[:limit]
 
 
+def _window_days(start_day: dt.date, end_day: dt.date) -> int:
+    return (end_day - start_day).days + 1
+
+
+def _empty_breakdown_response(
+    *,
+    site_id: str,
+    dimension: BreakdownDimension,
+    primary_metric: BreakdownMetric,
+    metric_keys: tuple[BreakdownMetric, ...],
+) -> BreakdownResponse:
+    return BreakdownResponse(
+        site_id=site_id,
+        dimension=dimension,
+        total=0.0,
+        primary_metric=primary_metric,
+        metric_keys=list(metric_keys),
+        totals={metric: 0.0 for metric in metric_keys},
+        rows=[],
+    )
+
+
 @router.get("/breakdown", response_model=BreakdownResponse)
 async def breakdown(
     site_id: str,
@@ -307,22 +332,28 @@ async def breakdown(
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
+    metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
+    primary_metric = BREAKDOWN_PRIMARY_METRIC[dimension]
+
     # Pro ingest currently does not retain raw per-dimension event context.
     if plan == "pro":
-        return BreakdownResponse(
+        return _empty_breakdown_response(
             site_id=site_id,
             dimension=dimension,
-            total=0.0,
-            primary_metric=BREAKDOWN_PRIMARY_METRIC[dimension],
-            metric_keys=list(BREAKDOWN_METRIC_ORDER[dimension]),
-            totals={metric: 0.0 for metric in BREAKDOWN_METRIC_ORDER[dimension]},
-            rows=[],
+            primary_metric=primary_metric,
+            metric_keys=metric_keys,
         )
 
     start_day, end_day = _resolve_window(start, end)
+    if dimension in TIME_PARTING_DIMENSIONS and _window_days(start_day, end_day) < TIME_PARTING_MIN_DAYS:
+        return _empty_breakdown_response(
+            site_id=site_id,
+            dimension=dimension,
+            primary_metric=primary_metric,
+            metric_keys=metric_keys,
+        )
+
     report_kinds = BREAKDOWN_REPORT_KINDS[dimension]
-    metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
-    primary_metric = BREAKDOWN_PRIMARY_METRIC[dimension]
     stmt = (
         select(RawReport)
         .where(RawReport.site_id == site_id, RawReport.kind.in_(report_kinds))
@@ -413,7 +444,24 @@ async def breakdown(
             seen_visitors_by_label[label].add(visitor_marker)
             _increment_metric(buckets, totals, label, "uniques")
 
-    ordered = _ordered_buckets(dimension, buckets, primary_metric, limit)
+    if dimension in TIME_PARTING_DIMENSIONS:
+        gated_buckets = {
+            label: metrics for label, metrics in buckets.items() if metrics.get("sessions", 0.0) >= TIME_PARTING_MIN_SESSIONS
+        }
+        if not gated_buckets:
+            return _empty_breakdown_response(
+                site_id=site_id,
+                dimension=dimension,
+                primary_metric=primary_metric,
+                metric_keys=metric_keys,
+            )
+        buckets = defaultdict(lambda: _blank_metric_map(metric_keys), gated_buckets)
+        totals = _blank_metric_map(metric_keys)
+        for metrics in buckets.values():
+            for metric in metric_keys:
+                totals[metric] += metrics.get(metric, 0.0)
+
+    ordered = _ordered_buckets(dimension, dict(buckets), primary_metric, limit)
     rows = [
         BreakdownRow(
             label=label,
