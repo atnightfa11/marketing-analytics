@@ -57,6 +57,8 @@ Set these environment variables on the backend service:
 - `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
 - `DASHBOARD_AUTH_PASSWORD=<dashboard-admin-password>`
 - `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
+- `DASHBOARD_ALLOWED_SITE_IDS=<comma-separated-site-ids>` (optional, recommended for ownership auth on `site_id` endpoints)
+- `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; unmapped users are denied by default when this is set)
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
 - `ENABLE_PROD_SCHEDULER=true`
 - `PROD_SCHEDULER_HOUR_UTC=2`
@@ -141,4 +143,4 @@ do update set plan = excluded.plan;
 - Free + Standard are the launch tiers; Pro/LDP is deferred.
 - Scheduler behavior:
   - Dev: `ENABLE_DEV_SCHEDULER=1` runs reducer every 60 seconds.
-  - Prod: `ENABLE_PROD_SCHEDULER=true` runs daily reducer + daily forecast training.
+  - Prod: `ENABLE_PROD_SCHEDULER=true` runs reducer every `PROD_REDUCER_INTERVAL_MINUTES` (default 60) + daily forecast training at `PROD_SCHEDULER_HOUR_UTC`.

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
-from ..dependencies import get_site_plan
+from ..dependencies import get_site_plan, require_site_access
 from ..models import RawReport, get_session
 from ..schemas import BreakdownResponse, BreakdownRow
 
@@ -80,6 +80,15 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
 TIME_PARTING_MIN_DAYS = 7
 TIME_PARTING_MIN_SESSIONS = 10.0
+BREAKDOWN_MIN_PRIMARY_THRESHOLD: dict[BreakdownDimension, float] = {
+    "pages": 2.0,
+    "sources": 2.0,
+    "devices": 2.0,
+    "countries": 3.0,
+    "conversions": 2.0,
+    "hour_of_day": TIME_PARTING_MIN_SESSIONS,
+    "day_of_week": TIME_PARTING_MIN_SESSIONS,
+}
 
 COMMON_SOURCE_HOST_MAP = {
     "google.com": "Google",
@@ -329,6 +338,7 @@ async def breakdown(
     start: str | None = None,
     end: str | None = None,
     _auth_claims: dict | None = Depends(require_dashboard_auth),
+    _site_access: None = Depends(require_site_access),
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
@@ -444,10 +454,17 @@ async def breakdown(
             seen_visitors_by_label[label].add(visitor_marker)
             _increment_metric(buckets, totals, label, "uniques")
 
+    min_primary_threshold = BREAKDOWN_MIN_PRIMARY_THRESHOLD[dimension]
+    gated_buckets = {
+        label: metrics
+        for label, metrics in buckets.items()
+        if metrics.get(primary_metric, 0.0) >= min_primary_threshold
+    }
     if dimension in TIME_PARTING_DIMENSIONS:
         gated_buckets = {
-            label: metrics for label, metrics in buckets.items() if metrics.get("sessions", 0.0) >= TIME_PARTING_MIN_SESSIONS
+            label: metrics for label, metrics in gated_buckets.items() if metrics.get("sessions", 0.0) >= TIME_PARTING_MIN_SESSIONS
         }
+    if min_primary_threshold > 0:
         if not gated_buckets:
             return _empty_breakdown_response(
                 site_id=site_id,

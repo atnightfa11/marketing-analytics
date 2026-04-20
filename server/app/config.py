@@ -45,6 +45,8 @@ class Settings(BaseSettings):
   DASHBOARD_AUTH_PASSWORD: str | None = None
   DASHBOARD_AUTH_SECRET: str | None = None
   DASHBOARD_AUTH_TTL_SECONDS: int = Field(default=8 * 60 * 60)
+  DASHBOARD_ALLOWED_SITE_IDS: str | None = None
+  DASHBOARD_SITE_ACCESS_JSON: str | None = None
   expose_docs: bool = False
   cors_origins: list[str] = Field(
       default_factory=lambda: [

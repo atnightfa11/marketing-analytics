@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_site_plan
+from ..dependencies import get_site_plan, require_site_access
 from ..dashboard_auth import require_dashboard_auth
 from ..models import Forecast, ModelStore, get_session
 from ..schemas import ForecastResponse, ForecastPoint
@@ -20,6 +20,7 @@ async def forecast(
     site_id: str,
     request: Request,
     _auth_claims: dict | None = Depends(require_dashboard_auth),
+    _site_access: None = Depends(require_site_access),
     session: AsyncSession = Depends(get_session),
 ):
     plan = await get_site_plan(site_id, session)

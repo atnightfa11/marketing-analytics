@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
-from ..dashboard_auth import require_dashboard_auth
+from ..dashboard_auth import enforce_site_access, require_dashboard_auth
 from ..models import SitePlan, get_session
 from ..schemas import CheckoutSessionRequest, CheckoutSessionResponse
 
@@ -110,9 +110,10 @@ async def _upsert_site_plan(
 @router.post("/checkout/session", response_model=CheckoutSessionResponse, status_code=status.HTTP_200_OK)
 async def create_checkout_session(
     payload: CheckoutSessionRequest,
-    _auth_claims: dict | None = Depends(require_dashboard_auth),
+    auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
+    enforce_site_access(payload.site_id, auth_claims)
     _require_stripe_settings()
     stripe.api_key = settings.STRIPE_SECRET_KEY
     price_id = _price_id_for_plan(payload.plan)

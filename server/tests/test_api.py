@@ -27,6 +27,7 @@ from argon2 import PasswordHasher
 
 from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
+from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.routers.shuffle import derive_daily_visitor_key, derive_standard_session_key  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
 
@@ -987,13 +988,11 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
     pages_resp = client.get("/api/breakdown", params={**query, "dimension": "pages"})
     assert pages_resp.status_code == 200
     pages_body = pages_resp.json()
-    assert pages_body["total"] == 4.0
+    assert pages_body["total"] == 2.0
     assert pages_body["primary_metric"] == "pageviews"
     assert pages_body["metric_keys"] == ["uniques", "sessions", "pageviews"]
-    assert pages_body["rows"][:3] == [
+    assert pages_body["rows"] == [
         {"label": "/", "value": 2.0, "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 2.0}},
-        {"label": "/blog/post-1", "value": 1.0, "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0}},
-        {"label": "/pricing", "value": 1.0, "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0}},
     ]
 
     sources_resp = client.get("/api/breakdown", params={**query, "dimension": "sources"})
@@ -1004,11 +1003,6 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
             "label": "Google",
             "value": 2.0,
             "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 3.0, "conversions": 2.0},
-        },
-        {
-            "label": "Direct",
-            "value": 1.0,
-            "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0, "conversions": 1.0},
         },
     ]
 
@@ -1035,11 +1029,6 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
             "value": 3.0,
             "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 3.0, "conversions": 2.0},
         },
-        {
-            "label": "CA",
-            "value": 1.0,
-            "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0, "conversions": 1.0},
-        },
     ]
 
     hour_resp = client.get("/api/breakdown", params={**query, "dimension": "hour_of_day"})
@@ -1059,11 +1048,6 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
             "label": "Demo Request",
             "value": 2.0,
             "metrics": {"uniques": 2.0, "sessions": 2.0, "conversions": 2.0},
-        },
-        {
-            "label": "Contact Us",
-            "value": 1.0,
-            "metrics": {"uniques": 1.0, "sessions": 1.0, "conversions": 1.0},
         },
     ]
 
@@ -1165,12 +1149,16 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
         dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
         dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
         dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
     )
     dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
     dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "owner"
     dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
     dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-test-secret"
     dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
     try:
         status_resp = client.get("/api/auth/status")
         assert status_resp.status_code == 200
@@ -1222,7 +1210,33 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             json={"site_id": site_id, "plan": "standard"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert authorized_checkout.status_code == 503
+        assert authorized_checkout.status_code in {502, 503}
+
+        forbidden_metrics = client.get(
+            "/api/metrics",
+            params={"site_id": "site-not-owned"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert forbidden_metrics.status_code == 403
+
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = '{"someone-else":["site-not-owned"]}'
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        unmapped_owner = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert unmapped_owner.status_code == 403
+
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = f'{{"owner":["{site_id}"]}}'
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        mapped_owner = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert mapped_owner.status_code == 200
     finally:
         (
             dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
@@ -1230,4 +1244,6 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
             dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
             dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
         ) = original

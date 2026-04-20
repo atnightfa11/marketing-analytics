@@ -46,6 +46,12 @@ Current caveats:
 - Time-parting (`hour_of_day`, `day_of_week`) has server-side privacy gates:
   - minimum selected range: 7 days
   - bucket suppression: rows require at least 10 sessions
+- All breakdown dimensions have suppression gates before response rows are returned:
+  - `pages`: minimum 2 pageviews
+  - `sources`: minimum 2 sessions
+  - `devices`: minimum 2 pageviews
+  - `countries`: minimum 3 pageviews
+  - `conversions`: minimum 2 conversions
 - Pro plan currently returns empty dimension rows (aggregate totals only). v2 target: local-DP sparse histograms with top-N + "Insufficient data for privacy" gating.
 
 Quality notes:

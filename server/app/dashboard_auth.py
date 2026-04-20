@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import secrets
+from functools import lru_cache
 from typing import Any
 
 from fastapi import Header, HTTPException, status
@@ -87,3 +88,64 @@ def require_dashboard_auth(authorization: str | None = Header(default=None)) -> 
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization scheme")
     return _decode_access_token(parts[1])
 
+
+@lru_cache(maxsize=8)
+def _parse_site_access_map(raw: str) -> dict[str, set[str]]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Invalid DASHBOARD_SITE_ACCESS_JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("DASHBOARD_SITE_ACCESS_JSON must be a JSON object")
+    access_map: dict[str, set[str]] = {}
+    for username, site_ids in parsed.items():
+        if not isinstance(username, str):
+            continue
+        if isinstance(site_ids, str):
+            ids = {site_ids.strip()} if site_ids.strip() else set()
+        elif isinstance(site_ids, list):
+            ids = {str(site_id).strip() for site_id in site_ids if str(site_id).strip()}
+        else:
+            ids = set()
+        access_map[username] = ids
+    return access_map
+
+
+def _parsed_site_access_map() -> dict[str, set[str]]:
+    return _parse_site_access_map(settings.DASHBOARD_SITE_ACCESS_JSON or "")
+
+
+def get_allowed_site_ids(claims: dict[str, Any] | None) -> set[str] | None:
+    if not settings.DASHBOARD_AUTH_ENABLED:
+        return None
+
+    if settings.DASHBOARD_ALLOWED_SITE_IDS:
+        allowed = {item.strip() for item in settings.DASHBOARD_ALLOWED_SITE_IDS.split(",") if item.strip()}
+        if "*" in allowed:
+            return None
+        return allowed
+
+    user_map = _parsed_site_access_map()
+    if not user_map:
+        return None
+
+    username = claims.get("sub") if isinstance(claims, dict) else None
+    if not isinstance(username, str) or not username:
+        return set()
+
+    allowed = user_map.get(username)
+    if allowed is None:
+        return set()
+    if "*" in allowed:
+        return None
+    return allowed
+
+
+def enforce_site_access(site_id: str, claims: dict[str, Any] | None) -> None:
+    allowed = get_allowed_site_ids(claims)
+    if allowed is None:
+        return
+    if site_id not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
