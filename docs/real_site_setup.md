@@ -56,6 +56,7 @@ Set these environment variables on the backend service:
 - `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
 - `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
 - `DASHBOARD_AUTH_PASSWORD=<dashboard-admin-password>`
+- `DASHBOARD_AUTH_USERS_JSON={"alice":"pw1","bob":"pw2"}` (optional, recommended for friend beta; when set, this overrides single-user username/password)
 - `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
 - `DASHBOARD_ALLOWED_SITE_IDS=<comma-separated-site-ids>` (optional, recommended for ownership auth on `site_id` endpoints)
 - `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; unmapped users are denied by default when this is set)
@@ -123,6 +124,13 @@ Generate a secret locally with:
 
 ```bash
 openssl rand -hex 32
+```
+
+Example per-user beta config:
+
+```text
+DASHBOARD_AUTH_USERS_JSON={"heather":"strongpass1","friend1":"strongpass2","friend2":"strongpass3"}
+DASHBOARD_SITE_ACCESS_JSON={"heather":["*"],"friend1":["site-friend1"],"friend2":["site-friend2"]}
 ```
 
 ## Set Sites Back To Free (Railway Postgres)

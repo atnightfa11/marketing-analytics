@@ -43,6 +43,7 @@ class Settings(BaseSettings):
   DASHBOARD_AUTH_ENABLED: bool = Field(default=False)
   DASHBOARD_AUTH_USERNAME: str = Field(default="admin")
   DASHBOARD_AUTH_PASSWORD: str | None = None
+  DASHBOARD_AUTH_USERS_JSON: str | None = None
   DASHBOARD_AUTH_SECRET: str | None = None
   DASHBOARD_AUTH_TTL_SECONDS: int = Field(default=8 * 60 * 60)
   DASHBOARD_ALLOWED_SITE_IDS: str | None = None

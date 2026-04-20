@@ -25,7 +25,15 @@ def _b64url_decode(encoded: str) -> bytes:
 
 
 def _require_auth_config() -> None:
-    if not settings.DASHBOARD_AUTH_PASSWORD or not settings.DASHBOARD_AUTH_SECRET:
+    if not settings.DASHBOARD_AUTH_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Dashboard auth is enabled but credentials are not configured",
+        )
+    users = _parsed_auth_users()
+    if users:
+        return
+    if not settings.DASHBOARD_AUTH_PASSWORD:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Dashboard auth is enabled but credentials are not configured",
@@ -73,6 +81,10 @@ def _decode_access_token(token: str) -> dict[str, Any]:
 
 def validate_credentials(username: str, password: str) -> bool:
     _require_auth_config()
+    users = _parsed_auth_users()
+    if users:
+        expected_password = users.get(username)
+        return isinstance(expected_password, str) and secrets.compare_digest(password, expected_password)
     configured_username = settings.DASHBOARD_AUTH_USERNAME
     configured_password = settings.DASHBOARD_AUTH_PASSWORD or ""
     return secrets.compare_digest(username, configured_username) and secrets.compare_digest(password, configured_password)
@@ -87,6 +99,40 @@ def require_dashboard_auth(authorization: str | None = Header(default=None)) -> 
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization scheme")
     return _decode_access_token(parts[1])
+
+
+@lru_cache(maxsize=8)
+def _parse_auth_users(raw: str) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Invalid DASHBOARD_AUTH_USERS_JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("DASHBOARD_AUTH_USERS_JSON must be a JSON object")
+
+    users: dict[str, str] = {}
+    for username, value in parsed.items():
+        if not isinstance(username, str):
+            continue
+        normalized_username = username.strip()
+        if not normalized_username:
+            continue
+        if isinstance(value, str):
+            normalized_password = value.strip()
+            if normalized_password:
+                users[normalized_username] = normalized_password
+            continue
+        if isinstance(value, dict):
+            maybe_password = value.get("password")
+            if isinstance(maybe_password, str) and maybe_password.strip():
+                users[normalized_username] = maybe_password.strip()
+    return users
+
+
+def _parsed_auth_users() -> dict[str, str]:
+    return _parse_auth_users(settings.DASHBOARD_AUTH_USERS_JSON or "")
 
 
 @lru_cache(maxsize=8)

@@ -1147,6 +1147,7 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
         dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
         dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
         dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
         dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
         dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
@@ -1155,10 +1156,13 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
     dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
     dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "owner"
     dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
     dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-test-secret"
     dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
     dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
     dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
     try:
         status_resp = client.get("/api/auth/status")
         assert status_resp.status_code == 200
@@ -1238,10 +1242,109 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
         )
         assert mapped_owner.status_code == 200
     finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
         (
             dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
             dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
             dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_dashboard_auth_multi_user_site_isolation(client):
+    site_alice = "site-alice-private"
+    site_bob = "site-bob-private"
+    base_start = datetime(2026, 4, 11, 17, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_alice, "free")
+    await _set_site_plan(site_bob, "free")
+    await _insert_dp_window(
+        site_id=site_alice,
+        plan="free",
+        metric="pageviews",
+        value=11.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_bob,
+        plan="free",
+        metric="pageviews",
+        value=7.0,
+        window_start=base_start,
+    )
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = '{"alice":"pw-alice","bob":"pw-bob"}'
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-multi-user-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = (
+        f'{{"alice":["{site_alice}"],"bob":["{site_bob}"]}}'
+    )
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        alice_login = client.post("/api/auth/login", json={"username": "alice", "password": "pw-alice"})
+        assert alice_login.status_code == 200
+        alice_token = alice_login.json()["access_token"]
+
+        bob_login = client.post("/api/auth/login", json={"username": "bob", "password": "pw-bob"})
+        assert bob_login.status_code == 200
+        bob_token = bob_login.json()["access_token"]
+
+        wrong_password = client.post("/api/auth/login", json={"username": "alice", "password": "wrong"})
+        assert wrong_password.status_code == 401
+
+        alice_own = client.get(
+            "/api/metrics",
+            params={"site_id": site_alice},
+            headers={"Authorization": f"Bearer {alice_token}"},
+        )
+        assert alice_own.status_code == 200
+        alice_other = client.get(
+            "/api/metrics",
+            params={"site_id": site_bob},
+            headers={"Authorization": f"Bearer {alice_token}"},
+        )
+        assert alice_other.status_code == 403
+
+        bob_own = client.get(
+            "/api/metrics",
+            params={"site_id": site_bob},
+            headers={"Authorization": f"Bearer {bob_token}"},
+        )
+        assert bob_own.status_code == 200
+        bob_other = client.get(
+            "/api/metrics",
+            params={"site_id": site_alice},
+            headers={"Authorization": f"Bearer {bob_token}"},
+        )
+        assert bob_other.status_code == 403
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
             dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
             dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
             dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
