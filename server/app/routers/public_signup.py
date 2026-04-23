@@ -163,6 +163,8 @@ async def public_signup(
     )
 
     session.add(user)
+    # Ensure the owner row exists before inserting dashboard_sites, which has an FK to dashboard_users.
+    await session.flush()
     session.add(site)
     session.add(plan)
     session.add(site_key)
@@ -180,4 +182,3 @@ async def public_signup(
         checkout_url=checkout_url,
         requires_checkout=payload.plan == "standard",
     )
-
