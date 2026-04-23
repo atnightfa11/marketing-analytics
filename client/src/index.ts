@@ -1,7 +1,16 @@
 import { EventCollector } from "./collector/eventCollector";
 import { rrBit, adjustedProbability } from "./ldp/rr";
 import { DailyPresenceMemo } from "./ldp/dailyPresence";
-import { AutoeventsConfig, ClientConfig, ConversionEventPayload, EventEnvelope, EventKind, PresenceReport, SessionEventPayload } from "./types";
+import {
+  AutoeventsConfig,
+  ClientConfig,
+  ConversionEventPayload,
+  EventEnvelope,
+  EventKind,
+  PresenceReport,
+  PurchaseEventPayload,
+  SessionEventPayload,
+} from "./types";
 import { getCrypto, getRandomValuesHex, shouldSample } from "./utils/crypto";
 import { createLogger, Logger } from "./utils/logger";
 
@@ -10,6 +19,8 @@ const CIRCUIT_BREAKER_DURATION_MS = 5 * 60 * 1000;
 const THREE_MINUTES_MS = 3 * 60 * 1000;
 const DEFAULT_SESSION_INACTIVITY_MS = 30 * 60 * 1000;
 const DEFAULT_CONVERSION_DEDUPE_MS = 10 * 1000;
+const DEFAULT_ATTRIBUTION_CARRYOVER_MS = 30 * 60 * 1000;
+const ATTRIBUTION_STORAGE_KEY = "__valid_attribution_v1";
 
 const SEARCH_ENGINE_HOSTS = [
   "google.com",
@@ -112,6 +123,20 @@ const PAID_MEDIUM_HINTS = [
 
 const SOCIAL_MEDIUM_HINTS = ["social", "social_media", "social-network", "social-networking"];
 const EMAIL_MEDIUM_HINTS = ["email", "e-mail", "newsletter"];
+const DEFAULT_IGNORED_REFERRER_HOSTS = [
+  "paypal.com",
+  "stripe.com",
+  "checkout.stripe.com",
+  "shopify.com",
+  "shop.app",
+  "paddle.com",
+  "klarna.com",
+  "afterpay.com",
+  "affirm.com",
+  "braintreepayments.com",
+  "squareup.com",
+  "adyen.com",
+];
 
 let config: ClientConfig | null = null;
 let collector: EventCollector | null = null;
@@ -129,8 +154,22 @@ let lastPageviewAt = 0;
 let lastActivityAt = 0;
 let autoeventsCleanup: Array<() => void> = [];
 let conversionDedupCache = new Map<string, number>();
+let inMemoryAttribution: AttributionContext | null = null;
 
 type EnsureResult = { config: ClientConfig; collector: EventCollector };
+type SourceClassification = {
+  bucket: string;
+  source: string;
+};
+type AttributionContext = SourceClassification & {
+  capturedAtMs: number;
+};
+type ReferrerClassificationOptions = {
+  ignoredReferrers?: string[];
+  carryoverAttribution?: AttributionContext | null;
+  nowMs?: number;
+  carryoverWindowMs?: number;
+};
 type SignalNavigator = {
   doNotTrack?: string | null;
   msDoNotTrack?: string | null;
@@ -327,7 +366,12 @@ function parseUrl(value: string, base: string): URL | null {
 }
 
 function normalizeHost(hostname: string): string {
-  return hostname.trim().toLowerCase().replace(/^www\./, "");
+  return hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\*\./, "")
+    .replace(/^\./, "")
+    .replace(/^www\./, "");
 }
 
 function hostMatches(hostname: string, candidates: string[]): boolean {
@@ -336,6 +380,115 @@ function hostMatches(hostname: string, candidates: string[]): boolean {
     const normalized = normalizeHost(candidate);
     return host === normalized || host.endsWith(`.${normalized}`);
   });
+}
+
+function normalizeHostCandidate(input: string): string {
+  const value = input.trim();
+  if (!value) return "";
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    const parsed = parseUrl(value, "https://example.invalid");
+    if (parsed?.hostname) {
+      return normalizeHost(parsed.hostname);
+    }
+  }
+
+  const hostOnly = value.split("/")[0];
+  return normalizeHost(hostOnly);
+}
+
+function normalizeIgnoredReferrers(referrers?: string[]): string[] {
+  const candidates = referrers?.length ? referrers : DEFAULT_IGNORED_REFERRER_HOSTS;
+  const normalized = new Set<string>();
+  for (const candidate of candidates) {
+    const host = normalizeHostCandidate(candidate);
+    if (host) normalized.add(host);
+  }
+  return [...normalized];
+}
+
+function getSessionStorage(): Storage | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredAttribution(raw: string | null): AttributionContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<AttributionContext>;
+    if (
+      typeof parsed.bucket === "string"
+      && typeof parsed.source === "string"
+      && typeof parsed.capturedAtMs === "number"
+      && Number.isFinite(parsed.capturedAtMs)
+    ) {
+      return {
+        bucket: parsed.bucket,
+        source: parsed.source,
+        capturedAtMs: parsed.capturedAtMs,
+      };
+    }
+  } catch {
+    // ignore malformed persisted values
+  }
+  return null;
+}
+
+function getAttributionContext(): AttributionContext | null {
+  if (inMemoryAttribution) {
+    return inMemoryAttribution;
+  }
+  const storage = getSessionStorage();
+  if (!storage) return null;
+  const parsed = parseStoredAttribution(storage.getItem(ATTRIBUTION_STORAGE_KEY));
+  if (parsed) {
+    inMemoryAttribution = parsed;
+  }
+  return parsed;
+}
+
+function setAttributionContext(source: SourceClassification, nowMs: number): void {
+  if (!source.bucket || source.bucket === "direct") {
+    return;
+  }
+  const context: AttributionContext = {
+    bucket: source.bucket,
+    source: source.source,
+    capturedAtMs: nowMs,
+  };
+  inMemoryAttribution = context;
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(context));
+  } catch {
+    // ignore storage write failures
+  }
+}
+
+function resolveCarryoverAttribution(
+  options: ReferrerClassificationOptions | undefined
+): SourceClassification | null {
+  const carryover = options?.carryoverAttribution;
+  if (!carryover) return null;
+
+  const nowMs = options?.nowMs ?? Date.now();
+  const windowMs = options?.carryoverWindowMs ?? DEFAULT_ATTRIBUTION_CARRYOVER_MS;
+  if (windowMs <= 0) return null;
+  if (nowMs - carryover.capturedAtMs > windowMs) return null;
+
+  if (!carryover.bucket || !carryover.source) return null;
+  return { bucket: carryover.bucket, source: carryover.source };
+}
+
+function directSource(): SourceClassification {
+  return { bucket: "direct", source: "Direct" };
 }
 
 function classifyByMedium(utmMedium: string): string | null {
@@ -369,12 +522,22 @@ function classifyBySource(utmSource: string): string | null {
 export function classifyReferrerBucket(currentHref?: string, referrerHref?: string): {
   bucket: string;
   source: string;
-} {
+};
+export function classifyReferrerBucket(
+  currentHref?: string,
+  referrerHref?: string,
+  options?: ReferrerClassificationOptions
+): SourceClassification;
+export function classifyReferrerBucket(
+  currentHref?: string,
+  referrerHref?: string,
+  options?: ReferrerClassificationOptions
+): SourceClassification {
   const fallbackOrigin = "https://example.invalid";
   const activeHref = currentHref ?? (typeof window !== "undefined" ? window.location.href : fallbackOrigin);
   const currentUrl = parseUrl(activeHref, fallbackOrigin);
   if (!currentUrl) {
-    return { bucket: "direct", source: "Direct" };
+    return directSource();
   }
 
   const utmSource = (
@@ -416,17 +579,23 @@ export function classifyReferrerBucket(currentHref?: string, referrerHref?: stri
 
   const activeReferrer = referrerHref ?? (typeof document !== "undefined" ? document.referrer : "");
   if (!activeReferrer) {
-    return { bucket: "direct", source: "Direct" };
+    return directSource();
   }
 
   const referrerUrl = parseUrl(activeReferrer, currentUrl.origin);
   if (!referrerUrl) {
-    return { bucket: "direct", source: "Direct" };
+    return directSource();
   }
 
   if (normalizeHost(referrerUrl.hostname) === normalizeHost(currentUrl.hostname)) {
-    return { bucket: "direct", source: "Direct" };
+    return directSource();
   }
+
+  const ignoredReferrers = normalizeIgnoredReferrers(options?.ignoredReferrers);
+  if (hostMatches(referrerUrl.hostname, ignoredReferrers)) {
+    return resolveCarryoverAttribution(options) ?? directSource();
+  }
+
   if (hostMatches(referrerUrl.hostname, SEARCH_ENGINE_HOSTS)) {
     return { bucket: "organic", source: sourceLabelFromHost(referrerUrl.hostname) };
   }
@@ -443,12 +612,18 @@ function maybeSendSessionStart(sessionInactivityMs: number): void {
   const now = Date.now();
   const lastSeen = lastActivityAt;
   if (!lastSeen || now - lastSeen > sessionInactivityMs) {
-    const source = classifyReferrerBucket();
+    const source = classifyReferrerBucket(undefined, undefined, {
+      ignoredReferrers: config?.ignoredReferrers,
+      carryoverAttribution: getAttributionContext(),
+      nowMs: now,
+      carryoverWindowMs: config?.attributionCarryoverMs ?? sessionInactivityMs,
+    });
     sendSessionStart({
       referrerBucket: source.bucket,
       referrerSource: source.source,
       engagementBucket: "start",
     });
+    setAttributionContext(source, now);
   }
   lastActivityAt = now;
 }
@@ -499,6 +674,27 @@ export function normalizeAutoConversionType(value: string | null | undefined): s
   return sanitizeConversionHint(value);
 }
 
+function sanitizeRevenueAmount(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function sanitizeCurrencyCode(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalized)) return undefined;
+  return normalized;
+}
+
+function sanitizeOrderId(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  return normalized.slice(0, 128);
+}
+
 function dedupeConversionEvent(key: string, dedupeWindowMs: number): boolean {
   const now = Date.now();
   const last = conversionDedupCache.get(key);
@@ -532,6 +728,7 @@ export async function configure(userConfig: ClientConfig): Promise<void> {
 
   const resolvedShuffleUrl = userConfig.shuffleUrl ?? `${userConfig.apiBase ?? ""}/api/shuffle`;
   const resolvedSiteId = userConfig.siteId ?? "pending-site";
+  const normalizedIgnoredReferrers = normalizeIgnoredReferrers(userConfig.ignoredReferrers);
   config = {
     ...userConfig,
     siteId: resolvedSiteId,
@@ -542,6 +739,8 @@ export async function configure(userConfig: ClientConfig): Promise<void> {
     stripHashInPath: userConfig.stripHashInPath ?? true,
     honorPrivacySignals: userConfig.honorPrivacySignals ?? true,
     autoRefreshSkewSeconds: userConfig.autoRefreshSkewSeconds ?? 60,
+    ignoredReferrers: normalizedIgnoredReferrers,
+    attributionCarryoverMs: userConfig.attributionCarryoverMs ?? DEFAULT_ATTRIBUTION_CARRYOVER_MS,
   };
   logger = createLogger(Boolean(userConfig.debug));
 
@@ -608,14 +807,33 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
     const dedupeWindowMs = Math.max(5000, Math.min(30000, autoConfig.conversionDedupeWindowMs ?? DEFAULT_CONVERSION_DEDUPE_MS));
     const selector = autoConfig.conversionSelector ?? "[data-valid-conversion]";
 
-    const emitConversion = (type: string, signature: string) => {
+    const conversionMetaFromNode = (node: HTMLElement | null): Pick<ConversionEventPayload, "revenueAmount" | "revenueCurrency" | "orderId"> => {
+      if (!node) return {};
+      return {
+        revenueAmount: sanitizeRevenueAmount(
+          node.getAttribute("data-valid-revenue")
+          ?? node.getAttribute("data-valid-revenue-amount")
+        ) ?? undefined,
+        revenueCurrency: sanitizeCurrencyCode(
+          node.getAttribute("data-valid-currency")
+          ?? node.getAttribute("data-valid-revenue-currency")
+        ),
+        orderId: sanitizeOrderId(node.getAttribute("data-valid-order-id")),
+      };
+    };
+
+    const emitConversion = (
+      type: string,
+      signature: string,
+      payload: Pick<ConversionEventPayload, "revenueAmount" | "revenueCurrency" | "orderId"> = {}
+    ) => {
       const cleanType = sanitizeConversionHint(type);
       if (!cleanType) return;
       const dedupeKey = `${cleanType}:${signature}`;
       if (!dedupeConversionEvent(dedupeKey, dedupeWindowMs)) {
         return;
       }
-      sendConversion({ conversionType: cleanType });
+      sendConversion({ conversionType: cleanType, ...payload });
     };
 
     const onClick = (event: Event) => {
@@ -624,7 +842,7 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
       if (node) {
         const conversionType = sanitizeConversionHint(node.getAttribute("data-valid-conversion"));
         if (conversionType) {
-          emitConversion(conversionType, `attr:${node.tagName}`);
+          emitConversion(conversionType, `attr:${node.tagName}`, conversionMetaFromNode(node));
           return;
         }
       }
@@ -661,7 +879,11 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
       const markedElement = form.closest(selector) as HTMLElement | null;
       const explicitType = sanitizeConversionHint(markedElement?.getAttribute("data-valid-conversion"));
       if (explicitType) {
-        emitConversion(explicitType, `form:${form.getAttribute("id") ?? form.getAttribute("name") ?? "anon"}`);
+        emitConversion(
+          explicitType,
+          `form:${form.getAttribute("id") ?? form.getAttribute("name") ?? "anon"}`,
+          conversionMetaFromNode(markedElement)
+        );
         return;
       }
 
@@ -751,12 +973,22 @@ export function sendConversion(payload: ConversionEventPayload): boolean {
     return false;
   }
 
+  const conversionType = sanitizeConversionHint(payload.conversionType);
+  if (!conversionType) {
+    logger.warn("Skipping conversion with empty conversionType.");
+    return false;
+  }
+  const orderId = sanitizeOrderId(payload.orderId);
+  const revenueAmount = sanitizeRevenueAmount(payload.revenueAmount);
+  const revenueCurrency = sanitizeCurrencyCode(payload.revenueCurrency);
+
   const rr = rrBit(true, activeConfig.epsilon.conversion, activeConfig.samplingRate);
   const envelope = buildEnvelope(
     activeConfig,
     "conversions",
     {
-      conversion_type: payload.conversionType,
+      conversion_type: conversionType,
+      ...(orderId ? { order_id: orderId } : {}),
       randomized_bit: rr.bit,
       probability_true: rr.p,
       probability_false: rr.q,
@@ -766,7 +998,37 @@ export function sendConversion(payload: ConversionEventPayload): boolean {
     activeConfig.samplingRate
   );
   activeCollector.enqueue(envelope);
+
+  if (revenueAmount !== null) {
+    const revenueEnvelope = buildEnvelope(
+      activeConfig,
+      "revenue",
+      {
+        value: revenueAmount,
+        ...(revenueCurrency ? { currency: revenueCurrency } : {}),
+        conversion_type: conversionType,
+        ...(orderId ? { order_id: orderId } : {}),
+        randomized_bit: rr.bit,
+        probability_true: rr.p,
+        probability_false: rr.q,
+        variance: rr.variance,
+      },
+      activeConfig.epsilon.conversion,
+      activeConfig.samplingRate
+    );
+    activeCollector.enqueue(revenueEnvelope);
+  }
+
   return true;
+}
+
+export function sendPurchase(payload: PurchaseEventPayload): boolean {
+  return sendConversion({
+    conversionType: payload.conversionType ?? "purchase",
+    revenueAmount: payload.revenueAmount,
+    revenueCurrency: payload.revenueCurrency,
+    orderId: payload.orderId,
+  });
 }
 
 export function reportPresence(): PresenceReport | null {
@@ -830,6 +1092,7 @@ declare global {
       sendPageview: typeof sendPageview;
       sendSessionStart: typeof sendSessionStart;
       sendConversion: typeof sendConversion;
+      sendPurchase: typeof sendPurchase;
       reportPresence: typeof reportPresence;
       flush: typeof flush;
       destroyAutoevents: typeof destroyAutoevents;
@@ -845,6 +1108,7 @@ if (typeof window !== "undefined") {
     sendPageview,
     sendSessionStart,
     sendConversion,
+    sendPurchase,
     reportPresence,
     flush,
     destroyAutoevents,
@@ -859,6 +1123,14 @@ if (typeof window !== "undefined") {
     const honorPrivacySignals = currentScript.dataset.validHonorPrivacySignals !== "false";
     const autoConversions = currentScript.dataset.validAutoconversions !== "false";
     const conversionSelector = currentScript.dataset.validConversionSelector;
+    const ignoredReferrers = (currentScript.dataset.validIgnoredReferrers ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const attributionCarryoverMinutes = Number(currentScript.dataset.validAttributionCarryoverMinutes ?? "");
+    const attributionCarryoverMs = Number.isFinite(attributionCarryoverMinutes) && attributionCarryoverMinutes > 0
+      ? attributionCarryoverMinutes * 60 * 1000
+      : undefined;
     void init({
       siteId,
       apiBase,
@@ -873,6 +1145,8 @@ if (typeof window !== "undefined") {
       },
       debug,
       honorPrivacySignals,
+      ignoredReferrers: ignoredReferrers.length ? ignoredReferrers : undefined,
+      attributionCarryoverMs,
     }, {
       autoConversions,
       conversionSelector,

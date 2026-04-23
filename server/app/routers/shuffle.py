@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import TokenClaims, get_settings
+from ..hostnames import hostname_from_request_headers
 from ..models import LdpReport, RawReport, SitePlan, TokenNonce, UploadToken, get_session
 from ..schemas import CollectRequest, ShuffleRequest
 
@@ -259,6 +260,10 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
 
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("User-Agent", "")
+    request_hostname = hostname_from_request_headers(
+        request.headers.get("Origin"),
+        request.headers.get("Referer"),
+    )
     device_bucket = _derive_device_bucket(user_agent)
     country_code = _derive_country_code(request)
     standard_session_key = (
@@ -305,6 +310,8 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
                 raw_payload["_visitor_day_hmac"] = visitor_day_hmac
             raw_payload.setdefault("_device_bucket", device_bucket)
             raw_payload.setdefault("_country_code", country_code)
+            if request_hostname:
+                raw_payload.setdefault("_hostname", request_hostname)
             record = RawReport(
                 site_id=collect.site_id,
                 kind=report.kind,

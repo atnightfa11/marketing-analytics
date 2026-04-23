@@ -12,11 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..hostnames import hostname_from_payload, normalize_hostname
 from ..models import RawReport, get_session
 from ..schemas import BreakdownResponse, BreakdownRow
 
 router = APIRouter(tags=["metrics"])
-BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions", "hour_of_day", "day_of_week"]
+BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions", "hour_of_day", "day_of_week", "hostnames"]
 BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions"]
 settings = get_settings()
 
@@ -58,6 +59,7 @@ BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = 
     "conversions": ("uniques", "sessions", "conversions"),
     "hour_of_day": ("uniques", "sessions", "pageviews", "conversions"),
     "day_of_week": ("uniques", "sessions", "pageviews", "conversions"),
+    "hostnames": ("uniques", "sessions", "pageviews", "conversions"),
 }
 BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "pages": "pageviews",
@@ -67,6 +69,7 @@ BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "conversions": "conversions",
     "hour_of_day": "sessions",
     "day_of_week": "sessions",
+    "hostnames": "sessions",
 }
 BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "pages": ("pageviews",),
@@ -76,6 +79,7 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "conversions": ("conversions",),
     "hour_of_day": ("sessions", "pageviews", "conversions"),
     "day_of_week": ("sessions", "pageviews", "conversions"),
+    "hostnames": ("sessions", "pageviews", "conversions"),
 }
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
 TIME_PARTING_MIN_DAYS = 7
@@ -88,6 +92,7 @@ BREAKDOWN_MIN_PRIMARY_THRESHOLD: dict[BreakdownDimension, float] = {
     "conversions": 2.0,
     "hour_of_day": TIME_PARTING_MIN_SESSIONS,
     "day_of_week": TIME_PARTING_MIN_SESSIONS,
+    "hostnames": 1.0,
 }
 
 COMMON_SOURCE_HOST_MAP = {
@@ -265,6 +270,11 @@ def _normalize_conversion_event(raw_value: object) -> str:
     return normalized.title()[:120] if normalized else "Unknown"
 
 
+def _normalize_hostname_label(payload: dict) -> str:
+    host = hostname_from_payload(payload)
+    return host if host else "Unknown"
+
+
 def _hour_of_day_label(timestamp: dt.datetime) -> str:
     return HOUR_OF_DAY_LABELS[timestamp.hour]
 
@@ -285,6 +295,8 @@ def _resolve_label(dimension: BreakdownDimension, payload: dict, server_received
         return _normalize_device_bucket(payload.get("_device_bucket"))
     if dimension == "conversions":
         return _normalize_conversion_event(payload.get("conversion_type"))
+    if dimension == "hostnames":
+        return _normalize_hostname_label(payload)
     if dimension == "hour_of_day":
         return _hour_of_day_label(server_received_at)
     if dimension == "day_of_week":
@@ -312,6 +324,15 @@ def _window_days(start_day: dt.date, end_day: dt.date) -> int:
     return (end_day - start_day).days + 1
 
 
+def _payload_matches_hostname(payload: dict, hostname_filter: str | None) -> bool:
+    if not hostname_filter:
+        return True
+    payload_hostname = hostname_from_payload(payload)
+    if not payload_hostname:
+        return False
+    return payload_hostname == hostname_filter
+
+
 def _empty_breakdown_response(
     *,
     site_id: str,
@@ -337,6 +358,7 @@ async def breakdown(
     limit: int = Query(default=10, ge=1, le=50),
     start: str | None = None,
     end: str | None = None,
+    hostname: str | None = None,
     _auth_claims: dict | None = Depends(require_dashboard_auth),
     _site_access: None = Depends(require_site_access),
     plan: str = Depends(get_site_plan),
@@ -355,6 +377,12 @@ async def breakdown(
         )
 
     start_day, end_day = _resolve_window(start, end)
+    hostname_filter = normalize_hostname(hostname) if hostname is not None else None
+    if hostname is not None and not hostname_filter:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="hostname must be a valid host value",
+        )
     if dimension in TIME_PARTING_DIMENSIONS and _window_days(start_day, end_day) < TIME_PARTING_MIN_DAYS:
         return _empty_breakdown_response(
             site_id=site_id,
@@ -385,6 +413,8 @@ async def breakdown(
             payload = report.payload if isinstance(report.payload, dict) else {}
             if payload.get("historical_import"):
                 continue
+            if not _payload_matches_hostname(payload, hostname_filter):
+                continue
             marker = _session_marker(report.server_received_at, payload)
             if marker and marker not in source_by_session:
                 source_by_session[marker] = _resolve_label(dimension, payload, report.server_received_at)
@@ -392,6 +422,8 @@ async def breakdown(
     for report in reports:
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
+            continue
+        if not _payload_matches_hostname(payload, hostname_filter):
             continue
         session_marker = _session_marker(report.server_received_at, payload)
         visitor_marker = _visitor_marker(report.day, payload)

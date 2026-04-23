@@ -79,6 +79,60 @@ describe("source classification", () => {
     expect(social.bucket).toBe("social");
     expect(referral.bucket).toBe("referral");
   });
+
+  it("keeps prior attribution when returning from PayPal", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/checkout/success",
+      "https://www.paypal.com/checkoutnow",
+      {
+        carryoverAttribution: {
+          bucket: "organic",
+          source: "google.com",
+          capturedAtMs: 1_000,
+        },
+        nowMs: 2_000,
+        carryoverWindowMs: 30 * 60 * 1000,
+      }
+    );
+    expect(result.bucket).toBe("organic");
+    expect(result.source).toBe("google.com");
+  });
+
+  it("keeps prior attribution when returning from Stripe Checkout", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/order/complete",
+      "https://checkout.stripe.com/pay/cs_test_123",
+      {
+        carryoverAttribution: {
+          bucket: "paid",
+          source: "google",
+          capturedAtMs: 10_000,
+        },
+        nowMs: 20_000,
+        carryoverWindowMs: 30 * 60 * 1000,
+      }
+    );
+    expect(result.bucket).toBe("paid");
+    expect(result.source).toBe("google");
+  });
+
+  it("falls back to direct if carryover attribution is stale", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/order/complete",
+      "https://www.paypal.com/checkoutnow",
+      {
+        carryoverAttribution: {
+          bucket: "social",
+          source: "reddit.com",
+          capturedAtMs: 1_000,
+        },
+        nowMs: 3_700_000,
+        carryoverWindowMs: 30 * 60 * 1000,
+      }
+    );
+    expect(result.bucket).toBe("direct");
+    expect(result.source).toBe("Direct");
+  });
 });
 
 describe("query sanitization", () => {

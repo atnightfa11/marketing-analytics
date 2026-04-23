@@ -68,6 +68,11 @@ def _resolve_day_window(
 
 def _raw_report_value(report: RawReport) -> float:
     payload = report.payload if isinstance(report.payload, dict) else {}
+    if report.kind == "revenue":
+        try:
+            return max(0.0, float(payload.get("value", 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
     if payload.get("historical_import"):
         try:
             return max(0.0, float(payload.get("value", 0.0)))

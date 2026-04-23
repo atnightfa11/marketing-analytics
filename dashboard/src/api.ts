@@ -51,7 +51,15 @@ export interface BreakdownResponse {
   rows: BreakdownRow[];
 }
 
-export type BreakdownDimension = "pages" | "sources" | "devices" | "countries" | "conversions" | "hour_of_day" | "day_of_week";
+export type BreakdownDimension =
+  | "pages"
+  | "sources"
+  | "devices"
+  | "countries"
+  | "conversions"
+  | "hour_of_day"
+  | "day_of_week"
+  | "hostnames";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
@@ -121,12 +129,13 @@ export async function fetchAggregate(
   metric: string,
   window: "live" | "standard",
   token?: string,
-  siteId?: string
+  siteId?: string,
+  hostname?: string
 ): Promise<AggregateWindow[]> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/aggregate", {
     headers: authHeaders(token),
-    params: { site_id: resolvedSiteId, metric, window },
+    params: { site_id: resolvedSiteId, metric, window, hostname },
   });
   return response.data.windows ?? [];
 }
@@ -137,12 +146,13 @@ export async function fetchBreakdown(
   siteId?: string,
   start?: string,
   end?: string,
-  limit: number = 10
+  limit: number = 10,
+  hostname?: string
 ): Promise<BreakdownResponse> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/breakdown", {
     headers: authHeaders(token),
-    params: { site_id: resolvedSiteId, dimension, start, end, limit },
+    params: { site_id: resolvedSiteId, dimension, start, end, limit, hostname },
   });
   return response.data;
 }

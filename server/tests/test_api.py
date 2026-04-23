@@ -28,6 +28,7 @@ from argon2 import PasswordHasher
 from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
+from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import derive_daily_visitor_key, derive_standard_session_key  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
 
@@ -810,6 +811,203 @@ async def test_missing_site_plan_defaults_to_free_for_serving(client):
     assert metrics_resp.status_code == 200
     metrics_map = {row["metric"]: row for row in metrics_resp.json()["metrics"]}
     assert metrics_map["pageviews"]["value"] == 7.0
+
+
+@pytest.mark.asyncio
+async def test_metrics_sums_windows_within_selected_range(client):
+    site_id = "site-metrics-sum"
+    start = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(site_id=site_id, plan="free", metric="pageviews", value=3.0, window_start=start)
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=4.0,
+        window_start=start + timedelta(minutes=15),
+    )
+    await _insert_dp_window(site_id=site_id, plan="free", metric="conversions", value=1.0, window_start=start)
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="conversions",
+        value=2.0,
+        window_start=start + timedelta(minutes=15),
+    )
+
+    metrics_resp = client.get("/api/metrics", params={"site_id": site_id})
+    assert metrics_resp.status_code == 200
+    metrics_map = {row["metric"]: row for row in metrics_resp.json()["metrics"]}
+    assert metrics_map["pageviews"]["value"] == 7.0
+    assert metrics_map["conversions"]["value"] == 3.0
+    assert metrics_map["conversion_rate"]["value"] == pytest.approx(3.0 / 7.0, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_reducer_uses_revenue_payload_value_for_live_events(client):
+    site_id = "site-revenue-live-events"
+    base = datetime(2026, 4, 19, 16, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "free")
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="revenue",
+        payload={"value": 39.99, "currency": "USD", "conversion_type": "purchase", "order_id": "ord_1"},
+        day=base.date(),
+        server_received_at=base,
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="revenue",
+        payload={"value": 10.01, "currency": "USD", "conversion_type": "purchase", "order_id": "ord_2"},
+        day=base.date(),
+        server_received_at=base + timedelta(minutes=5),
+    )
+
+    original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+    reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+    try:
+        async with async_session_factory() as session:
+            await reduce_reports(session, start_day=base.date(), end_day=base.date())
+    finally:
+        reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+
+    aggregate_resp = client.get(
+        "/api/aggregate",
+        params={"site_id": site_id, "metric": "revenue", "window": "standard"},
+    )
+    assert aggregate_resp.status_code == 200
+    total = sum(row["value"] for row in aggregate_resp.json()["windows"])
+    assert total == pytest.approx(50.0, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_hostname_filter_scopes_free_aggregate_and_breakdown(client):
+    site_id = "site-hostname-filter"
+    day = date(2026, 4, 20)
+    await _set_site_plan(site_id, "free")
+
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/", "_hostname": "neurotypicaltranslator.com"},
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 9, 0, tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/app", "_hostname": "app.neurotypicaltranslator.com"},
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 9, 15, tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/app/settings", "_hostname": "app.neurotypicaltranslator.com"},
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 9, 30, tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="sessions",
+        payload={
+            "_hostname": "app.neurotypicaltranslator.com",
+            "_session_hmac": "sess-host-a",
+            "_visitor_day_hmac": "visitor-host-a",
+            "referrer_bucket": "direct",
+            "referrer_source": "direct",
+        },
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 9, 15, tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="sessions",
+        payload={
+            "_hostname": "app.neurotypicaltranslator.com",
+            "_session_hmac": "sess-host-b",
+            "_visitor_day_hmac": "visitor-host-b",
+            "referrer_bucket": "organic",
+            "referrer_source": "google.com",
+        },
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 9, 45, tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="sessions",
+        payload={
+            "_hostname": "app.neurotypicaltranslator.com",
+            "_session_hmac": "sess-host-c",
+            "_visitor_day_hmac": "visitor-host-c",
+            "referrer_bucket": "direct",
+            "referrer_source": "direct",
+        },
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 10, 0, tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="sessions",
+        payload={
+            "_hostname": "app.neurotypicaltranslator.com",
+            "_session_hmac": "sess-host-d",
+            "_visitor_day_hmac": "visitor-host-d",
+            "referrer_bucket": "organic",
+            "referrer_source": "google.com",
+        },
+        day=day,
+        server_received_at=datetime(2026, 4, 20, 10, 15, tzinfo=timezone.utc),
+    )
+
+    original_min_reports = aggregate_settings.MIN_REPORTS_PER_WINDOW
+    aggregate_settings.MIN_REPORTS_PER_WINDOW = 1
+    try:
+        agg_resp = client.get(
+            "/api/aggregate",
+            params={
+                "site_id": site_id,
+                "metric": "pageviews",
+                "window": "standard",
+                "hostname": "app.neurotypicaltranslator.com",
+            },
+        )
+        assert agg_resp.status_code == 200
+        agg_total = sum(row["value"] for row in agg_resp.json()["windows"])
+        assert agg_total == 2.0
+    finally:
+        aggregate_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+
+    hosts_resp = client.get(
+        "/api/breakdown",
+        params={
+            "site_id": site_id,
+            "dimension": "hostnames",
+            "start": "2026-04-20",
+            "end": "2026-04-20",
+            "limit": 10,
+        },
+    )
+    assert hosts_resp.status_code == 200
+    host_rows = hosts_resp.json()["rows"]
+    assert host_rows[0]["label"] == "app.neurotypicaltranslator.com"
+    assert host_rows[0]["metrics"]["sessions"] == 4.0
+
+    filtered_sources = client.get(
+        "/api/breakdown",
+        params={
+            "site_id": site_id,
+            "dimension": "sources",
+            "hostname": "app.neurotypicaltranslator.com",
+            "start": "2026-04-20",
+            "end": "2026-04-20",
+            "limit": 10,
+        },
+    )
+    assert filtered_sources.status_code == 200
+    source_rows = filtered_sources.json()["rows"]
+    labels = {row["label"] for row in source_rows}
+    assert labels == {"Direct", "Google"}
 
 
 @pytest.mark.asyncio

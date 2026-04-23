@@ -834,6 +834,10 @@ const Overview: React.FC = () => {
     const r = searchParams.get("range");
     return r && (rangeOptions as readonly string[]).includes(r) ? (r as RangeOption) : "Last 30";
   });
+  const [selectedHostname, setSelectedHostname] = useState<string>(() => {
+    const host = searchParams.get("hostname");
+    return host && host.trim() ? host.trim() : "all";
+  });
   const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>(() => {
     const fk = searchParams.get("forecast");
     return fk && forecastOptions.some((opt) => opt.key === fk)
@@ -853,7 +857,9 @@ const Overview: React.FC = () => {
     conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
     hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
     day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+    hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
   });
+  const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
   const [customRange, setCustomRange] = useState<DateRange>(() => ({
     start: searchParams.get("start") ?? "",
     end: searchParams.get("end") ?? "",
@@ -904,6 +910,7 @@ const Overview: React.FC = () => {
   const chartGridStroke = isDark ? "rgba(249,250,251,0.10)" : "#E5E7EB";
   const chartAxisTick = isDark ? "rgba(249,250,251,0.55)" : "#6B7280";
   const chartReferenceStroke = isDark ? "rgba(249,250,251,0.25)" : "#D1D5DB";
+  const hostnameFilter = !showSeededBreakdowns && selectedHostname !== "all" ? selectedHostname : undefined;
 
   const previousSiteIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -914,6 +921,7 @@ const Overview: React.FC = () => {
     if (previousSiteIdRef.current !== siteId) {
       previousSiteIdRef.current = siteId;
       setActiveFilters([]);
+      setSelectedHostname("all");
     }
   }, [siteId]);
   useEffect(() => {
@@ -921,7 +929,7 @@ const Overview: React.FC = () => {
     const metricsToFetch = [...aggregateMetricKeys];
     Promise.all(
       metricsToFetch.map((metric) =>
-        fetchAggregate(metric, "standard", token ?? undefined, siteId).then((data) => ({
+        fetchAggregate(metric, "standard", token ?? undefined, siteId, hostnameFilter).then((data) => ({
           metric,
           data,
         }))
@@ -935,7 +943,7 @@ const Overview: React.FC = () => {
         setAggregateMap(next);
       })
       .catch(console.error);
-  }, [canQuery, token, siteId]);
+  }, [canQuery, token, siteId, hostnameFilter]);
 
   useEffect(() => {
     if (!aggregateMetricKeys.includes(selectedMetric as (typeof aggregateMetricKeys)[number])) {
@@ -1152,6 +1160,31 @@ const Overview: React.FC = () => {
   }, [range, customRange, dailyPageviews]);
 
   useEffect(() => {
+    if (!canQuery || showSeededBreakdowns) {
+      setHostnameOptions([]);
+      return;
+    }
+    const start = breakdownDateRange?.start;
+    const end = breakdownDateRange?.end;
+    fetchBreakdown("hostnames", token ?? undefined, siteId, start, end, 50)
+      .then((response) => {
+        const options = response.rows
+          .map((row) => row.label)
+          .filter((label) => label && label !== "Unknown");
+        setHostnameOptions(options);
+      })
+      .catch(() => {
+        setHostnameOptions([]);
+      });
+  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
+
+  useEffect(() => {
+    if (selectedHostname === "all") return;
+    if (hostnameOptions.includes(selectedHostname)) return;
+    setSelectedHostname("all");
+  }, [selectedHostname, hostnameOptions]);
+
+  useEffect(() => {
     if (!canQuery) return;
     if (showSeededBreakdowns) {
       setBreakdownData({
@@ -1162,6 +1195,7 @@ const Overview: React.FC = () => {
         conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
         hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
         day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+        hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
       });
       return;
     }
@@ -1177,7 +1211,8 @@ const Overview: React.FC = () => {
           siteId,
           start,
           end,
-          dimension === "hour_of_day" ? 24 : dimension === "day_of_week" ? 7 : 10
+          dimension === "hour_of_day" ? 24 : dimension === "day_of_week" ? 7 : 10,
+          hostnameFilter
         ).then((response) => ({
           dimension,
           response,
@@ -1194,6 +1229,7 @@ const Overview: React.FC = () => {
           conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
           hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
           day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+          hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
         };
         results.forEach((result) => {
           next[result.dimension] = {
@@ -1213,7 +1249,7 @@ const Overview: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
+  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end, hostnameFilter]);
 
   const computeKpiValues = (series: {
     pageviews: { day: string; value: number }[];
@@ -1965,6 +2001,7 @@ const Overview: React.FC = () => {
     const managedKeys = [
       "metric",
       "range",
+      "hostname",
       "start",
       "end",
       "cmp",
@@ -1980,6 +2017,7 @@ const Overview: React.FC = () => {
     managedKeys.forEach((k) => next.delete(k));
     if (selectedMetric !== "pageviews") next.set("metric", selectedMetric);
     if (range !== "Last 30") next.set("range", range);
+    if (selectedHostname !== "all") next.set("hostname", selectedHostname);
     if (range === "Custom") {
       if (customRange.start) next.set("start", customRange.start);
       if (customRange.end) next.set("end", customRange.end);
@@ -2010,6 +2048,7 @@ const Overview: React.FC = () => {
   }, [
     selectedMetric,
     range,
+    selectedHostname,
     customRange.start,
     customRange.end,
     compareEnabled,
@@ -2290,6 +2329,27 @@ const Overview: React.FC = () => {
                 </option>
               ))}
             </select>
+            {!showSeededBreakdowns && (
+              <>
+                <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+                  Hostname
+                </span>
+                <select
+                  aria-label="Hostname filter"
+                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                  style={fontBody}
+                  value={selectedHostname}
+                  onChange={(event) => setSelectedHostname(event.target.value)}
+                >
+                  <option value="all">All hostnames</option>
+                  {hostnameOptions.map((host) => (
+                    <option key={host} value={host}>
+                      {host}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
             {range === "Custom" && (
               <div className="flex items-center gap-1">
                 <input
@@ -2440,7 +2500,7 @@ const Overview: React.FC = () => {
             )}
           </div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-            Metrics · {range}
+            Metrics · {range}{hostnameFilter ? ` · Host: ${hostnameFilter}` : ""}
           </div>
         </div>
         <KPIGrid

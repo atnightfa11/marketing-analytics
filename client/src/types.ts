@@ -2,7 +2,8 @@ export type EventKind =
   | "uniques"
   | "pageviews"
   | "sessions"
-  | "conversions";
+  | "conversions"
+  | "revenue";
 
 export interface ClientConfig {
   siteId: string;
@@ -27,6 +28,8 @@ export interface ClientConfig {
   autoRefreshSkewSeconds?: number;
   refreshEndpoint?: string;
   bootstrapEndpoint?: string;
+  ignoredReferrers?: string[];
+  attributionCarryoverMs?: number;
 }
 
 export interface EventEnvelope<T = Record<string, unknown>> {
@@ -55,6 +58,16 @@ export interface SessionEventPayload {
 
 export interface ConversionEventPayload {
   conversionType: string;
+  revenueAmount?: number;
+  revenueCurrency?: string;
+  orderId?: string;
+}
+
+export interface PurchaseEventPayload {
+  revenueAmount: number;
+  revenueCurrency: string;
+  orderId?: string;
+  conversionType?: string;
 }
 
 export interface AutoeventsConfig {

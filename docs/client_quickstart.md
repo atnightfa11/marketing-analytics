@@ -24,6 +24,11 @@ python server/scripts/create_site_key.py --site-id live-validanalytics-io --orig
 
 The SDK auto-bootstraps an upload token, tracks pageviews/session starts/daily presence, and posts to `/api/shuffle`.
 
+Optional attribution controls:
+
+- `data-valid-ignored-referrers` to override payment/referrer ignore hosts.
+- `data-valid-attribution-carryover-minutes` to control carry-forward window on return-to-site checkout flows.
+
 ## 3) SPA install snippet
 
 ```html
@@ -45,3 +50,19 @@ The SDK auto-bootstraps an upload token, tracks pageviews/session starts/daily p
    ```bash
    curl -s 'https://api.validanalytics.io/api/aggregate?site_id=live-validanalytics-io&metric=pageviews&window=standard'
    ```
+
+## 5) Track ecommerce purchases (explicit)
+
+Use explicit purchase events for revenue tracking:
+
+```html
+<script>
+  window.ValidAnalytics?.sendPurchase({
+    revenueAmount: 79.00,
+    revenueCurrency: "USD",
+    orderId: "order_1001",
+  });
+</script>
+```
+
+This keeps the base script lightweight while supporting provider-agnostic ecommerce analytics.
