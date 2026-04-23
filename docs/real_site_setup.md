@@ -60,6 +60,7 @@ Set these environment variables on the backend service:
 - `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
 - `DASHBOARD_ALLOWED_SITE_IDS=<comma-separated-site-ids>` (optional, recommended for ownership auth on `site_id` endpoints)
 - `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; unmapped users are denied by default when this is set)
+- `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended for public launch; set `true` only as a temporary fallback while migrating legacy demo sites)
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
 - `ENABLE_PROD_SCHEDULER=true`
 - `PROD_SCHEDULER_HOUR_UTC=2`
@@ -83,6 +84,8 @@ Stripe billing env vars:
 - `STRIPE_PRO_PRICE_ID=price_...` (optional if Pro is hidden in UI)
 - `STRIPE_CHECKOUT_SUCCESS_URL=https://app.validanalytics.io/billing/success`
 - `STRIPE_CHECKOUT_CANCEL_URL=https://app.validanalytics.io/billing/cancel`
+- `STRIPE_SIGNUP_SUCCESS_URL=https://validanalytics.io/signup/complete`
+- `STRIPE_SIGNUP_CANCEL_URL=https://validanalytics.io/signup`
 
 Webhook endpoint:
 

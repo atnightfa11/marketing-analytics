@@ -218,6 +218,43 @@ class SiteApiKey(Base):
     )
 
 
+class DashboardUser(Base):
+    __tablename__ = "dashboard_users"
+    __table_args__ = (
+        Index("ix_dashboard_users_email", "email", unique=True),
+    )
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class DashboardSite(Base):
+    __tablename__ = "dashboard_sites"
+    __table_args__ = (
+        Index("ix_dashboard_sites_owner", "owner_username"),
+        Index("ix_dashboard_sites_origin", "allowed_origin"),
+    )
+
+    site_id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_username: Mapped[str] = mapped_column(
+        String(64), ForeignKey("dashboard_users.username"), nullable=False
+    )
+    site_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    allowed_origin: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
 class ModelStore(Base):
     __tablename__ = "model_store"
     __table_args__ = (Index("ix_model_store_site_metric", "site_id", "engine", "metric", "plan"),)

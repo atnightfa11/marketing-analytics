@@ -29,6 +29,7 @@ from .routers import (
     ingest,
     job_status,
     metrics as metrics_router,
+    public_signup,
     sdk_bootstrap,
     shuffle,
     stripe_billing,
@@ -222,6 +223,7 @@ app.include_router(breakdowns.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(stripe_billing.router, prefix="/api")
+app.include_router(public_signup.router, prefix="/api")
 app.include_router(sdk_bootstrap.router, prefix="/api")
 app.include_router(job_status.router, prefix="/api")
 app.include_router(alert_webhook.router, prefix="/api")

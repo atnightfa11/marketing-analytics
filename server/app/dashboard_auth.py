@@ -9,11 +9,15 @@ import secrets
 from functools import lru_cache
 from typing import Any
 
+from argon2 import PasswordHasher, exceptions as argon_exceptions
 from fastapi import Header, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import Settings, get_settings
+from .models import DashboardSite, DashboardUser
 
 settings: Settings = get_settings()
+password_hasher = PasswordHasher()
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -26,14 +30,6 @@ def _b64url_decode(encoded: str) -> bytes:
 
 def _require_auth_config() -> None:
     if not settings.DASHBOARD_AUTH_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Dashboard auth is enabled but credentials are not configured",
-        )
-    users = _parsed_auth_users()
-    if users:
-        return
-    if not settings.DASHBOARD_AUTH_PASSWORD:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Dashboard auth is enabled but credentials are not configured",
@@ -86,8 +82,23 @@ def validate_credentials(username: str, password: str) -> bool:
         expected_password = users.get(username)
         return isinstance(expected_password, str) and secrets.compare_digest(password, expected_password)
     configured_username = settings.DASHBOARD_AUTH_USERNAME
-    configured_password = settings.DASHBOARD_AUTH_PASSWORD or ""
+    configured_password = settings.DASHBOARD_AUTH_PASSWORD
+    if not configured_username or not configured_password:
+        return False
     return secrets.compare_digest(username, configured_username) and secrets.compare_digest(password, configured_password)
+
+
+async def validate_credentials_async(username: str, password: str, session: AsyncSession) -> bool:
+    if validate_credentials(username, password):
+        return True
+    user = await session.get(DashboardUser, username)
+    if not user:
+        return False
+    try:
+        password_hasher.verify(user.password_hash, password)
+    except argon_exceptions.VerifyMismatchError:
+        return False
+    return True
 
 
 def require_dashboard_auth(authorization: str | None = Header(default=None)) -> dict[str, Any] | None:
@@ -194,4 +205,30 @@ def enforce_site_access(site_id: str, claims: dict[str, Any] | None) -> None:
     if allowed is None:
         return
     if site_id not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
+
+
+async def enforce_site_access_with_db(
+    *,
+    site_id: str,
+    claims: dict[str, Any] | None,
+    session: AsyncSession,
+) -> None:
+    allowed = get_allowed_site_ids(claims)
+    if allowed is not None:
+        if site_id not in allowed:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
+        return
+
+    username = claims.get("sub") if isinstance(claims, dict) else None
+    if not isinstance(username, str) or not username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
+
+    site = await session.get(DashboardSite, site_id)
+    if not site:
+        if settings.DASHBOARD_ALLOW_UNCLAIMED_SITES:
+            # Temporary compatibility path for legacy sites not yet claimed in dashboard_sites.
+            return
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
+    if site.owner_username != username:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")

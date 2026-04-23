@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
-from ..dashboard_auth import enforce_site_access, require_dashboard_auth
+from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth
 from ..models import SitePlan, get_session
 from ..schemas import CheckoutSessionRequest, CheckoutSessionResponse
 
@@ -113,10 +113,14 @@ async def create_checkout_session(
     auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
-    enforce_site_access(payload.site_id, auth_claims)
+    await enforce_site_access_with_db(site_id=payload.site_id, claims=auth_claims, session=session)
     _require_stripe_settings()
     stripe.api_key = settings.STRIPE_SECRET_KEY
     price_id = _price_id_for_plan(payload.plan)
+    base_success_url = payload.success_url or settings.STRIPE_CHECKOUT_SUCCESS_URL
+    success_sep = "&" if "?" in base_success_url else "?"
+    success_url = f"{base_success_url}{success_sep}session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = payload.cancel_url or settings.STRIPE_CHECKOUT_CANCEL_URL
 
     # Ensure the site has a baseline plan row before Stripe events arrive.
     await _upsert_site_plan(session, site_id=payload.site_id, plan="free")
@@ -124,8 +128,8 @@ async def create_checkout_session(
     try:
         checkout_session = stripe.checkout.Session.create(
             mode="subscription",
-            success_url=settings.STRIPE_CHECKOUT_SUCCESS_URL + "?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url=settings.STRIPE_CHECKOUT_CANCEL_URL,
+            success_url=success_url,
+            cancel_url=cancel_url,
             line_items=[{"price": price_id, "quantity": 1}],
             metadata={"site_id": payload.site_id, "plan": payload.plan},
             subscription_data={"metadata": {"site_id": payload.site_id, "plan": payload.plan}},

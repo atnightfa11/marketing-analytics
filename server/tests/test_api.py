@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from argon2 import PasswordHasher
 
-from app.models import Base, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, DashboardSite, DashboardUser, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
@@ -1350,6 +1350,7 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
         dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
         dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
         dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
     )
     dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
     dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "owner"
@@ -1359,6 +1360,7 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
     dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
     dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
     dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
     dashboard_auth_module._parse_auth_users.cache_clear()
     dashboard_auth_module._parse_site_access_map.cache_clear()
     try:
@@ -1451,6 +1453,7 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
             dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
             dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
         ) = original
 
 
@@ -1485,6 +1488,7 @@ async def test_dashboard_auth_multi_user_site_isolation(client):
         dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
         dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
         dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
     )
     dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
     dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
@@ -1496,6 +1500,7 @@ async def test_dashboard_auth_multi_user_site_isolation(client):
     dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = (
         f'{{"alice":["{site_alice}"],"bob":["{site_bob}"]}}'
     )
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
     dashboard_auth_module._parse_auth_users.cache_clear()
     dashboard_auth_module._parse_site_access_map.cache_clear()
     try:
@@ -1547,4 +1552,237 @@ async def test_dashboard_auth_multi_user_site_isolation(client):
             dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
             dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
             dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
         ) = original
+
+
+@pytest.mark.asyncio
+async def test_dashboard_auth_unclaimed_sites_require_explicit_opt_in(client):
+    site_id = "site-unclaimed-access"
+    base_start = datetime(2026, 4, 11, 17, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=3.0,
+        window_start=base_start,
+    )
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = '{"alice":"pw-alice"}'
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-unclaimed-site-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "alice", "password": "pw-alice"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        blocked = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert blocked.status_code == 403
+
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = True
+        allowed = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert allowed.status_code == 200
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_public_signup_free_creates_user_site_and_key(client):
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-public-signup-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        signup = client.post(
+            "/api/public/signup",
+            json={
+                "username": "signup_free_user",
+                "email": "signup-free@example.com",
+                "password": "strong-pass-123",
+                "site_name": "Signup Free Site",
+                "site_domain": "example-signup-free.com",
+                "plan": "free",
+            },
+        )
+        assert signup.status_code == 201
+        body = signup.json()
+        assert body["requires_checkout"] is False
+        assert body["checkout_url"] is None
+        assert body["site_id"].startswith("live-example-signup-free-com")
+        assert body["site_key"].startswith("vsk_")
+        assert body["access_token"]
+
+        async with async_session_factory() as session:
+            user = await session.get(DashboardUser, "signup_free_user")
+            assert user is not None
+            assert user.password_hash != "strong-pass-123"
+            site = await session.get(DashboardSite, body["site_id"])
+            assert site is not None
+            assert site.owner_username == "signup_free_user"
+            plan = await session.get(SitePlan, body["site_id"])
+            assert plan is not None
+            assert plan.plan == "free"
+
+        login = client.post("/api/auth/login", json={"username": "signup_free_user", "password": "strong-pass-123"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        assert token
+
+        own_metrics = client.get("/api/metrics", params={"site_id": body["site_id"]}, headers={"Authorization": f"Bearer {token}"})
+        assert own_metrics.status_code == 200
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_public_signup_standard_returns_checkout_url(client, monkeypatch):
+    from app.routers import public_signup as public_signup_router
+
+    original_auth = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+    )
+    original_stripe = (
+        public_signup_router.settings.STRIPE_SECRET_KEY,
+        public_signup_router.settings.STRIPE_STANDARD_PRICE_ID,
+        public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
+        public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-public-signup-standard-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    public_signup_router.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    public_signup_router.settings.STRIPE_STANDARD_PRICE_ID = "price_mock_standard"
+    public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL = "https://validanalytics.io/signup/complete"
+    public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL = "https://validanalytics.io/signup"
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+
+    class _FakeSession:
+        url = "https://checkout.stripe.test/session_123"
+
+    def _fake_checkout_create(**_kwargs):
+        return _FakeSession()
+
+    monkeypatch.setattr(public_signup_router.stripe.checkout.Session, "create", _fake_checkout_create)
+
+    try:
+        signup = client.post(
+            "/api/public/signup",
+            json={
+                "username": "signup_standard_user",
+                "email": "signup-standard@example.com",
+                "password": "strong-pass-456",
+                "site_name": "Signup Standard Site",
+                "site_domain": "example-signup-standard.com",
+                "plan": "standard",
+            },
+        )
+        assert signup.status_code == 201
+        body = signup.json()
+        assert body["requires_checkout"] is True
+        assert body["checkout_url"] == "https://checkout.stripe.test/session_123"
+        assert body["site_key"].startswith("vsk_")
+
+        async with async_session_factory() as session:
+            plan = await session.get(SitePlan, body["site_id"])
+            assert plan is not None
+            # Standard activates after Stripe webhook completes.
+            assert plan.plan == "free"
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        ) = original_auth
+        (
+            public_signup_router.settings.STRIPE_SECRET_KEY,
+            public_signup_router.settings.STRIPE_STANDARD_PRICE_ID,
+            public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
+            public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+        ) = original_stripe

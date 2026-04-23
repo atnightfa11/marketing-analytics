@@ -39,6 +39,8 @@ class RevokeTokensRequest(BaseModel):
 class CheckoutSessionRequest(BaseModel):
     site_id: str
     plan: Literal["standard", "pro"]
+    success_url: str | None = None
+    cancel_url: str | None = None
 
 
 class CheckoutSessionResponse(BaseModel):
@@ -82,6 +84,28 @@ class AuthLoginResponse(BaseModel):
 
 class AuthMeResponse(BaseModel):
     username: str
+
+
+class PublicSignupRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    email: str = Field(min_length=5, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    site_name: str = Field(min_length=1, max_length=255)
+    site_domain: str = Field(min_length=3, max_length=255)
+    plan: Literal["free", "standard"] = "free"
+
+
+class PublicSignupResponse(BaseModel):
+    username: str
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: dt.datetime
+    site_id: str
+    site_name: str
+    site_domain: str
+    site_key: str
+    checkout_url: str | None = None
+    requires_checkout: bool = False
 
 
 class PrivatizedEvent(BaseModel):

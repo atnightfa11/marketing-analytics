@@ -14,6 +14,8 @@ class Settings(BaseSettings):
   STRIPE_PRO_PRICE_ID: str | None = None
   STRIPE_CHECKOUT_SUCCESS_URL: str = Field(default="https://app.validanalytics.io/billing/success")
   STRIPE_CHECKOUT_CANCEL_URL: str = Field(default="https://app.validanalytics.io/billing/cancel")
+  STRIPE_SIGNUP_SUCCESS_URL: str = Field(default="https://validanalytics.io/signup/complete")
+  STRIPE_SIGNUP_CANCEL_URL: str = Field(default="https://validanalytics.io/signup")
   UPLOAD_TOKEN_TTL_SECONDS: int = Field(default=900)
   MIN_REPORTS_PER_WINDOW: int = Field(default=40)
   LIVE_WATERMARK_SECONDS: int = Field(default=120)
@@ -48,6 +50,7 @@ class Settings(BaseSettings):
   DASHBOARD_AUTH_TTL_SECONDS: int = Field(default=8 * 60 * 60)
   DASHBOARD_ALLOWED_SITE_IDS: str | None = None
   DASHBOARD_SITE_ACCESS_JSON: str | None = None
+  DASHBOARD_ALLOW_UNCLAIMED_SITES: bool = Field(default=False)
   expose_docs: bool = False
   cors_origins: list[str] = Field(
       default_factory=lambda: [
