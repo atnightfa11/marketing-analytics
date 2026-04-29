@@ -64,6 +64,7 @@ Set these environment variables on the backend service:
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
 - `ENABLE_PROD_SCHEDULER=true`
 - `PROD_SCHEDULER_HOUR_UTC=2`
+- `PROD_REDUCER_INTERVAL_MINUTES=60` (hourly reducer cadence)
 
 Optional tuning:
 
@@ -75,10 +76,11 @@ Privileged endpoint headers:
 
 - `POST /api/upload-token` and `POST /api/admin/*` require `X-Admin-Token`.
 - `POST /api/collect` requires `X-Collect-Token` (or `ADMIN_API_TOKEN` when `COLLECT_ENDPOINT_TOKEN` is unset).
+- Dashboard-protected reads (for example `/api/metrics`, `/api/aggregate`, `/api/breakdown`, `/api/forecast/{metric}`, `/api/jobs/status`) require `Authorization: Bearer <token>` from `/api/auth/login`.
 
 Stripe billing env vars:
 
-- `STRIPE_SECRET_KEY=sk_test_...`
+- `STRIPE_SECRET_KEY=sk_live_...` (production; use `sk_test_...` only in non-prod environments)
 - `STRIPE_WEBHOOK_SECRET=whsec_...` (from the Dashboard webhook endpoint, not Stripe CLI `listen`)
 - `STRIPE_STANDARD_PRICE_ID=price_...`
 - `STRIPE_PRO_PRICE_ID=price_...` (optional if Pro is hidden in UI)
@@ -103,6 +105,17 @@ Checkout endpoint:
 - Request body:
   - `site_id` (your internal site key, for example `live-validanalytics-io`)
   - `plan` (`standard` or `pro`)
+
+Public signup endpoint:
+
+- `POST /api/public/signup`
+- Request body:
+  - `username`, `email`, `password`
+  - `site_name`, `site_domain`
+  - `plan` (`free` or `standard`)
+- Behavior:
+  - `free`: returns `201` with `requires_checkout=false`
+  - `standard`: returns `201` with `requires_checkout=true` and `checkout_url`
 
 Domain routing:
 

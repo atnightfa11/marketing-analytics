@@ -23,19 +23,23 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 ## Dimension breakdowns
 
 - Endpoint: `GET /api/breakdown`
-- Dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`
+- Dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
 - Query params:
   - `site_id` (required)
   - `dimension` (required)
   - `start`, `end` (optional ISO dates; if omitted, defaults to last 30 days)
   - `limit` (optional, default `10`)
+  - `hostname` (optional exact host filter, for subdomain/site-section views)
 
 Breakdown definitions:
 
 - `pages`: from pageview `payload.url`, normalized to a path.
-- `sources`: from session `payload.referrer_bucket` (for example `direct`, `external`).
+- `sources`: from session/pageview/conversion attribution labels using `referrer_source` first, then `referrer_bucket`.
+  - Common normalization examples: `google.com -> Google`, `duckduckgo.com -> DuckDuckGo`, `reddit.com -> Reddit`, `x.com`/`t.co -> X`, `linkedin.com -> LinkedIn`
+  - Fallback bucket mapping: `direct -> Direct`, `external/referral -> Referral`, `organic -> Organic`, `social -> Social`, `email -> Email`, `paid -> Paid`
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
 - `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`), fallback `Unknown`.
+- `hostnames`: from normalized request hostname (`_hostname`) for subdomain-aware reporting.
 - `hour_of_day`: from server receive hour, aggregated across selected date range.
 - `day_of_week`: from server receive weekday, aggregated across selected date range.
 
@@ -52,6 +56,7 @@ Current caveats:
   - `devices`: minimum 2 pageviews
   - `countries`: minimum 3 pageviews
   - `conversions`: minimum 2 conversions
+  - `hostnames`: minimum 1 session
 - Pro plan currently returns empty dimension rows (aggregate totals only). v2 target: local-DP sparse histograms with top-N + "Insufficient data for privacy" gating.
 
 Quality notes:

@@ -1,521 +1,2261 @@
-openapi: 3.1.0
-info:
-  title: Marketing Analytics API
-  version: "1.0.0"
-  description: >
-    Local differential privacy marketing analytics API. Tokens scope uploads per site
-    and origin, and all reports are shuffled, delayed, and aggregated before publication.
-servers:
-  - url: https://api.localdp.example.com
-paths:
-  /api/upload-token:
-    post:
-      summary: Issue a short-lived upload token
-      operationId: issueUploadToken
-      tags: [tokens]
-      parameters:
-        - in: header
-          name: X-Admin-Token
-          schema:
-            type: string
-          required: true
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UploadTokenRequest'
-      responses:
-        '200':
-          description: Token issued
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UploadTokenResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /api/admin/revoke-token:
-    post:
-      summary: Revoke a single upload token by jti or hash
-      operationId: revokeToken
-      tags: [admin]
-      parameters:
-        - in: header
-          name: X-Admin-Token
-          schema:
-            type: string
-          required: true
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RevokeTokenRequest'
-      responses:
-        '204':
-          description: Token revoked
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /api/admin/revoke-tokens:
-    post:
-      summary: Bulk revoke tokens for a site
-      operationId: revokeTokens
-      tags: [admin]
-      parameters:
-        - in: header
-          name: X-Admin-Token
-          schema:
-            type: string
-          required: true
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RevokeTokensRequest'
-      responses:
-        '204':
-          description: All matching tokens revoked
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /api/shuffle:
-    post:
-      summary: Accept shuffled, locally privatized batches
-      operationId: shuffleIngest
-      tags: [ingest]
-      parameters:
-        - in: header
-          name: Origin
-          schema:
-            type: string
-          required: true
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ShuffleRequest'
-      responses:
-        '202':
-          description: Accepted for delayed ingestion
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '429':
-          $ref: '#/components/responses/RateLimited'
-  /api/collect:
-    post:
-      summary: Internal collector endpoint for shuffled payloads
-      operationId: collectReports
-      tags: [ingest]
-      parameters:
-        - in: header
-          name: X-Collect-Token
-          schema:
-            type: string
-          required: true
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CollectRequest'
-      responses:
-        '202':
-          description: Batch persisted
-        '409':
-          description: Payload rejected because it is stale
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-  /api/metrics:
-    get:
-      summary: Retrieve KPIs with variance, SE, and confidence intervals
-      operationId: getMetrics
-      tags: [metrics]
-      parameters:
-        - in: query
-          name: site_id
-          required: true
-          schema:
-            type: string
-        - in: query
-          name: start
-          schema:
-            type: string
-            format: date-time
-        - in: query
-          name: end
-          schema:
-            type: string
-            format: date-time
-        - in: query
-          name: metrics
-          schema:
-            type: array
-            items:
-              $ref: '#/components/schemas/MetricKind'
-      responses:
-        '200':
-          description: Aggregated KPIs
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MetricsResponse'
-  /api/aggregate:
-    get:
-      summary: Return DP windows for a metric
-      operationId: getAggregates
-      tags: [metrics]
-      parameters:
-        - in: query
-          name: site_id
-          required: true
-          schema:
-            type: string
-        - in: query
-          name: metric
-          required: true
-          schema:
-            $ref: '#/components/schemas/MetricKind'
-        - in: query
-          name: window
-          schema:
-            type: string
-            enum: [live, standard]
-            default: standard
-      responses:
-        '200':
-          description: Windowed aggregates
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AggregateResponse'
-  /api/forecast/{metric}:
-    get:
-      summary: Retrieve forecast bands and anomaly flags
-      operationId: getForecast
-      tags: [forecast]
-      parameters:
-        - in: path
-          name: metric
-          required: true
-          schema:
-            $ref: '#/components/schemas/MetricKind'
-        - in: query
-          name: site_id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Forecast available
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ForecastResponse'
-        '204':
-          description: Not enough history to forecast
-  /api/alert/webhook:
-    post:
-      summary: Generic alert webhook receiver
-      operationId: postAlert
-      tags: [alerts]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AlertWebhookPayload'
-      responses:
-        '202':
-          description: Alert queued
-  /health/liveness:
-    get:
-      summary: Liveness probe
-      operationId: liveness
-      tags: [health]
-      responses:
-        '200':
-          description: Service is live
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-  /health/readiness:
-    get:
-      summary: Readiness probe
-      operationId: readiness
-      tags: [health]
-      responses:
-        '200':
-          description: Service is ready
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-components:
-  schemas:
-    UploadTokenRequest:
-      type: object
-      required: [site_id, allowed_origin, epsilon_budget, sampling_rate]
-      properties:
-        site_id:
-          type: string
-        allowed_origin:
-          type: string
-          description: Exact origin or fnmatch-compatible wildcard
-        epsilon_budget:
-          type: number
-          format: float
-          minimum: 0.01
-        sampling_rate:
-          type: number
-          minimum: 0
-          maximum: 1
-        ttl_seconds:
-          type: integer
-          minimum: 60
-          maximum: 3600
-    UploadTokenResponse:
-      type: object
-      required: [token, expires_at, jti]
-      properties:
-        token:
-          type: string
-          description: Signed token string for Authorization header
-        expires_at:
-          type: string
-          format: date-time
-        jti:
-          type: string
-    RevokeTokenRequest:
-      type: object
-      properties:
-        jti:
-          type: string
-        token_hash:
-          type: string
-      oneOf:
-        - required: [jti]
-        - required: [token_hash]
-    RevokeTokensRequest:
-      type: object
-      required: [site_id]
-      properties:
-        site_id:
-          type: string
-    ShuffleRequest:
-      type: object
-      required: [token, nonce, batch]
-      properties:
-        token:
-          type: string
-          description: Upload token (Authorization bearer token is preferred)
-        nonce:
-          type: string
-          description: Unique per batch nonce (jti)
-        batch:
-          type: array
-          minItems: 1
-          items:
-            $ref: '#/components/schemas/PrivatizedEvent'
-    PrivatizedEvent:
-      type: object
-      required:
-        - site_id
-        - kind
-        - payload
-        - epsilon_used
-        - sampling_rate
-        - client_timestamp
-      properties:
-        site_id:
-          type: string
-        kind:
-          $ref: '#/components/schemas/MetricKind'
-        payload:
-          type: object
-          additionalProperties: true
-        epsilon_used:
-          type: number
-        sampling_rate:
-          type: number
-        client_timestamp:
-          type: string
-          format: date-time
-    CollectRequest:
-      type: object
-      required: [site_id, server_received_at, reports]
-      properties:
-        site_id:
-          type: string
-        server_received_at:
-          type: string
-          format: date-time
-        reports:
-          type: array
-          items:
-            $ref: '#/components/schemas/PrivatizedEvent'
-    MetricsResponse:
-      type: object
-      required: [site_id, metrics]
-      properties:
-        site_id:
-          type: string
-        metrics:
-          type: array
-          items:
-            $ref: '#/components/schemas/MetricStatistic'
-    MetricStatistic:
-      type: object
-      required:
-        - metric
-        - value
-        - variance
-        - standard_error
-        - ci80
-        - ci95
-        - has_anomaly
-      properties:
-        metric:
-          $ref: '#/components/schemas/MetricKind'
-        value:
-          type: number
-        variance:
-          type: number
-        standard_error:
-          type: number
-        ci80:
-          $ref: '#/components/schemas/ConfidenceInterval'
-        ci95:
-          $ref: '#/components/schemas/ConfidenceInterval'
-        has_anomaly:
-          type: boolean
-          default: false
-    ConfidenceInterval:
-      type: object
-      required: [low, high]
-      properties:
-        low:
-          type: number
-        high:
-          type: number
-    AggregateResponse:
-      type: object
-      required: [site_id, metric, windows]
-      properties:
-        site_id:
-          type: string
-        metric:
-          $ref: '#/components/schemas/MetricKind'
-        windows:
-          type: array
-          items:
-            $ref: '#/components/schemas/WindowAggregate'
-    WindowAggregate:
-      type: object
-      required:
-        - window_start
-        - window_end
-        - value
-        - variance
-        - ci80
-        - ci95
-      properties:
-        window_start:
-          type: string
-          format: date-time
-        window_end:
-          type: string
-          format: date-time
-        value:
-          type: number
-        variance:
-          type: number
-        ci80:
-          $ref: '#/components/schemas/ConfidenceInterval'
-        ci95:
-          $ref: '#/components/schemas/ConfidenceInterval'
-    ForecastResponse:
-      type: object
-      required:
-        - site_id
-        - metric
-        - forecast
-        - mape
-        - has_anomaly
-        - z_score
-      properties:
-        site_id:
-          type: string
-        metric:
-          $ref: '#/components/schemas/MetricKind'
-        forecast:
-          type: array
-          items:
-            $ref: '#/components/schemas/ForecastPoint'
-        mape:
-          type: number
-        has_anomaly:
-          type: boolean
-        z_score:
-          type: number
-    ForecastPoint:
-      type: object
-      required:
-        - day
-        - yhat
-        - yhat_lower
-        - yhat_upper
-      properties:
-        day:
-          type: string
-          format: date
-        yhat:
-          type: number
-        yhat_lower:
-          type: number
-        yhat_upper:
-          type: number
-    AlertWebhookPayload:
-      type: object
-      required: [source, severity, message, metadata]
-      properties:
-        source:
-          type: string
-        severity:
-          type: string
-          enum: [info, warning, critical]
-        message:
-          type: string
-        metadata:
-          type: object
-          additionalProperties: true
-    HealthResponse:
-      type: object
-      required: [status]
-      properties:
-        status:
-          type: string
-          enum: [ok]
-    MetricKind:
-      type: string
-      enum:
-        - uniques
-        - pageviews
-        - sessions
-        - conversions
-        - bounce_rate
-        - avg_time_on_site
-  responses:
-    BadRequest:
-      description: Invalid request
-    Unauthorized:
-      description: Authorization failed
-    NotFound:
-      description: Resource not found
-    RateLimited:
-      description: Request was throttled by the unified token bucket
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Marketing Analytics",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "summary": "Metrics",
+        "description": "Endpoint that serves Prometheus metrics.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/upload-token": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Create Upload Token",
+        "operationId": "create_upload_token_api_upload_token_post",
+        "parameters": [
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/status": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Status",
+        "operationId": "auth_status_api_auth_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Login",
+        "operationId": "auth_login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthLoginResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Auth Me",
+        "operationId": "auth_me_api_auth_me_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthMeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/revoke-token": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke Token",
+        "operationId": "revoke_token_api_admin_revoke_token_post",
+        "parameters": [
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/revoke-tokens": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke Tokens",
+        "operationId": "revoke_tokens_api_admin_revoke_tokens_post",
+        "parameters": [
+          {
+            "name": "X-Admin-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeTokensRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shuffle": {
+      "post": {
+        "tags": [
+          "ingest"
+        ],
+        "summary": "Shuffle Ingest",
+        "operationId": "shuffle_ingest_api_shuffle_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShuffleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/collect": {
+      "post": {
+        "tags": [
+          "ingest"
+        ],
+        "summary": "Collect",
+        "operationId": "collect_api_collect_post",
+        "parameters": [
+          {
+            "name": "X-Collect-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Collect-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Get Metrics",
+        "operationId": "get_metrics_api_metrics_get",
+        "parameters": [
+          {
+            "name": "site_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Site Id"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "name": "metrics",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Metrics"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/aggregate": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Aggregate",
+        "operationId": "aggregate_api_aggregate_get",
+        "parameters": [
+          {
+            "name": "site_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Site Id"
+            }
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Metric"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(live|standard)$",
+              "default": "standard",
+              "title": "Window"
+            }
+          },
+          {
+            "name": "hostname",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Hostname"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AggregateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/breakdown": {
+      "get": {
+        "tags": [
+          "metrics"
+        ],
+        "summary": "Breakdown",
+        "operationId": "breakdown_api_breakdown_get",
+        "parameters": [
+          {
+            "name": "site_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Site Id"
+            }
+          },
+          {
+            "name": "dimension",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "pages",
+                "sources",
+                "devices",
+                "countries",
+                "conversions",
+                "hour_of_day",
+                "day_of_week",
+                "hostnames"
+              ],
+              "type": "string",
+              "title": "Dimension"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 10,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "name": "hostname",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Hostname"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BreakdownResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/forecast/{metric}": {
+      "get": {
+        "tags": [
+          "forecast"
+        ],
+        "summary": "Forecast",
+        "operationId": "forecast_api_forecast__metric__get",
+        "parameters": [
+          {
+            "name": "metric",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Metric"
+            }
+          },
+          {
+            "name": "site_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Site Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/historical": {
+      "post": {
+        "tags": [
+          "imports"
+        ],
+        "summary": "Import Historical",
+        "operationId": "import_historical_api_import_historical_post",
+        "parameters": [
+          {
+            "name": "X-Upload-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Upload-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoricalImportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoricalImportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/import/historical-csv": {
+      "post": {
+        "tags": [
+          "imports"
+        ],
+        "summary": "Import Historical Csv",
+        "operationId": "import_historical_csv_api_import_historical_csv_post",
+        "parameters": [
+          {
+            "name": "X-Upload-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Upload-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoricalCsvImportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoricalImportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkout/session": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Create Checkout Session",
+        "operationId": "create_checkout_session_api_checkout_session_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckoutSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stripe/webhook": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Stripe Webhook",
+        "operationId": "stripe_webhook_api_stripe_webhook_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/signup": {
+      "post": {
+        "tags": [
+          "public-signup"
+        ],
+        "summary": "Public Signup",
+        "operationId": "public_signup_api_public_signup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicSignupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSignupResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sdk/bootstrap": {
+      "post": {
+        "tags": [
+          "sdk"
+        ],
+        "summary": "Sdk Bootstrap",
+        "operationId": "sdk_bootstrap_api_sdk_bootstrap_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SdkBootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SdkBootstrapResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/status": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Jobs Status",
+        "operationId": "jobs_status_api_jobs_status_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alert/webhook": {
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "summary": "Webhook",
+        "operationId": "webhook_api_alert_webhook_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertWebhookPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/liveness": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Liveness",
+        "operationId": "liveness_health_liveness_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/readiness": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Readiness",
+        "operationId": "readiness_health_readiness_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AggregateResponse": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/WindowAggregate"
+            },
+            "type": "array",
+            "title": "Windows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "metric",
+          "windows"
+        ],
+        "title": "AggregateResponse"
+      },
+      "AlertWebhookPayload": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ],
+            "title": "Severity"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "metadata": {
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "severity",
+          "message",
+          "metadata"
+        ],
+        "title": "AlertWebhookPayload"
+      },
+      "AuthLoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "AuthLoginRequest"
+      },
+      "AuthLoginResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "token_type": {
+            "const": "bearer",
+            "title": "Token Type",
+            "default": "bearer"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "expires_at"
+        ],
+        "title": "AuthLoginResponse"
+      },
+      "AuthMeResponse": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "title": "AuthMeResponse"
+      },
+      "AuthStatusResponse": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "AuthStatusResponse"
+      },
+      "BreakdownResponse": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "pages",
+              "sources",
+              "devices",
+              "countries",
+              "conversions",
+              "hour_of_day",
+              "day_of_week",
+              "hostnames"
+            ],
+            "title": "Dimension"
+          },
+          "total": {
+            "type": "number",
+            "title": "Total"
+          },
+          "primary_metric": {
+            "type": "string",
+            "title": "Primary Metric"
+          },
+          "metric_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Metric Keys"
+          },
+          "totals": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Totals"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/BreakdownRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "dimension",
+          "total",
+          "primary_metric",
+          "rows"
+        ],
+        "title": "BreakdownResponse"
+      },
+      "BreakdownRow": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "BreakdownRow"
+      },
+      "CheckoutSessionRequest": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "plan": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "pro"
+            ],
+            "title": "Plan"
+          },
+          "success_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Success Url"
+          },
+          "cancel_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "plan"
+        ],
+        "title": "CheckoutSessionRequest"
+      },
+      "CheckoutSessionResponse": {
+        "properties": {
+          "checkout_url": {
+            "type": "string",
+            "title": "Checkout Url"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "checkout_url",
+          "session_id"
+        ],
+        "title": "CheckoutSessionResponse"
+      },
+      "CollectRequest": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "server_received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Server Received At"
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/components/schemas/PrivatizedEvent"
+            },
+            "type": "array",
+            "title": "Reports"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "server_received_at",
+          "reports"
+        ],
+        "title": "CollectRequest"
+      },
+      "ConfidenceInterval": {
+        "properties": {
+          "low": {
+            "type": "number",
+            "title": "Low"
+          },
+          "high": {
+            "type": "number",
+            "title": "High"
+          }
+        },
+        "type": "object",
+        "required": [
+          "low",
+          "high"
+        ],
+        "title": "ConfidenceInterval"
+      },
+      "ForecastPoint": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "yhat": {
+            "type": "number",
+            "title": "Yhat"
+          },
+          "yhat_lower": {
+            "type": "number",
+            "title": "Yhat Lower"
+          },
+          "yhat_upper": {
+            "type": "number",
+            "title": "Yhat Upper"
+          }
+        },
+        "type": "object",
+        "required": [
+          "day",
+          "yhat",
+          "yhat_lower",
+          "yhat_upper"
+        ],
+        "title": "ForecastPoint"
+      },
+      "ForecastResponse": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastPoint"
+            },
+            "type": "array",
+            "title": "Forecast"
+          },
+          "mape": {
+            "type": "number",
+            "title": "Mape"
+          },
+          "has_anomaly": {
+            "type": "boolean",
+            "title": "Has Anomaly"
+          },
+          "z_score": {
+            "type": "number",
+            "title": "Z Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "metric",
+          "forecast",
+          "mape",
+          "has_anomaly",
+          "z_score"
+        ],
+        "title": "ForecastResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HealthResponse"
+      },
+      "HistoricalCsvImportRequest": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "csv_text": {
+            "type": "string",
+            "title": "Csv Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "csv_text"
+        ],
+        "title": "HistoricalCsvImportRequest"
+      },
+      "HistoricalImportRequest": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/HistoricalImportRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "rows"
+        ],
+        "title": "HistoricalImportRequest"
+      },
+      "HistoricalImportResponse": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "imported_rows": {
+            "type": "integer",
+            "title": "Imported Rows"
+          },
+          "reduced_days": {
+            "type": "integer",
+            "title": "Reduced Days"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "imported_rows",
+          "reduced_days"
+        ],
+        "title": "HistoricalImportResponse"
+      },
+      "HistoricalImportRow": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "metric": {
+            "type": "string",
+            "enum": [
+              "uniques",
+              "pageviews",
+              "sessions",
+              "conversions",
+              "revenue"
+            ],
+            "title": "Metric"
+          },
+          "value": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "day",
+          "metric",
+          "value"
+        ],
+        "title": "HistoricalImportRow"
+      },
+      "MetricStatistic": {
+        "properties": {
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "variance": {
+            "type": "number",
+            "title": "Variance"
+          },
+          "standard_error": {
+            "type": "number",
+            "title": "Standard Error"
+          },
+          "snr": {
+            "type": "number",
+            "title": "Snr"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "ci80": {
+            "$ref": "#/components/schemas/ConfidenceInterval"
+          },
+          "ci95": {
+            "$ref": "#/components/schemas/ConfidenceInterval"
+          },
+          "has_anomaly": {
+            "type": "boolean",
+            "title": "Has Anomaly",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "metric",
+          "value",
+          "variance",
+          "standard_error",
+          "snr",
+          "ci80",
+          "ci95"
+        ],
+        "title": "MetricStatistic"
+      },
+      "MetricsResponse": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/MetricStatistic"
+            },
+            "type": "array",
+            "title": "Metrics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "metrics"
+        ],
+        "title": "MetricsResponse"
+      },
+      "PrivatizedEvent": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "uniques",
+              "pageviews",
+              "sessions",
+              "conversions",
+              "revenue"
+            ],
+            "title": "Kind"
+          },
+          "payload": {
+            "type": "object",
+            "title": "Payload"
+          },
+          "epsilon_used": {
+            "type": "number",
+            "title": "Epsilon Used"
+          },
+          "sampling_rate": {
+            "type": "number",
+            "title": "Sampling Rate"
+          },
+          "client_timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Client Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "kind",
+          "payload",
+          "epsilon_used",
+          "sampling_rate",
+          "client_timestamp"
+        ],
+        "title": "PrivatizedEvent"
+      },
+      "PublicSignupRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 3,
+            "title": "Username"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 5,
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Password"
+          },
+          "site_name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Site Name"
+          },
+          "site_domain": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 3,
+            "title": "Site Domain"
+          },
+          "plan": {
+            "type": "string",
+            "enum": [
+              "free",
+              "standard"
+            ],
+            "title": "Plan",
+            "default": "free"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "email",
+          "password",
+          "site_name",
+          "site_domain"
+        ],
+        "title": "PublicSignupRequest"
+      },
+      "PublicSignupResponse": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "token_type": {
+            "const": "bearer",
+            "title": "Token Type",
+            "default": "bearer"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "site_name": {
+            "type": "string",
+            "title": "Site Name"
+          },
+          "site_domain": {
+            "type": "string",
+            "title": "Site Domain"
+          },
+          "site_key": {
+            "type": "string",
+            "title": "Site Key"
+          },
+          "checkout_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkout Url"
+          },
+          "requires_checkout": {
+            "type": "boolean",
+            "title": "Requires Checkout",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "access_token",
+          "expires_at",
+          "site_id",
+          "site_name",
+          "site_domain",
+          "site_key"
+        ],
+        "title": "PublicSignupResponse"
+      },
+      "RevokeTokenRequest": {
+        "properties": {
+          "jti": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jti"
+          },
+          "token_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Hash"
+          }
+        },
+        "type": "object",
+        "title": "RevokeTokenRequest"
+      },
+      "RevokeTokensRequest": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id"
+        ],
+        "title": "RevokeTokensRequest"
+      },
+      "SdkBootstrapConfig": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "sampling_rate": {
+            "type": "number",
+            "title": "Sampling Rate"
+          },
+          "epsilon_budget": {
+            "type": "number",
+            "title": "Epsilon Budget"
+          },
+          "shuffle_url": {
+            "type": "string",
+            "title": "Shuffle Url"
+          },
+          "token_ttl_seconds": {
+            "type": "integer",
+            "title": "Token Ttl Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "sampling_rate",
+          "epsilon_budget",
+          "shuffle_url",
+          "token_ttl_seconds"
+        ],
+        "title": "SdkBootstrapConfig"
+      },
+      "SdkBootstrapRequest": {
+        "properties": {
+          "site_key": {
+            "type": "string",
+            "minLength": 12,
+            "title": "Site Key"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_key"
+        ],
+        "title": "SdkBootstrapRequest"
+      },
+      "SdkBootstrapResponse": {
+        "properties": {
+          "upload_token": {
+            "type": "string",
+            "title": "Upload Token"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "config": {
+            "$ref": "#/components/schemas/SdkBootstrapConfig"
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_token",
+          "expires_at",
+          "config"
+        ],
+        "title": "SdkBootstrapResponse"
+      },
+      "ShuffleRequest": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "nonce": {
+            "type": "string",
+            "title": "Nonce"
+          },
+          "batch": {
+            "items": {
+              "$ref": "#/components/schemas/PrivatizedEvent"
+            },
+            "type": "array",
+            "title": "Batch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "nonce",
+          "batch"
+        ],
+        "title": "ShuffleRequest"
+      },
+      "UploadTokenRequest": {
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "title": "Site Id"
+          },
+          "allowed_origin": {
+            "type": "string",
+            "title": "Allowed Origin"
+          },
+          "epsilon_budget": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Epsilon Budget"
+          },
+          "sampling_rate": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Sampling Rate"
+          },
+          "ttl_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3600.0,
+                "minimum": 60.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Seconds"
+          },
+          "plan": {
+            "type": "string",
+            "enum": [
+              "free",
+              "standard",
+              "pro"
+            ],
+            "title": "Plan",
+            "default": "free"
+          }
+        },
+        "type": "object",
+        "required": [
+          "site_id",
+          "allowed_origin",
+          "epsilon_budget",
+          "sampling_rate"
+        ],
+        "title": "UploadTokenRequest"
+      },
+      "UploadTokenResponse": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "jti": {
+            "type": "string",
+            "title": "Jti"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "expires_at",
+          "jti"
+        ],
+        "title": "UploadTokenResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WindowAggregate": {
+        "properties": {
+          "window_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Window End"
+          },
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "variance": {
+            "type": "number",
+            "title": "Variance"
+          },
+          "ci80": {
+            "$ref": "#/components/schemas/ConfidenceInterval"
+          },
+          "ci95": {
+            "$ref": "#/components/schemas/ConfidenceInterval"
+          }
+        },
+        "type": "object",
+        "required": [
+          "window_start",
+          "window_end",
+          "value",
+          "variance",
+          "ci80",
+          "ci95"
+        ],
+        "title": "WindowAggregate"
+      }
+    }
+  }
+}

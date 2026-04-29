@@ -1,90 +1,49 @@
-# V1 Readiness Checklist (Free + Standard launch)
+# V1 Readiness Checklist (Updated April 29, 2026)
 
-This checklist reflects the **current repository state** and the shortest path to launch a stable V1.
+This checklist reflects what is live in production and what remains before broader public launch.
 
-## 1) Current status snapshot
+## Verified working now
 
-### Implemented now
-- API, reducer, and dashboard are functional for a single ingest path.
-- Prophet forecasting job exists with configurable horizon (`FORECAST_HORIZON_DAYS`) and daily scheduler support via `ENABLE_PROD_SCHEDULER`. 
-- Dashboard supports metric/range selection and forecast display controls.
+- [x] Plan-aware ingestion and serving (`free`, `standard`; `pro` behind flag).
+- [x] Central-DP reducer path for Standard.
+- [x] Public signup endpoint (`POST /api/public/signup`) for Free + Standard.
+- [x] Stripe live checkout session creation for Standard (`/api/checkout/session` and signup checkout URL flow).
+- [x] Stripe webhook endpoint live and signature-validated (`/api/stripe/webhook`).
+- [x] Dashboard auth enabled and site-access authorization hooks present.
+- [x] Readiness endpoint checks database (`/health/readiness`).
+- [x] Reducer cadence supports hourly operation (`PROD_REDUCER_INTERVAL_MINUTES`, default `60`).
 
-### Still pending for true Free + Standard launch
-- Pro ingest/reduce path remains feature-flagged off (`ENABLE_PRO_INGEST=false` for launch).
-- Historical import currently supports daily aggregate CSV/JSON rows (`day, metric, value`) and should be expanded for richer dimension imports post-v1.
+## Still required before broader launch
 
----
+- [ ] Complete one real Standard checkout and verify webhook plan flip (`site_plan.plan=standard`) for the purchased site.
+- [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
+- [ ] Finalize ownership mapping policy for beta users (`DASHBOARD_SITE_ACCESS_JSON`) and document onboarding steps.
+- [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
+- [ ] Run a full launch smoke in production from clean browser:
+  - free signup -> dashboard access
+  - standard signup -> checkout -> return -> upgraded plan
+  - snippet installed -> first data visible
 
-## 2) Launch-blocking engineering tasks
+## Required production environment
 
-### A. Tier data model and ingest branching
-- [x] Add/verify `site_plan` model and migrations.
-- [x] Add `raw_reports` model + migration.
-- [x] Branch ingest:
-  - Free/Standard -> store in `raw_reports`
-  - Pro (waitlist) -> keep LDP path behind feature flag.
-- [x] Add plan-aware rate limits:
-  - Free: 500 daily visits / lower API bucket
-  - Standard: 5,000 daily visits / higher bucket.
+- [x] `DATABASE_URL`
+- [x] `UPLOAD_TOKEN_SECRET`
+- [x] `ADMIN_API_TOKEN`
+- [x] `COLLECT_ENDPOINT_TOKEN`
+- [x] `SESSION_HMAC_SECRET`
+- [x] `AGGREGATE_DP_NOISE_SECRET`
+- [x] `ENABLE_PROD_SCHEDULER=true`
+- [x] `PROD_REDUCER_INTERVAL_MINUTES=60` (or desired hourly cadence)
+- [x] `PROD_SCHEDULER_HOUR_UTC`
+- [x] `STRIPE_SECRET_KEY` (live)
+- [x] `STRIPE_WEBHOOK_SECRET`
+- [x] `STRIPE_STANDARD_PRICE_ID`
+- [x] `STRIPE_SIGNUP_SUCCESS_URL`
+- [x] `STRIPE_SIGNUP_CANCEL_URL`
+- [x] `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended)
 
-### B. Reducer and serving
-- [x] Add Free path: raw aggregate publishing.
-- [x] Add Standard path: aggregate-noise DP + epsilon log.
-- [x] Make `/api/metrics`, `/api/aggregate`, `/api/forecast` resolve by site plan.
-- [x] Keep forecast enabled for Standard by default.
+## Nice-to-have immediately after launch
 
-### C. Forecast operations
-- [ ] Keep default dashboard forecast view at 30 days.
-- [ ] Generate enough forecast rows for UI presets (30/60/90 + quarters).
-- [ ] Run daily schedule (inside API server for V1).
-- [ ] Add job-health logging/alerting.
-
-### D. Imports (required for customer migration)
-- [x] Create CSV import format (date, metric, value minimum).
-- [x] Build import endpoint/script + validation.
-- [x] Re-run reducer/forecast after import.
-
-### E. Tests and release checks
-- [x] Add integration tests for Free + Standard flows.
-- [x] Add scheduler smoke test (daily reduce + forecast).
-- [ ] Validate dashboard against both demo site and live site IDs.
-
----
-
-## 3) Infrastructure and deployment checklist
-
-### Required environment
-- [ ] `DATABASE_URL` with async driver (`postgresql+asyncpg://...`).
-- [ ] `UPLOAD_TOKEN_SECRET` (rotate before launch if previously shared).
-- [ ] `ADMIN_API_TOKEN` configured for privileged endpoints (`/api/upload-token`, `/api/admin/*`).
-- [ ] `COLLECT_ENDPOINT_TOKEN` configured for `/api/collect` (and set on any internal collector/proxy).
-- [ ] `ENABLE_PROD_SCHEDULER=true` and `PROD_SCHEDULER_HOUR_UTC` set.
-- [ ] `FORECAST_HORIZON_DAYS=90` (recommended to support quarter presets).
-
-### Domain and routing
-- [ ] `api.validanalytics.io` -> Railway backend (CNAME).
-- [ ] `app.validanalytics.io` -> dashboard deployment.
-- [ ] CORS allow-list includes `https://app.validanalytics.io` and `https://validanalytics.io` where needed.
-
-### Billing (can land after technical go-live prep)
-- [ ] Stripe keys and webhook secret.
-- [ ] Price IDs for Standard (launch) and Pro (waitlist).
-- [x] Webhook -> update `site_plan`.
-
----
-
-## 4) Suggested execution order (fastest path)
-1. Tier schema + ingest split (`site_plan`/`raw_reports`).
-2. Free/Standard reducer + plan-aware serving.
-3. Forecast scheduler hardening + horizon coverage for UI presets.
-4. Historical import path.
-5. Integration test pass + release hardening.
-
----
-
-## 5) Go-live definition for V1
-V1 is ready when all are true:
-- Free and Standard data paths both work end-to-end (ingest -> reduce -> serve -> dashboard).
-- Daily forecast job runs automatically and returns forecast data for active metrics.
-- Historical import works for onboarding at least one external dataset.
-- Dashboard can switch between demo site and live site without code changes.
+- [ ] Alerting for failed reducer/forecast jobs (beyond status polling).
+- [ ] Expanded migration import docs and validation examples.
+- [ ] Pro/Enterprise v2 privacy docs for zero-access local/hybrid DP.

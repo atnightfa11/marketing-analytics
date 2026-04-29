@@ -3,7 +3,7 @@
 ## Data Protection Impact Assessment (DPIA) Highlights
 
 - **Purpose**: Provide aggregate marketing KPIs, anomaly flags, and forecasts without processing identifiable personal data. Privacy guarantees vary by plan and are enforced in the pipeline.
-- **Lawfulness**: Analytics relies on legitimate interests with strong privacy safeguards. No raw identifiers are stored or processed server-side.
+- **Lawfulness**: Analytics relies on legitimate interests with strong privacy safeguards. No direct personal identifiers are stored server-side; transient request metadata is processed only to derive coarse buckets and rotating HMAC keys.
 - **Data Minimization**: The SDK stores no cookies or browser local-storage identifiers, honors browser privacy signals (DNT/GPC) by default, and strips click-id parameters (e.g. `gclid`, `msclkid`, `fbclid`) from tracked page URLs while preserving UTM/source campaign tags. The backend stores only coarse dimensions (path, source bucket/domain, device, country) plus short-lived HMAC keys that rotate by session window/day for aggregation.
 - **Tiered DP Controls**:
   - Free: raw aggregates computed from non-identifying payloads (no local DP).

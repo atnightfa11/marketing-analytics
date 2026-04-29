@@ -20,7 +20,12 @@
 - Verify upload token has not expired.
 - `/api/shuffle` now requires an `Origin` header that matches the token origin pattern.
 - SDK automatically refreshes once; if still failing, rotate site key.
-- If dashboard auth is enabled, `/api/metrics`, `/api/aggregate`, and `/api/forecast` require a valid bearer token from `/api/auth/login`.
+- If dashboard auth is enabled, dashboard/API reads require a valid bearer token from `/api/auth/login`:
+  - `/api/metrics`
+  - `/api/aggregate`
+  - `/api/forecast/{metric}`
+  - `/api/breakdown`
+  - `/api/jobs/status`
 
 ## 403 Forbidden
 

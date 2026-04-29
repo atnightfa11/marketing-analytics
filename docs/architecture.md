@@ -2,106 +2,67 @@
 
 ```mermaid
 flowchart LR
-    SDK["Browser SDK"] --> Shuffle["Shuffle Relay / Collector"]
-    Shuffle -->|Free + Standard raw| Raw["raw_reports (Postgres)"]
-    Shuffle -->|Pro LDP| Ldp["ldp_reports (Postgres)"]
-    Raw --> ReduceFree["Reducer (raw aggregates)"]
-    Raw --> ReduceStd["Reducer (aggregate-noise DP)"]
-    Ldp --> ReducePro["Reducer (LDP decode)"]
-    ReduceFree --> AggFree["dp_windows (free)"]
-    ReduceStd --> AggStd["dp_windows (standard)"]
-    ReducePro --> AggPro["dp_windows (pro)"]
-    AggFree --> Forecast["Prophet + EWMA"]
-    AggStd --> Forecast
-    AggPro --> Forecast
-    Forecast --> Dashboard["Dashboard + API"]
+    SDK["Browser SDK"] --> Shuffle["/api/shuffle"]
+    Shuffle -->|Free + Standard| Raw["raw_reports (Postgres)"]
+    Shuffle -->|Pro (if enabled)| Ldp["ldp_reports (Postgres)"]
+    Raw --> Reduce["Reducer"]
+    Ldp --> Reduce
+    Reduce --> Windows["dp_windows"]
+    Windows --> Forecast["Forecast training"]
+    Windows --> API["Metrics API + Dashboard"]
 ```
 
-Valid supports three privacy tiers using plan-aware branching at ingestion, reduction, and serving:
+Valid uses plan-aware ingest and reduction:
 
-- **Free**: Client sends raw events without LDP. Reducer writes raw aggregates directly.
-- **Standard DP**: Client sends raw events; reducer adds aggregate noise and tracks epsilon spend.
-- **Standard DP** additionally derives a server-side ephemeral HMAC session key from coarse context (site + time bucket + coarse fingerprint). Raw IP/UA/referrer are not persisted.
-- **Pro**: Client applies local DP; reducer decodes randomized response and aggregates LDP output.
+- **Free**: raw aggregates from coarse, non-identifying payloads.
+- **Standard**: raw ingest + central-DP aggregate noise at reduce/publish time.
+- **Pro**: local-DP (RR) ingest path (currently feature-flagged with `ENABLE_PRO_INGEST`).
 
-Current vs planned
+## Ingest
 
-- **Current**: Single ingest path writes LDP reports and aggregates from randomized response.
-- **Planned**: Plan-aware branching (Free raw, Standard aggregate-noise DP, Pro LDP), raw_reports table, and plan-based serving.
+- SDK posts shuffled batches to `POST /api/shuffle`.
+- API validates short-lived upload token + origin, replay nonce (`jti`), and rate limits.
+- Pipeline inserts:
+  - `raw_reports` for Free/Standard
+  - `ldp_reports` for Pro
+- If `ENABLE_PRO_INGEST=false`, Pro requests are treated as Standard for ingest safety.
 
-Ingest
+## Data captured for Free/Standard
 
-The SDK captures pageviews, sessions, conversions, and histogram buckets. The collector validates short-lived upload tokens, then stores batches in either raw_reports or ldp_reports based on the site plan.
+For each report, reducer-friendly coarse fields are stored:
 
-Event fields and dimensions
+- `_session_hmac` (Standard/Free session dedupe key, server-derived)
+- `_visitor_day_hmac` (daily unique dedupe key, server-derived)
+- `_device_bucket` (`mobile`, `desktop`, `tablet`, `unknown`)
+- `_country_code` (2-letter code or `Unknown`)
+- `_hostname` (normalized host for subdomain filtering)
+- event payload fields such as `url`, `conversion_type`, `referrer_bucket`, `referrer_source`
 
-The SDK emits a compact event envelope. Identifiers are reduced to coarse buckets before transport so breakdowns are possible without retaining linkable data.
+Raw IP address and raw User-Agent are used transiently for coarse derivation/HMAC and are not persisted as raw identifiers in report payloads.
 
-Fields captured (current + planned):
+## Reducer + publish model
 
-- **Current**
-  - pageview: url (as provided by integrator), metadata, randomized response fields
-  - session: referrer_bucket, engagement_bucket, randomized response fields
-  - conversion: conversion_type (SDK label), randomized response fields
-  - uniques: randomized response presence report
-- **Planned**
-  - pageview: path (normalized, no query string), referrer_category (direct, organic, referral, social, email, paid), device_type (mobile, desktop, tablet), country_code (2-letter), timestamp (minute bucket)
-  - session: session_start, session_end (used to compute duration buckets), pageview_count
-  - conversion: conversion_type (SDK label), value (purchase revenue)
+- Reducer writes windowed aggregates to `dp_windows`.
+- Forecast job trains and writes forecast rows from `dp_windows`.
+- Production scheduler behavior:
+  - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
+  - forecast training: daily at `PROD_SCHEDULER_HOUR_UTC` (+15 minute offset)
 
-Note: Until path normalization ships, integrators should pass a path without query parameters to avoid storing full URLs.
+## Serving endpoints
 
-Privacy handling:
+- KPI/time series:
+  - `GET /api/metrics`
+  - `GET /api/aggregate`
+  - `GET /api/forecast/{metric}`
+- Breakdowns:
+  - `GET /api/breakdown`
+  - dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
+  - supports `hostname=<host>` filter for subdomain tracking
 
-- IP is used only at the edge to derive country_code, then discarded.
-- Raw referrer URLs and UTM parameters are never stored; only a high-level referrer_category is sent.
-- No cookies or persistent identifiers; session_id is ephemeral and rotates daily.
-- Timestamps are truncated to the minute for windowing.
+All dashboard metrics endpoints require dashboard auth and site-access authorization.
 
-Current implementation status:
+## Privacy by tier
 
-- Stored event kinds: pageviews, sessions, uniques, conversions (see PrivatizedEvent in server/app/schemas.py).
-- Conversion types are already supported in the reducer: payload.conversion_type yields metric "conversion:<type>".
-- Dimension breakdowns now ship for Free/Standard via `GET /api/breakdown` (`pages`, `sources`, `devices`, `countries`).
-- Root dashboard mode remains demo-seeded; explicit site mode (`/site/<id>` or `?site_id=<id>`) uses real breakdown rows.
-- Pro still serves aggregate totals only for these dimensions until LDP dimension support is extended.
-
-Plan-aware nuance:
-
-- Free + Standard: raw events are accepted and can be aggregated by dimension.
-- Pro: dimension breakdowns require LDP encoding per dimension; until LDP support is extended, Pro can return only aggregate totals for those cuts.
-
-Operational profiles:
-
-- **Pilot profile**: lower `MIN_REPORTS_PER_WINDOW` for validation on small websites.
-- **Production profile**: stricter publish thresholds and full alerting enabled.
-
-Watermarks
-
-Live windows tolerate LIVE_WATERMARK_SECONDS = 120 seconds of delay.
-Payloads older than MAX_OUT_OF_ORDER_SECONDS = 300 seconds are dropped and counted in events_dropped_late_total.
-
-Publishing guards
-
-- Min sample: do not publish unless reports ≥ MIN_REPORTS_PER_WINDOW
-- SNR: do not publish unless estimate / std_error > 1.5
-- Include CI 80% and 95% with each published metric
-
-Forecasting & anomalies
-
-- Train Prophet when ≥ 60 days of history; otherwise HTTP 204
-- Production scheduler can run daily reduce + forecast jobs with `ENABLE_PROD_SCHEDULER=true` and `PROD_SCHEDULER_HOUR_UTC`
-- Store and version models; promote only if MAPE improves ≥ 5%
-- Anomalies: flag when outside Prophet bounds or by z-score on EWMA baseline; expose has_anomaly, z_score
-- Forecast horizon is configurable for all tiers.
-  - **Current**: Configurable horizon written by the Prophet job (default 90 days via `FORECAST_HORIZON_DAYS`, UI defaults to 30-day view).
-  - **Planned**: Extend to longer user-defined horizons (for example full-quarter and annual planning windows) with guardrails and coverage checks. With sufficient data, MAPE should remain stable even as horizon increases, but it will vary by site and seasonality.
-
-Plan-aware serving
-
-Metrics, aggregates, and forecasts are filtered by plan. Free sites see raw aggregates, Standard sites see central-DP Laplace-noised aggregates with per-day epsilon logs, and Pro sites follow the local-DP RR path.
-
-Roadmap
-
-- Import pipeline for customers migrating historical analytics into Valid (CSV/API ingest + backfill reducer).
-- Pro/Enterprise v2: zero-access local/hybrid DP with dimension-capable sparse histograms and privacy-gated top-N results.
+- **Free**: no DP noise added; privacy comes from data minimization + coarse aggregation + short-lived credentials.
+- **Standard**: central DP noise on aggregates plus coarse server-side sessionization.
+- **Pro**: local-DP ingest model; dimension breakdowns are currently suppressed for Pro until dimension-capable LDP histograms are enabled.
