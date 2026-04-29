@@ -477,6 +477,41 @@ const enumerateDays = (startDay: string, endDay: string): string[] => {
   return days;
 };
 
+type DailyValuePoint = { day: string; value: number };
+
+const fillMissingDaysWithZero = (
+  entries: DailyValuePoint[],
+  rangeStart: string,
+  rangeEnd: string,
+  observedCountDays: Set<string>,
+  earliestObservedCountDay: string | null,
+  latestObservedCountDay: string | null
+): DailyValuePoint[] => {
+  if (!earliestObservedCountDay || !latestObservedCountDay) {
+    return entries;
+  }
+  const fromCoverage = rangeStart > earliestObservedCountDay ? rangeStart : earliestObservedCountDay;
+  const toCoverage = rangeEnd < latestObservedCountDay ? rangeEnd : latestObservedCountDay;
+  if (fromCoverage > toCoverage) {
+    return entries;
+  }
+  const byDay = new Map(entries.map((entry) => [entry.day, entry.value]));
+  const result: DailyValuePoint[] = [];
+  for (const day of enumerateDays(rangeStart, rangeEnd)) {
+    const existing = byDay.get(day);
+    if (existing !== undefined) {
+      result.push({ day, value: existing });
+      continue;
+    }
+    const inReducerCoverage = day >= fromCoverage && day <= toCoverage;
+    const hasAnyCountSignal = observedCountDays.has(day);
+    if (inReducerCoverage && !hasAnyCountSignal) {
+      result.push({ day, value: 0 });
+    }
+  }
+  return result;
+};
+
 const buildSeededDailySeries = (days: number = 180) => {
   const end = new Date();
   end.setHours(0, 0, 0, 0);
@@ -993,6 +1028,25 @@ const Overview: React.FC = () => {
     if (!bounds) return entries;
     return entries.filter((entry) => entry.day >= bounds.start && entry.day <= bounds.end);
   };
+  const maybeFillMissingDailyZeros = (
+    metric: string,
+    entries: DailyValuePoint[],
+    rangeKey: RangeOption = range,
+    custom: DateRange = customRange
+  ): DailyValuePoint[] => {
+    const isCountMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(metric);
+    if (!isCountMetric) return entries;
+    const bounds = resolveRangeBounds(rangeKey, custom);
+    if (!bounds) return entries;
+    return fillMissingDaysWithZero(
+      entries,
+      bounds.start,
+      bounds.end,
+      observedCountDaySet,
+      earliestObservedCountDay,
+      latestObservedCountDay
+    );
+  };
 
   const buildMetricRows = (
     labels: string[],
@@ -1046,15 +1100,38 @@ const Overview: React.FC = () => {
     () => (showSeededBreakdowns ? seededSeries.visit_duration : toDaily(aggregateMap.avg_time_on_site ?? [])),
     [showSeededBreakdowns, seededSeries.visit_duration, aggregateMap]
   );
+  const observedCountDayList = useMemo(() => {
+    const set = new Set<string>();
+    [pageviewsAll, uniquesAll, sessionsAll, conversionsAll, revenueAll].forEach((series) => {
+      series.forEach((entry) => set.add(entry.day));
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [pageviewsAll, uniquesAll, sessionsAll, conversionsAll, revenueAll]);
+  const observedCountDaySet = useMemo(() => new Set(observedCountDayList), [observedCountDayList]);
+  const earliestObservedCountDay = observedCountDayList[0] ?? null;
+  const latestObservedCountDay =
+    observedCountDayList.length > 0 ? observedCountDayList[observedCountDayList.length - 1] : null;
 
-  const dailyPageviews = useMemo(() => filterByRange(pageviewsAll, range, customRange), [pageviewsAll, range, customRange]);
-  const dailyUniques = useMemo(() => filterByRange(uniquesAll, range, customRange), [uniquesAll, range, customRange]);
-  const dailySessions = useMemo(() => filterByRange(sessionsAll, range, customRange), [sessionsAll, range, customRange]);
-  const dailyConversions = useMemo(
-    () => filterByRange(conversionsAll, range, customRange),
-    [conversionsAll, range, customRange]
+  const dailyPageviews = useMemo(
+    () => maybeFillMissingDailyZeros("pageviews", filterByRange(pageviewsAll, range, customRange), range, customRange),
+    [pageviewsAll, range, customRange, observedCountDayList]
   );
-  const dailyRevenue = useMemo(() => filterByRange(revenueAll, range, customRange), [revenueAll, range, customRange]);
+  const dailyUniques = useMemo(
+    () => maybeFillMissingDailyZeros("uniques", filterByRange(uniquesAll, range, customRange), range, customRange),
+    [uniquesAll, range, customRange, observedCountDayList]
+  );
+  const dailySessions = useMemo(
+    () => maybeFillMissingDailyZeros("sessions", filterByRange(sessionsAll, range, customRange), range, customRange),
+    [sessionsAll, range, customRange, observedCountDayList]
+  );
+  const dailyConversions = useMemo(
+    () => maybeFillMissingDailyZeros("conversions", filterByRange(conversionsAll, range, customRange), range, customRange),
+    [conversionsAll, range, customRange, observedCountDayList]
+  );
+  const dailyRevenue = useMemo(
+    () => maybeFillMissingDailyZeros("revenue", filterByRange(revenueAll, range, customRange), range, customRange),
+    [revenueAll, range, customRange, observedCountDayList]
+  );
   const dailyDuration = useMemo(() => filterByRange(durationAll, range, customRange), [durationAll, range, customRange]);
 
   const avgPagesPerVisitAll = useMemo(() => {
@@ -1447,7 +1524,17 @@ const Overview: React.FC = () => {
   const getSeriesForBounds = (metric: string, bounds: { start: string; end: string } | null) => {
     if (!bounds) return [];
     const entries = getUnfilteredSeries(metric);
-    return filterByWindow(entries, bounds.start, bounds.end);
+    const filtered = filterByWindow(entries, bounds.start, bounds.end);
+    const isCountMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(metric);
+    if (!isCountMetric) return filtered;
+    return fillMissingDaysWithZero(
+      filtered,
+      bounds.start,
+      bounds.end,
+      observedCountDaySet,
+      earliestObservedCountDay,
+      latestObservedCountDay
+    );
   };
 
   const getComparisonSeries = (metric: string) => getSeriesForBounds(metric, comparisonBounds);
