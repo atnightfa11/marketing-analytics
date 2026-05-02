@@ -19,9 +19,11 @@ import {
   fetchAggregate,
   fetchBreakdown,
   fetchForecast,
+  fetchSiteSettings,
   ForecastEntry,
   ForecastResponse,
   resolveActiveSiteId,
+  updateSiteTimezone,
 } from "./api";
 import { AlertsPanel } from "./components/AlertsPanel";
 import { DeviceBreakdown } from "./components/DeviceBreakdown";
@@ -415,6 +417,13 @@ const createEmptyBreakdownData = (
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const toIsoDate = (value: Date) => value.toISOString().slice(0, 10);
+const isoDayInTimeZone = (isoTimestamp: string, timeZone: string) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(isoTimestamp));
 
 const resolveRangeBounds = (
   rangeKey: RangeOption,
@@ -873,6 +882,7 @@ const Overview: React.FC = () => {
     const host = searchParams.get("hostname");
     return host && host.trim() ? host.trim() : "all";
   });
+  const [siteTimezone, setSiteTimezone] = useState<string>("UTC");
   const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>(() => {
     const fk = searchParams.get("forecast");
     return fk && forecastOptions.some((opt) => opt.key === fk)
@@ -947,6 +957,21 @@ const Overview: React.FC = () => {
   const chartReferenceStroke = isDark ? "rgba(249,250,251,0.25)" : "#D1D5DB";
   const hostnameFilter = !showSeededBreakdowns && selectedHostname !== "all" ? selectedHostname : undefined;
 
+  useEffect(() => {
+    if (!canQuery || showSeededBreakdowns) return;
+    let cancelled = false;
+    fetchSiteSettings(token ?? undefined, siteId)
+      .then((settings) => {
+        if (!cancelled) setSiteTimezone(settings.timezone || "UTC");
+      })
+      .catch(() => {
+        if (!cancelled) setSiteTimezone("UTC");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, showSeededBreakdowns, token, siteId]);
+
   const previousSiteIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (previousSiteIdRef.current === null) {
@@ -1009,7 +1034,7 @@ const Overview: React.FC = () => {
   const toDaily = (windows: AggregateWindow[]) => {
     const bucket: Record<string, number> = {};
     windows.forEach((window) => {
-      const day = window.window_start.slice(0, 10);
+      const day = isoDayInTimeZone(window.window_start, siteTimezone);
       bucket[day] = (bucket[day] ?? 0) + window.value;
     });
     const entries = Object.entries(bucket)
@@ -2434,6 +2459,32 @@ const Overview: React.FC = () => {
                       {host}
                     </option>
                   ))}
+                </select>
+                <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
+                  Time Zone
+                </span>
+                <select
+                  aria-label="Timezone"
+                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                  style={fontBody}
+                  value={siteTimezone}
+                  onChange={async (event) => {
+                    const timezone = event.target.value;
+                    setSiteTimezone(timezone);
+                    try {
+                      await updateSiteTimezone(timezone, token ?? undefined, siteId);
+                    } catch {
+                      // keep optimistic value; next refresh will reconcile.
+                    }
+                  }}
+                >
+                  {["UTC", "America/Chicago", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin"].map(
+                    (tz) => (
+                      <option key={tz} value={tz}>
+                        {tz}
+                      </option>
+                    )
+                  )}
                 </select>
               </>
             )}

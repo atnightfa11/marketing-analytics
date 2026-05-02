@@ -49,6 +49,15 @@ describe("source classification", () => {
     expect(social.bucket).toBe("social");
   });
 
+  it("treats same-site subdomain referrals as direct", () => {
+    const result = classifyReferrerBucket(
+      "https://app.neurotypicaltranslator.com/translate",
+      "https://neurotypicaltranslator.com/"
+    );
+    expect(result.bucket).toBe("direct");
+    expect(result.source).toBe("Direct");
+  });
+
   it("classifies utm paid and email traffic", () => {
     const paid = classifyReferrerBucket(
       "https://example.com/pricing?utm_source=google&utm_medium=cpc",

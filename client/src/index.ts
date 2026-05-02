@@ -374,6 +374,18 @@ function normalizeHost(hostname: string): string {
     .replace(/^www\./, "");
 }
 
+function registrableDomain(hostname: string): string {
+  const host = normalizeHost(hostname);
+  const parts = host.split(".").filter(Boolean);
+  if (parts.length <= 2) return host;
+  const multiPartTlds = new Set(["co.uk", "org.uk", "com.au", "co.jp"]);
+  const lastTwo = parts.slice(-2).join(".");
+  if (multiPartTlds.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join(".");
+  }
+  return lastTwo;
+}
+
 function hostMatches(hostname: string, candidates: string[]): boolean {
   const host = normalizeHost(hostname);
   return candidates.some((candidate) => {
@@ -588,6 +600,9 @@ export function classifyReferrerBucket(
   }
 
   if (normalizeHost(referrerUrl.hostname) === normalizeHost(currentUrl.hostname)) {
+    return directSource();
+  }
+  if (registrableDomain(referrerUrl.hostname) === registrableDomain(currentUrl.hostname)) {
     return directSource();
   }
 
