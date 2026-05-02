@@ -110,6 +110,80 @@ const metricOptions = [
 ];
 const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
 const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions", "hour_of_day", "day_of_week"];
+const timezoneOptions = [
+  "UTC",
+  "America/Chicago",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Europe/London",
+  "Europe/Berlin",
+] as const;
+const goalEligibleMetrics = ["revenue", "conversions", "pageviews", "sessions", "uniques"] as const;
+type GoalMetric = (typeof goalEligibleMetrics)[number];
+type GoalRepeat = "monthly";
+
+interface MetricGoal {
+  metric: GoalMetric;
+  target: number;
+  periodDays: number;
+  repeat: GoalRepeat;
+  updatedAt: string;
+}
+
+type SiteGoalsMap = Partial<Record<GoalMetric, MetricGoal>>;
+type GoalStore = Record<string, SiteGoalsMap>;
+const DASHBOARD_GOALS_STORAGE_KEY = "valid_dashboard_metric_goals_v1";
+
+const readGoalStore = (): GoalStore => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_GOALS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as GoalStore;
+  } catch {
+    return {};
+  }
+};
+
+const writeGoalStore = (store: GoalStore) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(DASHBOARD_GOALS_STORAGE_KEY, JSON.stringify(store));
+};
+
+const loadGoalsForSite = (siteId: string): SiteGoalsMap => {
+  const store = readGoalStore();
+  return store[siteId] ?? {};
+};
+
+const upsertGoalForSite = (
+  siteId: string,
+  goal: { metric: GoalMetric; target: number; periodDays?: number; repeat?: GoalRepeat }
+): SiteGoalsMap => {
+  const store = readGoalStore();
+  const current = store[siteId] ?? {};
+  const nextGoal: MetricGoal = {
+    metric: goal.metric,
+    target: Math.max(0, goal.target),
+    periodDays: goal.periodDays ?? 30,
+    repeat: goal.repeat ?? "monthly",
+    updatedAt: new Date().toISOString(),
+  };
+  const next = { ...current, [goal.metric]: nextGoal };
+  store[siteId] = next;
+  writeGoalStore(store);
+  return next;
+};
+
+const removeGoalForSite = (siteId: string, metric: GoalMetric): SiteGoalsMap => {
+  const store = readGoalStore();
+  const current = { ...(store[siteId] ?? {}) };
+  delete current[metric];
+  store[siteId] = current;
+  writeGoalStore(store);
+  return current;
+};
 
 const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
 const forecastOptions = [
@@ -150,6 +224,25 @@ const formatMetricValue = (metric: string, value: number) => {
   if (metric.includes("rate")) return formatPercent(value);
   return formatNumber(value);
 };
+
+const formatDailyPace = (metric: string, value: number) => {
+  if (!Number.isFinite(value)) return "—";
+  if (metric === "revenue") return `${formatCurrency(value)}/day`;
+  if (Math.abs(value) < 10 && !Number.isInteger(value)) return `${value.toFixed(1)}/day`;
+  return `${formatNumber(value)}/day`;
+};
+
+const formatGoalGap = (metric: string, value: number) => {
+  if (!Number.isFinite(value)) return "—";
+  const sign = value >= 0 ? "+" : "-";
+  const abs = Math.abs(value);
+  if (metric === "revenue") return `${sign}${formatCurrency(abs)}`;
+  if (abs < 10 && !Number.isInteger(abs)) return `${sign}${abs.toFixed(1)}`;
+  return `${sign}${formatNumber(abs)}`;
+};
+
+const metricSupportsGoals = (metric: string): metric is GoalMetric =>
+  (goalEligibleMetrics as readonly string[]).includes(metric);
 
 const formatCompactCurrency = (value: number) => {
   if (!Number.isFinite(value)) return "—";
@@ -883,6 +976,7 @@ const Overview: React.FC = () => {
     return host && host.trim() ? host.trim() : "all";
   });
   const [siteTimezone, setSiteTimezone] = useState<string>("UTC");
+  const [siteGoals, setSiteGoals] = useState<SiteGoalsMap>({});
   const [forecastKey, setForecastKey] = useState<(typeof forecastOptions)[number]["key"]>(() => {
     const fk = searchParams.get("forecast");
     return fk && forecastOptions.some((opt) => opt.key === fk)
@@ -971,6 +1065,10 @@ const Overview: React.FC = () => {
       cancelled = true;
     };
   }, [canQuery, showSeededBreakdowns, token, siteId]);
+
+  useEffect(() => {
+    setSiteGoals(loadGoalsForSite(siteId));
+  }, [siteId]);
 
   const previousSiteIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1926,6 +2024,19 @@ const Overview: React.FC = () => {
     if (acquisitionTab === "campaigns") return campaignDimension;
     return "channel";
   }, [acquisitionTab, campaignDimension]);
+  const topChannel = useMemo(() => {
+    const ranked = channelRows
+      .map((row) => ({
+        label: row.label,
+        value: getBreakdownMetricValue(row, acquisitionPrimaryMetric),
+      }))
+      .filter((row) => Number.isFinite(row.value) && row.value > 0)
+      .sort((a, b) => b.value - a.value);
+    if (ranked.length === 0) return null;
+    const top = ranked[0];
+    const share = acquisitionTotal > 0 ? top.value / acquisitionTotal : 0;
+    return { ...top, share };
+  }, [channelRows, acquisitionPrimaryMetric, acquisitionTotal]);
 
   const toggleFilter = (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => {
     const rowValue = getBreakdownMetricValue(row, primaryMetric);
@@ -2279,6 +2390,141 @@ const Overview: React.FC = () => {
       ? "text-emerald-600"
       : "text-amber-600"
     : "text-gray-400";
+  const selectedMetricLabel = metricLabels[selectedMetric] ?? selectedMetric;
+  const selectedMetricLower = selectedMetricLabel.toLowerCase();
+  const selectedMetricCurrentValue = (scaledTotals as Record<string, number>)[selectedMetric] ?? Number.NaN;
+  const selectedMetricComparisonValue = scaledKpiComparisonValues
+    ? ((scaledKpiComparisonValues as Record<string, number>)[selectedMetric] ?? Number.NaN)
+    : Number.NaN;
+  const selectedMetricDeltaPct =
+    Number.isFinite(selectedMetricCurrentValue) &&
+    Number.isFinite(selectedMetricComparisonValue) &&
+    Math.abs(selectedMetricComparisonValue) > 0
+      ? (selectedMetricCurrentValue - selectedMetricComparisonValue) / selectedMetricComparisonValue
+      : Number.NaN;
+  const selectedMetricGoal = metricSupportsGoals(selectedMetric) ? siteGoals[selectedMetric] ?? null : null;
+  const forecastDayCount = forecastCandidates.length;
+  const goalTargetForWindow =
+    selectedMetricGoal && forecastDayCount > 0
+      ? selectedMetricGoal.target * (forecastDayCount / Math.max(1, selectedMetricGoal.periodDays))
+      : null;
+  const goalGap =
+    forecastSummary && Number.isFinite(goalTargetForWindow ?? Number.NaN)
+      ? forecastSummary.total - (goalTargetForWindow ?? 0)
+      : null;
+  const neededPacePerDay =
+    Number.isFinite(goalTargetForWindow ?? Number.NaN) && forecastDayCount > 0
+      ? (goalTargetForWindow as number) / forecastDayCount
+      : null;
+  const forecastPacePerDay = forecastSummary?.average ?? null;
+  const goalGapPct =
+    Number.isFinite(goalGap ?? Number.NaN) && Number.isFinite(goalTargetForWindow ?? Number.NaN) && (goalTargetForWindow ?? 0) > 0
+      ? ((goalGap ?? 0) / (goalTargetForWindow ?? 1)) * 100
+      : Number.NaN;
+  const goalStatus =
+    Number.isFinite(goalGap ?? Number.NaN) && (goalGap ?? 0) >= 0 ? "Ahead of pace" : "Behind pace";
+  const goalSentence =
+    Number.isFinite(goalGapPct)
+      ? `At the current pace, ${selectedMetricLower} is forecasted to finish ${Math.abs(goalGapPct).toFixed(0)}% ${
+          (goalGap ?? 0) >= 0 ? "above" : "below"
+        } goal.`
+      : null;
+  const visitDurationComparisonValue = scaledKpiComparisonValues?.visit_duration ?? Number.NaN;
+  const visitDurationDeltaPct =
+    Number.isFinite(scaledTotals.visit_duration) &&
+    Number.isFinite(visitDurationComparisonValue) &&
+    Math.abs(visitDurationComparisonValue) > 0
+      ? (scaledTotals.visit_duration - visitDurationComparisonValue) / visitDurationComparisonValue
+      : Number.NaN;
+  const topChannelLabel = topChannel?.label ?? null;
+  const topChannelSharePct = topChannel ? Math.round(topChannel.share * 100) : null;
+  const insights = useMemo(() => {
+    const lines: string[] = [];
+    if (Number.isFinite(goalGap ?? Number.NaN) && (goalGap ?? 0) < 0) {
+      lines.push(`${selectedMetricLabel} is forecasted to finish below goal.`);
+    }
+    if (forecastMeta?.has_anomaly) {
+      lines.push(`${selectedMetricLabel} moved outside the forecast interval recently.`);
+    }
+    if (Number.isFinite(selectedMetricDeltaPct) && Math.abs(selectedMetricDeltaPct) >= 0.1) {
+      lines.push(
+        `${selectedMetricLabel} is ${selectedMetricDeltaPct > 0 ? "up" : "down"} ${Math.abs(
+          selectedMetricDeltaPct * 100
+        ).toFixed(1)}% vs ${compareEnabled ? "comparison" : "previous"} period.`
+      );
+    }
+    if (topChannelLabel && Number.isFinite(topChannelSharePct ?? Number.NaN) && (topChannelSharePct ?? 0) >= 45) {
+      lines.push(`${topChannelLabel} currently contributes ${topChannelSharePct}% of sessions.`);
+    }
+    if (Number.isFinite(mapeValue) && mapeValue > 0.18) {
+      lines.push(`Forecast accuracy is lower right now (~${(mapeValue * 100).toFixed(1)}% error).`);
+    }
+    if (lines.length === 0) {
+      lines.push("No major changes detected.");
+    }
+    return lines.slice(0, 5);
+  }, [
+    goalGap,
+    selectedMetricLabel,
+    forecastMeta?.has_anomaly,
+    selectedMetricDeltaPct,
+    compareEnabled,
+    topChannelLabel,
+    topChannelSharePct,
+    mapeValue,
+  ]);
+  const summaryLines = useMemo(() => {
+    const lines: string[] = [];
+    if (Number.isFinite(selectedMetricDeltaPct)) {
+      lines.push(
+        `${selectedMetricLabel} ${selectedMetricDeltaPct >= 0 ? "increased" : "decreased"} ${Math.abs(
+          selectedMetricDeltaPct * 100
+        ).toFixed(1)}% over ${currentRangeLabel ?? "the selected period"}.`
+      );
+    }
+    if (forecastSummary) {
+      lines.push(`Next ${forecastDayCount} days forecast: ${formatMetricValue(selectedMetric, forecastSummary.total)}.`);
+    }
+    if (Number.isFinite(goalGap ?? Number.NaN) && Number.isFinite(goalTargetForWindow ?? Number.NaN)) {
+      lines.push(
+        `${selectedMetricLabel} is currently pacing ${formatGoalGap(
+          selectedMetric,
+          goalGap ?? 0
+        )} ${(goalGap ?? 0) >= 0 ? "ahead of" : "behind"} goal.`
+      );
+    }
+    if (topChannelLabel) {
+      lines.push(`Main contributor: ${topChannelLabel}.`);
+    }
+    if (Number.isFinite(visitDurationDeltaPct) && visitDurationDeltaPct <= -0.02) {
+      lines.push(`Watch: visit duration is down ${Math.abs(visitDurationDeltaPct * 100).toFixed(1)}% vs prior period.`);
+    }
+    if (lines.length === 0) {
+      lines.push("No major changes detected for the selected metric.");
+    }
+    return lines.slice(0, 5);
+  }, [
+    selectedMetricDeltaPct,
+    selectedMetricLabel,
+    currentRangeLabel,
+    forecastSummary,
+    forecastDayCount,
+    selectedMetric,
+    goalGap,
+    goalTargetForWindow,
+    topChannelLabel,
+    visitDurationDeltaPct,
+  ]);
+  const selectedRangeEndDay = rangeDomainDays.length > 0 ? rangeDomainDays[rangeDomainDays.length - 1] : null;
+  const actualCoverageText = lastActualDay
+    ? selectedRangeEndDay && lastActualDay < selectedRangeEndDay
+      ? `Actual data through ${formatShortDate(lastActualDay)}.`
+      : `Actual coverage through ${formatShortDate(lastActualDay)}.`
+    : "No actual data yet.";
+  const forecastCoverageText = hasAnyForecastData
+    ? `Forecast available for ${forecastLabel.toLowerCase()}.`
+    : "Forecast unavailable until more history is collected.";
+  const trendCoverageText = `${actualCoverageText} ${forecastCoverageText}`;
   const chartFormatter = (value: number) => {
     if (selectedMetric === "revenue") return formatCompactCurrency(value);
     if (selectedMetric === "bounce_rate") return formatPercent(value);
@@ -2460,32 +2706,6 @@ const Overview: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                  Time Zone
-                </span>
-                <select
-                  aria-label="Timezone"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
-                  style={fontBody}
-                  value={siteTimezone}
-                  onChange={async (event) => {
-                    const timezone = event.target.value;
-                    setSiteTimezone(timezone);
-                    try {
-                      await updateSiteTimezone(timezone, token ?? undefined, siteId);
-                    } catch {
-                      // keep optimistic value; next refresh will reconcile.
-                    }
-                  }}
-                >
-                  {["UTC", "America/Chicago", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin"].map(
-                    (tz) => (
-                      <option key={tz} value={tz}>
-                        {tz}
-                      </option>
-                    )
-                  )}
-                </select>
               </>
             )}
             {range === "Custom" && (
@@ -2618,6 +2838,13 @@ const Overview: React.FC = () => {
             >
               Export PDF
             </button>
+            <a
+              href={`/settings?site_id=${encodeURIComponent(siteId)}`}
+              className="border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500 hover:border-gray-300 hover:text-[#1F2937]"
+              style={fontBody}
+            >
+              Settings
+            </a>
             <ThemeToggle />
           </div>
         </div>
@@ -2743,6 +2970,14 @@ const Overview: React.FC = () => {
           </div>
         )}
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
+          <div className="mb-3">
+            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+              Trend
+            </div>
+            <div className="mt-1 text-[12px] text-[#6B7280]" style={fontBody}>
+              {trendCoverageText}
+            </div>
+          </div>
           <div>
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
@@ -2871,6 +3106,20 @@ const Overview: React.FC = () => {
                         fill: chartAxisTick,
                         fontSize: 10,
                         fontFamily: fontBody.fontFamily,
+                      }}
+                    />
+                  )}
+                  {hasForecast && forecastStartDay && (
+                    <ReferenceLine
+                      x={forecastStartDay}
+                      stroke={chartReferenceStroke}
+                      strokeDasharray="3 6"
+                      label={{
+                        value: "Forecast starts",
+                        position: "top",
+                        fill: chartAxisTick,
+                        fontSize: 10,
+                        fontFamily: "var(--font-sans)",
                       }}
                     />
                   )}
@@ -3010,8 +3259,13 @@ const Overview: React.FC = () => {
         </section>
         <section className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-              Forecast
+            <div>
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                {selectedMetricLabel} Forecast
+              </div>
+              <div className="mt-1 text-[12px] text-[#6B7280]" style={fontBody}>
+                {currentRangeLabel ? `${currentRangeLabel}: ${formatMetricValue(selectedMetric, selectedMetricCurrentValue)}` : null}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-[0.18em] text-[#6B7280]" style={fontMeta}>
@@ -3033,29 +3287,132 @@ const Overview: React.FC = () => {
             </div>
           </div>
           {forecastSummary ? (
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Forecasted {metricLabels[selectedMetric] ?? selectedMetric}
+            <>
+              {selectedMetricGoal ? (
+                <div className="mt-3 grid gap-3 md:grid-cols-4">
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                      Forecasted Total
+                    </div>
+                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                      {formatMetricValue(selectedMetric, forecastSummary.total)}
+                    </div>
+                  </div>
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                      Goal
+                    </div>
+                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                      {Number.isFinite(goalTargetForWindow ?? Number.NaN)
+                        ? formatMetricValue(selectedMetric, goalTargetForWindow ?? Number.NaN)
+                        : "—"}
+                    </div>
+                  </div>
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                      Gap
+                    </div>
+                    <div
+                      className={`mt-2 text-lg metric-number ${
+                        Number.isFinite(goalGap ?? Number.NaN) ? ((goalGap ?? 0) >= 0 ? "text-emerald-700" : "text-[#8B2635]") : "text-[#111827]"
+                      }`}
+                      style={fontMetric}
+                    >
+                      {Number.isFinite(goalGap ?? Number.NaN) ? formatGoalGap(selectedMetric, goalGap ?? Number.NaN) : "—"}
+                    </div>
+                  </div>
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                      Needed Pace
+                    </div>
+                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                      {formatDailyPace(selectedMetric, neededPacePerDay ?? Number.NaN)}
+                    </div>
+                  </div>
                 </div>
-                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                  {formatMetricValue(selectedMetric, forecastSummary.total)}
+              ) : (
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                      Forecasted Total
+                    </div>
+                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                      {formatMetricValue(selectedMetric, forecastSummary.total)}
+                    </div>
+                  </div>
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                      Forecasted Per Day
+                    </div>
+                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
+                      {formatDailyPace(selectedMetric, forecastPacePerDay ?? Number.NaN)}
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-400" style={fontMeta}>
-                  Average Per Day
+              )}
+              {selectedMetricGoal ? (
+                <div className="mt-3 space-y-1 text-[12px] text-[#4B5563]" style={fontBody}>
+                  <div>
+                    Forecasted pace:{" "}
+                    <span className="metric-number text-[#1F2937]" style={fontMetric}>
+                      {formatDailyPace(selectedMetric, forecastPacePerDay ?? Number.NaN)}
+                    </span>{" "}
+                    · Status:{" "}
+                    <span
+                      className={`${
+                        goalStatus === "Ahead of pace" ? "text-emerald-700" : "text-[#8B2635]"
+                      }`}
+                    >
+                      {goalStatus}
+                    </span>
+                  </div>
+                  {goalSentence && <div>{goalSentence}</div>}
+                  {selectedMetricGoal.periodDays !== forecastDayCount && forecastDayCount > 0 && (
+                    <div className="text-[11px] text-[#6B7280]">
+                      Goal is prorated to match the selected forecast horizon.
+                    </div>
+                  )}
                 </div>
-                <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                  {formatMetricValue(selectedMetric, forecastSummary.average)}
+              ) : (
+                <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
+                  Add a goal in{" "}
+                  <a
+                    className="underline decoration-dotted underline-offset-2 hover:text-[#1F2937]"
+                    href={`/settings?site_id=${encodeURIComponent(siteId)}`}
+                  >
+                    Settings
+                  </a>{" "}
+                  to see whether this metric is on track.
                 </div>
-              </div>
-            </div>
+              )}
+            </>
           ) : (
             <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
               {forecastMutedNote}
             </div>
           )}
+        </section>
+        <section className="grid gap-4 lg:grid-cols-2">
+          <div className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
+            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+              Summary
+            </div>
+            <div className="mt-2 space-y-1.5 text-[12px] text-[#4B5563]" style={fontBody}>
+              {summaryLines.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          </div>
+          <div className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
+            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+              Insights
+            </div>
+            <div className="mt-2 space-y-1.5 text-[12px] text-[#4B5563]" style={fontBody}>
+              {insights.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </div>
+          </div>
         </section>
 
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
@@ -3247,23 +3604,261 @@ const Alerts: React.FC = () => (
   </div>
 );
 
-const Settings: React.FC = () => (
-  <div className="min-h-screen bg-[#F9FAFB] print-bg">
-    <header className="border-b border-gray-200 bg-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
-          Valid
+const Settings: React.FC = () => {
+  const { token, authEnabled } = useAuth();
+  const canQuery = !authEnabled || Boolean(token);
+  const [searchParams] = useSearchParams();
+  const querySiteId = searchParams.get("site_id") ?? undefined;
+  const siteId = useMemo(() => resolveActiveSiteId(querySiteId), [querySiteId]);
+  const [timezone, setTimezone] = useState<string>("UTC");
+  const [timezoneStatus, setTimezoneStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
+  const [goals, setGoals] = useState<SiteGoalsMap>({});
+  const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
+  const [goalTargetInput, setGoalTargetInput] = useState<string>("");
+  const [goalStatus, setGoalStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGoals(loadGoalsForSite(siteId));
+  }, [siteId]);
+
+  useEffect(() => {
+    if (!canQuery) return;
+    let cancelled = false;
+    setTimezoneStatus("loading");
+    fetchSiteSettings(token ?? undefined, siteId)
+      .then((settings) => {
+        if (cancelled) return;
+        setTimezone(settings.timezone || "UTC");
+        setTimezoneStatus("idle");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTimezone("UTC");
+        setTimezoneStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, token, siteId]);
+
+  const existingGoal = goals[goalMetric];
+  useEffect(() => {
+    setGoalTargetInput(existingGoal ? String(existingGoal.target) : "");
+  }, [goalMetric, existingGoal?.target]);
+
+  const sortedGoals = useMemo(
+    () =>
+      goalEligibleMetrics
+        .map((metric) => goals[metric])
+        .filter((goal): goal is MetricGoal => Boolean(goal)),
+    [goals]
+  );
+
+  const saveTimezone = async (nextTimezone: string) => {
+    setTimezone(nextTimezone);
+    setTimezoneStatus("saving");
+    try {
+      await updateSiteTimezone(nextTimezone, token ?? undefined, siteId);
+      setTimezoneStatus("saved");
+      window.setTimeout(() => {
+        setTimezoneStatus((prev) => (prev === "saved" ? "idle" : prev));
+      }, 1200);
+    } catch {
+      setTimezoneStatus("error");
+    }
+  };
+
+  const submitGoal = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const target = Number(goalTargetInput);
+    if (!Number.isFinite(target) || target <= 0) {
+      setGoalStatus("Enter a valid target greater than zero.");
+      return;
+    }
+    const nextGoals = upsertGoalForSite(siteId, {
+      metric: goalMetric,
+      target,
+      periodDays: 30,
+      repeat: "monthly",
+    });
+    setGoals(nextGoals);
+    setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} goal saved.`);
+  };
+
+  const clearGoal = () => {
+    const nextGoals = removeGoalForSite(siteId, goalMetric);
+    setGoals(nextGoals);
+    setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} goal removed.`);
+    setGoalTargetInput("");
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F9FAFB] print-bg">
+      <header className="border-b border-gray-200 bg-white">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+          <a href={`/?site_id=${encodeURIComponent(siteId)}`} className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
+            Valid
+          </a>
+          <ThemeToggle />
         </div>
-        <ThemeToggle />
-      </div>
-    </header>
-    <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
-      <div className="border border-gray-200 bg-white p-4">
-        <PrivacyControls />
-      </div>
-    </main>
-  </div>
-);
+      </header>
+      <main className="mx-auto max-w-6xl space-y-4 px-6 pb-10 pt-6">
+        <section className="border border-gray-200 bg-white p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                Site Settings
+              </div>
+              <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-gray-500" style={fontMeta}>
+                Site: {siteId}
+              </div>
+            </div>
+            <a
+              href={`/?site_id=${encodeURIComponent(siteId)}`}
+              className="border border-gray-300 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-gray-600 hover:border-gray-400 hover:text-[#1F2937]"
+              style={fontBody}
+            >
+              Back to dashboard
+            </a>
+          </div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                Reporting Timezone
+              </label>
+              <select
+                aria-label="Reporting timezone"
+                className="mt-2 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                style={fontBody}
+                value={timezone}
+                onChange={(event) => void saveTimezone(event.target.value)}
+              >
+                {timezoneOptions.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
+                {timezoneStatus === "loading" && "Loading timezone..."}
+                {timezoneStatus === "saving" && "Saving timezone..."}
+                {timezoneStatus === "saved" && "Timezone updated."}
+                {timezoneStatus === "error" && "Unable to update timezone right now."}
+                {(timezoneStatus === "idle" || !timezoneStatus) &&
+                  "Used to bucket daily trends and date-range reporting for this site."}
+              </div>
+            </div>
+            <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                Goal cadence
+              </div>
+              <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
+                Period: Next 30 days
+              </div>
+              <div className="text-sm text-[#1F2937]" style={fontBody}>
+                Repeat: Monthly
+              </div>
+              <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
+                Goals are shown in the forecast panel only for the metric currently selected on Overview.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="border border-gray-200 bg-white p-4">
+          <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+            Metric Goals
+          </div>
+          <form className="mt-3 grid gap-3 md:grid-cols-[1fr_1fr_auto_auto]" onSubmit={submitGoal}>
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                Metric
+              </label>
+              <select
+                className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                style={fontBody}
+                value={goalMetric}
+                onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}
+              >
+                {goalEligibleMetrics.map((metric) => (
+                  <option key={metric} value={metric}>
+                    {metricLabels[metric] ?? metric}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                Target
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={goalMetric === "revenue" ? "1" : "0.1"}
+                className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                style={fontBody}
+                value={goalTargetInput}
+                onChange={(event) => setGoalTargetInput(event.target.value)}
+                placeholder={goalMetric === "revenue" ? "10000" : "250"}
+              />
+            </div>
+            <button
+              type="submit"
+              className="self-end border border-[#1B7F8E] bg-[#1B7F8E] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#0F6C79]"
+              style={fontBody}
+            >
+              Save goal
+            </button>
+            <button
+              type="button"
+              onClick={clearGoal}
+              className="self-end border border-gray-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
+              style={fontBody}
+              disabled={!existingGoal}
+            >
+              Remove
+            </button>
+          </form>
+          {goalStatus && (
+            <div className="mt-2 text-[12px] text-[#4B5563]" style={fontBody}>
+              {goalStatus}
+            </div>
+          )}
+          <div className="mt-4">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+              Configured goals
+            </div>
+            {sortedGoals.length > 0 ? (
+              <div className="mt-2 space-y-2">
+                {sortedGoals.map((goal) => (
+                  <div
+                    key={goal.metric}
+                    className="flex items-center justify-between border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2"
+                  >
+                    <div className="text-sm text-[#1F2937]" style={fontBody}>
+                      {metricLabels[goal.metric] ?? goal.metric}
+                    </div>
+                    <div className="text-sm metric-number text-[#1F2937]" style={fontMetric}>
+                      {formatMetricValue(goal.metric, goal.target)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-2 text-[12px] text-[#6B7280]" style={fontBody}>
+                No goals configured yet for this site.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="border border-gray-200 bg-white p-4">
+          <PrivacyControls />
+        </section>
+      </main>
+    </div>
+  );
+};
 
 const BillingSuccess: React.FC = () => {
   const [searchParams] = useSearchParams();
