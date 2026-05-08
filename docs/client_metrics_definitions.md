@@ -54,7 +54,7 @@ Current caveats:
   - `pages`: minimum 2 pageviews
   - `sources`: minimum 2 sessions
   - `devices`: minimum 2 pageviews
-  - `countries`: minimum 3 pageviews
+  - `countries`: minimum 1 pageview
   - `conversions`: minimum 2 conversions
   - `hostnames`: minimum 1 session
 - Pro plan currently returns empty dimension rows (aggregate totals only). v2 target: local-DP sparse histograms with top-N + "Insufficient data for privacy" gating.

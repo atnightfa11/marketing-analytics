@@ -88,7 +88,7 @@ BREAKDOWN_MIN_PRIMARY_THRESHOLD: dict[BreakdownDimension, float] = {
     "pages": 2.0,
     "sources": 2.0,
     "devices": 2.0,
-    "countries": 3.0,
+    "countries": 1.0,
     "conversions": 2.0,
     "hour_of_day": TIME_PARTING_MIN_SESSIONS,
     "day_of_week": TIME_PARTING_MIN_SESSIONS,

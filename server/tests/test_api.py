@@ -1469,6 +1469,11 @@ async def test_breakdown_endpoint_returns_real_dimension_rows(client):
             "value": 3.0,
             "metrics": {"uniques": 2.0, "sessions": 2.0, "pageviews": 3.0, "conversions": 2.0},
         },
+        {
+            "label": "CA",
+            "value": 1.0,
+            "metrics": {"uniques": 1.0, "sessions": 1.0, "pageviews": 1.0, "conversions": 1.0},
+        },
     ]
 
     hour_resp = client.get("/api/breakdown", params={**query, "dimension": "hour_of_day"})
