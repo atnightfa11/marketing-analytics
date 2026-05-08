@@ -38,7 +38,7 @@ Breakdown definitions:
   - Common normalization examples: `google.com -> Google`, `duckduckgo.com -> DuckDuckGo`, `reddit.com -> Reddit`, `x.com`/`t.co -> X`, `linkedin.com -> LinkedIn`
   - Fallback bucket mapping: `direct -> Direct`, `external/referral -> Referral`, `organic -> Organic`, `social -> Social`, `email -> Email`, `paid -> Paid`
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
-- `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`), fallback `Unknown`.
+- `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`) and, when headers are unavailable, optional server-side GeoIP country lookup from request IP. Fallback `Unknown`.
 - `hostnames`: from normalized request hostname (`_hostname`) for subdomain-aware reporting.
 - `hour_of_day`: from server receive hour, aggregated across selected date range.
 - `day_of_week`: from server receive weekday, aggregated across selected date range.

@@ -7,10 +7,13 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
+import re
 import secrets
 from collections import defaultdict
 from fnmatch import fnmatch
 from typing import DefaultDict
+from zoneinfo import ZoneInfo
 
 from argon2 import PasswordHasher, exceptions as argon_exceptions
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -22,10 +25,19 @@ from ..hostnames import hostname_from_request_headers
 from ..models import LdpReport, RawReport, SitePlan, TokenNonce, UploadToken, get_session
 from ..schemas import CollectRequest, ShuffleRequest
 
+try:
+    import maxminddb  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    maxminddb = None
+
 router = APIRouter(tags=["ingest"])
 rate_limiter: DefaultDict[tuple[str, str], list[float]] = defaultdict(list)
 password_hasher = PasswordHasher()
 settings = get_settings()
+logger = logging.getLogger(__name__)
+_timezone_token_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,64}$")
+_geoip_reader = None
+_geoip_reader_path: str | None = None
 
 
 def decode_token(token: str) -> TokenClaims:
@@ -129,7 +141,57 @@ def _derive_device_bucket(user_agent: str) -> str:
     return "desktop"
 
 
-def _derive_country_code(request: Request) -> str:
+def _normalize_country_code(raw_value: str | None) -> str | None:
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip().upper()
+    if len(value) == 2 and value.isalpha() and value != "XX":
+        return value
+    return None
+
+
+def _lookup_country_by_ip(ip_value: str | None) -> str | None:
+    parsed_ip = _parse_ip_candidate(ip_value)
+    if not parsed_ip or parsed_ip == "unknown":
+        return None
+    db_path = settings.GEOIP_COUNTRY_DB_PATH
+    if not db_path or maxminddb is None:
+        return None
+
+    global _geoip_reader, _geoip_reader_path
+    if _geoip_reader is None or _geoip_reader_path != db_path:
+        try:
+            _geoip_reader = maxminddb.open_database(db_path)
+            _geoip_reader_path = db_path
+        except Exception:
+            _geoip_reader = None
+            _geoip_reader_path = None
+            logger.exception("Failed to open GEOIP country database")
+            return None
+
+    try:
+        record = _geoip_reader.get(parsed_ip)
+    except Exception:
+        logger.exception("GeoIP lookup failed")
+        return None
+
+    if not isinstance(record, dict):
+        return None
+    candidates: list[str | None] = []
+    country = record.get("country")
+    if isinstance(country, dict):
+        candidates.append(country.get("iso_code"))
+    registered_country = record.get("registered_country")
+    if isinstance(registered_country, dict):
+        candidates.append(registered_country.get("iso_code"))
+    for candidate in candidates:
+        normalized = _normalize_country_code(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
+def _derive_country_code(request: Request, client_ip: str | None = None) -> str:
     # Common reverse-proxy headers. We store only a coarse country code.
     header_candidates = (
         "CF-IPCountry",
@@ -147,10 +209,43 @@ def _derive_country_code(request: Request) -> str:
         raw = request.headers.get(header)
         if not raw:
             continue
-        value = raw.strip().upper()
-        if len(value) == 2 and value.isalpha() and value != "XX":
-            return value
+        normalized = _normalize_country_code(raw)
+        if normalized:
+            return normalized
+    ip_country = _lookup_country_by_ip(client_ip)
+    if ip_country:
+        return ip_country
     return "unknown"
+
+
+def _normalize_timezone_hint(raw_value: str | None) -> str | None:
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip()
+    if not value or not _timezone_token_re.fullmatch(value):
+        return None
+    try:
+        ZoneInfo(value)
+    except Exception:
+        return None
+    return value
+
+
+def _derive_timezone_hint(request: Request) -> str | None:
+    # These are coarse, non-unique hints forwarded by edge providers.
+    header_candidates = (
+        "CF-Timezone",
+        "CloudFront-Viewer-Time-Zone",
+        "X-Vercel-IP-Timezone",
+        "X-Timezone",
+        "X-Time-Zone",
+        "Time-Zone",
+    )
+    for header in header_candidates:
+        timezone_hint = _normalize_timezone_hint(request.headers.get(header))
+        if timezone_hint:
+            return timezone_hint
+    return None
 
 
 def _parse_ip_candidate(raw_value: str | None) -> str | None:
@@ -350,7 +445,8 @@ async def ingest_reports(
         request.headers.get("Referer"),
     )
     device_bucket = _derive_device_bucket(user_agent)
-    country_code = _derive_country_code(request)
+    country_code = _derive_country_code(request, client_ip=resolved_client_ip)
+    timezone_hint = _derive_timezone_hint(request)
     standard_session_key = (
         derive_standard_session_key(
             site_id=collect.site_id,
@@ -395,6 +491,8 @@ async def ingest_reports(
                 raw_payload["_visitor_day_hmac"] = visitor_day_hmac
             raw_payload.setdefault("_device_bucket", device_bucket)
             raw_payload.setdefault("_country_code", country_code)
+            if timezone_hint:
+                raw_payload.setdefault("_timezone_hint", timezone_hint)
             if request_hostname:
                 raw_payload.setdefault("_hostname", request_hostname)
             record = RawReport(

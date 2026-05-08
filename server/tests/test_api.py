@@ -3,6 +3,7 @@ import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,8 +30,10 @@ from argon2 import PasswordHasher
 from app.models import Base, DashboardSite, DashboardUser, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
+from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
-from app.routers.shuffle import derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
+from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
+from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
 
 
@@ -391,6 +394,42 @@ async def test_scheduler_smoke(client):
         await reduce_reports(session, days=1)
 
 
+@pytest.mark.asyncio
+async def test_collect_enriches_country_from_ip_lookup_and_timezone_hint(client, monkeypatch):
+    monkeypatch.setattr(shuffle_router, "_lookup_country_by_ip", lambda _: "US")
+    site_id = "site-geo-timezone"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    collect_payload = {
+        "site_id": site_id,
+        "server_received_at": now_iso,
+        "reports": [
+            {
+                "site_id": site_id,
+                "kind": "pageviews",
+                "payload": {"url": "/"},
+                "epsilon_used": 0.0,
+                "sampling_rate": 1.0,
+                "client_timestamp": now_iso,
+            }
+        ],
+    }
+    headers = {
+        **COLLECT_HEADERS,
+        "X-Forwarded-For": "198.51.100.44",
+        "CloudFront-Viewer-Time-Zone": "America/New_York",
+        "Origin": "https://example.com",
+    }
+    resp = client.post("/api/collect", json=collect_payload, headers=headers)
+    assert resp.status_code == 202
+
+    async with async_session_factory() as session:
+        stmt = select(RawReport).where(RawReport.site_id == site_id)
+        row = (await session.execute(stmt)).scalars().first()
+        assert row is not None
+        assert row.payload.get("_country_code") == "US"
+        assert row.payload.get("_timezone_hint") == "America/New_York"
+
+
 def test_standard_hmac_session_key_stability_and_rollover():
     base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
     stable_key_1 = derive_standard_session_key(
@@ -474,6 +513,121 @@ def test_resolve_client_ip_parses_forwarded_header_and_ipv4_port():
     }
     request = Request(scope)
     assert resolve_client_ip(request) == "198.51.100.22"
+
+
+def test_derive_country_code_prefers_country_header_over_ip_lookup(monkeypatch):
+    monkeypatch.setattr(shuffle_router, "_lookup_country_by_ip", lambda _: "US")
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/",
+        "headers": [
+            (b"cf-ipcountry", b"ca"),
+        ],
+        "client": ("172.16.0.10", 12345),
+        "server": ("testserver", 80),
+        "scheme": "https",
+    }
+    request = Request(scope)
+    assert _derive_country_code(request, client_ip="198.51.100.22") == "CA"
+
+
+def test_derive_country_code_falls_back_to_ip_lookup(monkeypatch):
+    captured: dict[str, str | None] = {"ip": None}
+
+    def _fake_lookup(ip_value: str | None) -> str | None:
+        captured["ip"] = ip_value
+        return "GB"
+
+    monkeypatch.setattr(shuffle_router, "_lookup_country_by_ip", _fake_lookup)
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/",
+        "headers": [],
+        "client": ("172.16.0.10", 12345),
+        "server": ("testserver", 80),
+        "scheme": "https",
+    }
+    request = Request(scope)
+    assert _derive_country_code(request, client_ip="198.51.100.55") == "GB"
+    assert captured["ip"] == "198.51.100.55"
+
+
+def test_derive_timezone_hint_accepts_valid_iana_headers():
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/",
+        "headers": [
+            (b"cloudfront-viewer-time-zone", b"America/Chicago"),
+        ],
+        "client": ("172.16.0.10", 12345),
+        "server": ("testserver", 80),
+        "scheme": "https",
+    }
+    request = Request(scope)
+    assert _derive_timezone_hint(request) == "America/Chicago"
+
+
+def test_derive_timezone_hint_rejects_invalid_values():
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/",
+        "headers": [
+            (b"x-timezone", b"Not/ARealZone"),
+        ],
+        "client": ("172.16.0.10", 12345),
+        "server": ("testserver", 80),
+        "scheme": "https",
+    }
+    request = Request(scope)
+    assert _derive_timezone_hint(request) is None
+
+
+def test_geoip_db_bootstrap_downloads_gzip_to_configured_path(monkeypatch, tmp_path):
+    target = tmp_path / "geoip.mmdb"
+    settings_obj = SimpleNamespace(
+        GEOIP_COUNTRY_DB_PATH=str(target),
+        GEOIP_COUNTRY_DB_URL="https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz",
+        GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS=10,
+    )
+
+    import gzip
+
+    payload = b"fake-mmdb-content"
+    gz_bytes = gzip.compress(payload)
+    monkeypatch.setattr("app.geoip_db._download_geoip_bytes", lambda url, timeout_seconds: gz_bytes)
+
+    resolved = ensure_geoip_database(settings_obj)
+    assert resolved == str(target)
+    assert target.read_bytes() == payload
+
+
+def test_geoip_db_bootstrap_uses_existing_file_without_download(monkeypatch, tmp_path):
+    target = tmp_path / "existing.mmdb"
+    target.write_bytes(b"already-here")
+    settings_obj = SimpleNamespace(
+        GEOIP_COUNTRY_DB_PATH=str(target),
+        GEOIP_COUNTRY_DB_URL="https://example.com/unused.mmdb.gz",
+        GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS=10,
+    )
+
+    called = {"download": False}
+
+    def _fake_download(url: str, timeout_seconds: int) -> bytes:  # pragma: no cover - assertion below protects behavior
+        called["download"] = True
+        return b""
+
+    monkeypatch.setattr("app.geoip_db._download_geoip_bytes", _fake_download)
+    resolved = ensure_geoip_database(settings_obj)
+    assert resolved == str(target)
+    assert called["download"] is False
 
 
 @pytest.mark.asyncio

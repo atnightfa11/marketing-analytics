@@ -49,6 +49,9 @@ Set these environment variables on the backend service:
 - `DATABASE_URL=postgresql+asyncpg://...`
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
 - `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
+- `GEOIP_COUNTRY_DB_PATH=/tmp/geoip-country.mmdb` (optional; path where API reads/writes GeoIP MMDB)
+- `GEOIP_COUNTRY_DB_URL=https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz` (optional; startup auto-download)
+- `GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS=20` (optional; startup download timeout)
 - `AGGREGATE_DP_NOISE_SECRET=<strong-random-secret>` (recommended for stable central-DP noise in Standard)
 - `ADMIN_API_TOKEN=<strong-random-secret>` (required for privileged admin/token endpoints)
 - `COLLECT_ENDPOINT_TOKEN=<strong-random-secret>` (required for `/api/collect`; mock-shuffle must send `X-Collect-Token`)

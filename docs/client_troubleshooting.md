@@ -56,7 +56,7 @@
 
 - Device and country rows are populated from coarse server-side buckets at ingest time.
 - Older events may not include these fields; new events will gradually fill real labels.
-- Confirm your edge/proxy passes country headers (for example `CF-IPCountry`) if you need country detail.
+- Confirm your edge/proxy passes country headers (for example `CF-IPCountry`) if you need country detail, or configure `GEOIP_COUNTRY_DB_URL` (and optional `GEOIP_COUNTRY_DB_PATH`) on the API service for IP-to-country fallback.
 
 ## I see pageviews but no sessions
 

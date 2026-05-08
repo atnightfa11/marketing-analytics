@@ -30,6 +30,9 @@ class Settings(BaseSettings):
   SESSION_WINDOW_MINUTES: int = Field(default=30)
   SESSION_HMAC_IP_PREFIX_V4: int = Field(default=24)
   SESSION_HMAC_IP_PREFIX_V6: int = Field(default=56)
+  GEOIP_COUNTRY_DB_PATH: str | None = None
+  GEOIP_COUNTRY_DB_URL: str | None = None
+  GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS: int = Field(default=20)
   SDK_BOOTSTRAP_RATE_LIMIT_PER_MINUTE: int = Field(default=60)
   SDK_SITE_KEY_PREFIX: str = Field(default="vsk")
   SDK_ALLOW_WILDCARD_ORIGIN_KEYS: bool = Field(default=False)

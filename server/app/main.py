@@ -12,6 +12,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from .config import Settings, get_settings
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from .geoip_db import ensure_geoip_database
 from .job_status import mark_job_error, mark_job_run, mark_job_success
 from .models import async_session_factory
 from .scheduler.nightly_reduce import reduce_reports
@@ -134,6 +135,7 @@ async def run_forecast_training_once():
 @app.on_event("startup")
 async def on_startup():
     logger.info("Creating database metadata if missing")
+    ensure_geoip_database(settings)
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await init_db()
