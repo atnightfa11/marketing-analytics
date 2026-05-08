@@ -133,9 +133,14 @@ def _derive_country_code(request: Request) -> str:
     # Common reverse-proxy headers. We store only a coarse country code.
     header_candidates = (
         "CF-IPCountry",
+        "True-Client-Country",
         "X-Vercel-IP-Country",
         "CloudFront-Viewer-Country",
         "Fly-Client-Country",
+        "Fastly-Country-Code",
+        "Fastly-Client-Country-Code",
+        "X-AppEngine-Country",
+        "X-Geo-Country",
         "X-Country-Code",
     )
     for header in header_candidates:
@@ -145,6 +150,79 @@ def _derive_country_code(request: Request) -> str:
         value = raw.strip().upper()
         if len(value) == 2 and value.isalpha() and value != "XX":
             return value
+    return "unknown"
+
+
+def _parse_ip_candidate(raw_value: str | None) -> str | None:
+    if not isinstance(raw_value, str):
+        return None
+    candidate = raw_value.strip().strip('"')
+    if not candidate or candidate.lower() == "unknown":
+        return None
+
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1 : candidate.index("]")]
+
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        pass
+
+    # IPv4 with port: 203.0.113.10:12345
+    if candidate.count(":") == 1 and "." in candidate:
+        host, _, maybe_port = candidate.rpartition(":")
+        if maybe_port.isdigit():
+            try:
+                return str(ipaddress.ip_address(host))
+            except ValueError:
+                return None
+    return None
+
+
+def _parse_forwarded_for(raw_value: str | None) -> str | None:
+    if not isinstance(raw_value, str):
+        return None
+    for candidate in raw_value.split(","):
+        parsed = _parse_ip_candidate(candidate)
+        if parsed:
+            return parsed
+    return None
+
+
+def _parse_forwarded_header(raw_value: str | None) -> str | None:
+    # RFC 7239: Forwarded: for=203.0.113.43;proto=https;by=203.0.113.44
+    if not isinstance(raw_value, str):
+        return None
+    for entry in raw_value.split(","):
+        parts = [segment.strip() for segment in entry.split(";") if segment.strip()]
+        for part in parts:
+            if not part.lower().startswith("for="):
+                continue
+            candidate = part.split("=", 1)[1].strip()
+            parsed = _parse_ip_candidate(candidate)
+            if parsed:
+                return parsed
+    return None
+
+
+def resolve_client_ip(request: Request) -> str:
+    direct_headers = ("CF-Connecting-IP", "True-Client-IP", "X-Real-IP")
+    for header in direct_headers:
+        parsed = _parse_ip_candidate(request.headers.get(header))
+        if parsed:
+            return parsed
+
+    parsed_xff = _parse_forwarded_for(request.headers.get("X-Forwarded-For"))
+    if parsed_xff:
+        return parsed_xff
+
+    parsed_forwarded = _parse_forwarded_header(request.headers.get("Forwarded"))
+    if parsed_forwarded:
+        return parsed_forwarded
+
+    parsed_client = _parse_ip_candidate(request.client.host if request.client else None)
+    if parsed_client:
+        return parsed_client
     return "unknown"
 
 
@@ -206,6 +284,7 @@ async def shuffle_ingest(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    client_ip = resolve_client_ip(request)
     claims = decode_token(payload.token)
     origin = request.headers.get("Origin")
     if not origin:
@@ -214,7 +293,7 @@ async def shuffle_ingest(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin mismatch")
     await validate_token(claims, payload.token, session)
     plan = await resolve_plan(claims.site_id, claims.plan, session)
-    apply_rate_limit(claims.site_id, request.client.host if request.client else "unknown", request, plan)
+    apply_rate_limit(claims.site_id, client_ip, request, plan)
 
     nonce_exists = await session.execute(
         select(TokenNonce).where(TokenNonce.jti == payload.nonce)
@@ -240,11 +319,17 @@ async def shuffle_ingest(
         server_received_at=server_received_at,
         reports=payload.batch,
     )
-    await ingest_reports(collect_payload, request, session, plan)
+    await ingest_reports(collect_payload, request, session, plan, client_ip=client_ip)
     await purge_old_nonces(session)
 
 
-async def ingest_reports(collect: CollectRequest, request: Request, session: AsyncSession, plan: str | None = None):
+async def ingest_reports(
+    collect: CollectRequest,
+    request: Request,
+    session: AsyncSession,
+    plan: str | None = None,
+    client_ip: str | None = None,
+):
     counters = request.app.state.prometheus_counters
     effective_plan = plan
     if effective_plan is None:
@@ -258,7 +343,7 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
             detail="SESSION_HMAC_SECRET is required for standard ingest",
         )
 
-    client_ip = request.client.host if request.client else "unknown"
+    resolved_client_ip = client_ip or resolve_client_ip(request)
     user_agent = request.headers.get("User-Agent", "")
     request_hostname = hostname_from_request_headers(
         request.headers.get("Origin"),
@@ -270,7 +355,7 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
         derive_standard_session_key(
             site_id=collect.site_id,
             server_received_at=collect.server_received_at,
-            ip_value=client_ip,
+            ip_value=resolved_client_ip,
             user_agent=user_agent,
         )
         if effective_plan != "pro"
@@ -303,7 +388,7 @@ async def ingest_reports(collect: CollectRequest, request: Request, session: Asy
             visitor_day_hmac = derive_daily_visitor_key(
                 site_id=collect.site_id,
                 day=payload_time.date(),
-                ip_value=client_ip,
+                ip_value=resolved_client_ip,
                 user_agent=user_agent,
             )
             if visitor_day_hmac:

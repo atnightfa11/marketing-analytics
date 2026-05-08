@@ -68,11 +68,34 @@ async def _aggregate_free_hostname(
     reports = (await session.execute(stmt)).scalars().all()
 
     buckets: dict[dt.datetime, list[RawReport]] = defaultdict(list)
+    seen_session_markers: set[tuple[dt.datetime, str]] = set()
+    seen_unique_markers: set[tuple[dt.date, str]] = set()
     for report in reports:
         payload = report.payload if isinstance(report.payload, dict) else {}
         if not _payload_matches_hostname(payload, hostname_filter):
             continue
-        start = _bucket_start(report.server_received_at, metric)
+
+        # Keep hostname-scoped free aggregates aligned with reducer semantics:
+        # - sessions are deduped per session bucket + session_hmac
+        # - uniques are deduped per day + visitor_day_hmac
+        if metric == "sessions":
+            session_hmac = payload.get("_session_hmac")
+            if isinstance(session_hmac, str) and session_hmac:
+                session_bucket = _bucket_start(report.server_received_at, "sessions")
+                marker = (session_bucket, session_hmac)
+                if marker in seen_session_markers:
+                    continue
+                seen_session_markers.add(marker)
+        elif metric == "uniques":
+            visitor_day_hmac = payload.get("_visitor_day_hmac")
+            if isinstance(visitor_day_hmac, str) and visitor_day_hmac:
+                marker = (report.day, visitor_day_hmac)
+                if marker in seen_unique_markers:
+                    continue
+                seen_unique_markers.add(marker)
+
+        # Free reducer windows are minute-started, with metric-specific window_end.
+        start = report.server_received_at.replace(second=0, microsecond=0)
         buckets[start].append(report)
 
     windows: list[WindowAggregate] = []

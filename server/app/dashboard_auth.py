@@ -214,6 +214,9 @@ async def enforce_site_access_with_db(
     claims: dict[str, Any] | None,
     session: AsyncSession,
 ) -> None:
+    if not settings.DASHBOARD_AUTH_ENABLED:
+        return
+
     allowed = get_allowed_site_ids(claims)
     if allowed is not None:
         if site_id not in allowed:
