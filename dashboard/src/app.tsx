@@ -1042,6 +1042,7 @@ const Overview: React.FC = () => {
       })
       .filter((x): x is ActiveFilter => Boolean(x));
   });
+  const [exportFormat, setExportFormat] = useState<"csv" | "pdf">("csv");
   const [exportMode, setExportMode] = useState<"current" | "all">("current");
   const [dismissedAnomalies, setDismissedAnomalies] = useState<Set<string>>(() => new Set());
   const { theme } = useTheme();
@@ -2516,15 +2517,18 @@ const Overview: React.FC = () => {
     visitDurationDeltaPct,
   ]);
   const selectedRangeEndDay = rangeDomainDays.length > 0 ? rangeDomainDays[rangeDomainDays.length - 1] : null;
-  const actualCoverageText = lastActualDay
-    ? selectedRangeEndDay && lastActualDay < selectedRangeEndDay
-      ? `Actual data through ${formatShortDate(lastActualDay)}.`
-      : `Actual coverage through ${formatShortDate(lastActualDay)}.`
-    : "No actual data yet.";
-  const forecastCoverageText = hasAnyForecastData
-    ? `Forecast available for ${forecastLabel.toLowerCase()}.`
-    : "Forecast unavailable until more history is collected.";
-  const trendCoverageText = `${actualCoverageText} ${forecastCoverageText}`;
+  const trendFooterNote = useMemo(() => {
+    const notes: string[] = [];
+    if (!lastActualDay) {
+      notes.push("No actual data yet.");
+    } else if (selectedRangeEndDay && lastActualDay < selectedRangeEndDay) {
+      notes.push(`Actual data through ${formatShortDate(lastActualDay)}.`);
+    }
+    if (!hasForecast) {
+      notes.push(forecastMutedNote);
+    }
+    return notes.join(" ");
+  }, [lastActualDay, selectedRangeEndDay, hasForecast, forecastMutedNote]);
   const chartFormatter = (value: number) => {
     if (selectedMetric === "revenue") return formatCompactCurrency(value);
     if (selectedMetric === "bounce_rate") return formatPercent(value);
@@ -2644,6 +2648,13 @@ const Overview: React.FC = () => {
   const handleExportPdf = () => {
     window.print();
   };
+  const handleExportAction = async () => {
+    if (exportFormat === "pdf") {
+      handleExportPdf();
+      return;
+    }
+    await handleExportCsv();
+  };
   const csvRows = useMemo(() => {
     const actualByDay = new Map(dailySelected.map((row) => [row.day, row.value]));
     const forecastByDay = new Map(forecastHorizon.map((entry) => [entry.day, entry]));
@@ -2670,10 +2681,7 @@ const Overview: React.FC = () => {
           <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </div>
-          <div className="flex flex-wrap items-center gap-4 no-print">
-            <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-              Date Range
-            </span>
+          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap no-print">
             <select
               aria-label="Date range"
               className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
@@ -2688,25 +2696,21 @@ const Overview: React.FC = () => {
               ))}
             </select>
             {!showSeededBreakdowns && (
-              <>
-                <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                  Hostname
-                </span>
-                <select
-                  aria-label="Hostname filter"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
-                  style={fontBody}
-                  value={selectedHostname}
-                  onChange={(event) => setSelectedHostname(event.target.value)}
-                >
-                  <option value="all">All hostnames</option>
-                  {hostnameOptions.map((host) => (
-                    <option key={host} value={host}>
-                      {host}
-                    </option>
-                  ))}
-                </select>
-              </>
+              <select
+                aria-label="Hostname filter"
+                className="w-[210px] border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                style={fontBody}
+                value={selectedHostname}
+                onChange={(event) => setSelectedHostname(event.target.value)}
+                title={selectedHostname === "all" ? "All hostnames" : selectedHostname}
+              >
+                <option value="all">All hostnames</option>
+                {hostnameOptions.map((host) => (
+                  <option key={host} value={host}>
+                    {host}
+                  </option>
+                ))}
+              </select>
             )}
             {range === "Custom" && (
               <div className="flex items-center gap-1">
@@ -2809,34 +2813,35 @@ const Overview: React.FC = () => {
                 )}
               </>
             )}
-            <span className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-              CSV
-            </span>
             <select
-              aria-label="CSV export scope"
+              aria-label="Export format"
               className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
               style={fontBody}
-              value={exportMode}
-              onChange={(event) => setExportMode(event.target.value as "current" | "all")}
+              value={exportFormat}
+              onChange={(event) => setExportFormat(event.target.value as "csv" | "pdf")}
             >
-              <option value="current">Selected metric</option>
-              <option value="all">All metrics</option>
+              <option value="csv">CSV</option>
+              <option value="pdf">PDF</option>
             </select>
+            {exportFormat === "csv" && (
+              <select
+                aria-label="CSV export scope"
+                className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                style={fontBody}
+                value={exportMode}
+                onChange={(event) => setExportMode(event.target.value as "current" | "all")}
+              >
+                <option value="current">Selected metric</option>
+                <option value="all">All metrics</option>
+              </select>
+            )}
             <button
               type="button"
-              onClick={handleExportCsv}
+              onClick={() => void handleExportAction()}
               className="border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500"
               style={fontBody}
             >
-              Export CSV
-            </button>
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              className="border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500"
-              style={fontBody}
-            >
-              Export PDF
+              Export
             </button>
             <a
               href={`/settings?site_id=${encodeURIComponent(siteId)}`}
@@ -2845,24 +2850,15 @@ const Overview: React.FC = () => {
             >
               Settings
             </a>
-            <ThemeToggle />
           </div>
         </div>
       </header>
       <main className="mx-auto max-w-6xl space-y-6 px-6 pb-10 pt-6 print-container">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="text-lg text-[#1F2937]" style={fontHeading}>
-              Overview
-            </div>
             <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
               Site: {siteId}
             </div>
-            {!showSeededBreakdowns && (
-              <div className="mt-1 text-[10px] uppercase tracking-[0.2em] text-gray-400" style={fontBody}>
-                Live mode: KPI/chart totals and breakdown panels use real data.
-              </div>
-            )}
           </div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
             Metrics · {range}{hostnameFilter ? ` · Host: ${hostnameFilter}` : ""}
@@ -2970,14 +2966,6 @@ const Overview: React.FC = () => {
           </div>
         )}
         <section className="border border-[var(--color-border-subtle)] bg-white p-4">
-          <div className="mb-3">
-            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-              Trend
-            </div>
-            <div className="mt-1 text-[12px] text-[#6B7280]" style={fontBody}>
-              {trendCoverageText}
-            </div>
-          </div>
           <div>
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
@@ -3241,7 +3229,7 @@ const Overview: React.FC = () => {
                 Forecast interval
               </span>
             )}
-            {!hasForecast && <span className="text-xs text-[#6B7280]">{forecastMutedNote}</span>}
+            {trendFooterNote && <span className="text-xs text-[#6B7280]">{trendFooterNote}</span>}
             {chartGranularity !== "day" && (
               <span className="ml-auto text-[11px] italic text-[#6B7280]" style={fontBody}>
                 Viewing {granularityLabel(chartGranularity)} (auto)
@@ -3553,12 +3541,6 @@ const Overview: React.FC = () => {
               onToggleFilter={toggleFilter}
               emptyState={timePartingEmptyState}
             />
-          </div>
-          <div className="mt-2 text-[11px] text-gray-400" style={fontBody}>
-            Channels are normalized into Direct, Organic Search, Organic Social, Paid Search, Paid Social, and Referral.
-          </div>
-          <div className="mt-1 text-[11px] text-gray-400" style={fontBody}>
-            Campaign/Content/Term breakdowns require UTM metadata collection in session payloads.
           </div>
         </section>
       </main>
