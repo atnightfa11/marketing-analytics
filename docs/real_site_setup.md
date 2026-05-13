@@ -56,6 +56,9 @@ Set these environment variables on the backend service:
 - `ADMIN_API_TOKEN=<strong-random-secret>` (required for privileged admin/token endpoints)
 - `COLLECT_ENDPOINT_TOKEN=<strong-random-secret>` (required for `/api/collect`; mock-shuffle must send `X-Collect-Token`)
 - `SESSION_WINDOW_MINUTES=30`
+- `BOT_FILTER_ENABLED=true` (recommended; drops likely bot traffic before storage)
+- `BOT_FILTER_MIN_CF_SCORE=30` (if `CF-Bot-Score`/`X-Bot-Score` header is present and below this value, request is filtered)
+- `BOT_FILTER_UA_PATTERNS_CSV=` (optional comma-separated extra User-Agent substrings to filter)
 - `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
 - `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
 - `DASHBOARD_AUTH_PASSWORD=<dashboard-admin-password>`

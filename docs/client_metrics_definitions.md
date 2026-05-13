@@ -20,6 +20,11 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 - `conversion_rate`: `conversions / pageviews` (derived after aggregation; no extra DP noise term).
 - `revenue`: sum of reduced `revenue` events.
 
+Dashboard-derived engagement metrics:
+
+- `avg_pages_per_visit`: `pageviews / sessions`
+- `bounce_rate`: pageview-only estimate based on aggregate counts (single-page-session approximation), does not use conversion events as engagement input.
+
 ## Dimension breakdowns
 
 - Endpoint: `GET /api/breakdown`

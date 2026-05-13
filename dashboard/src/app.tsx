@@ -323,12 +323,10 @@ const formatRangeLabel = (start: string, end: string) => {
 const safeRatio = (numerator: number, denominator: number) =>
   Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0 ? numerator / denominator : Number.NaN;
 
-const deriveBounceRate = (sessions: number, pageviews: number, conversions: number) => {
+const deriveBounceRate = (sessions: number, pageviews: number) => {
   if (!Number.isFinite(sessions) || sessions <= 0) return Number.NaN;
   const extraPageviews = Math.max(0, pageviews - sessions);
-  const engagedByPageDepth = Math.min(sessions, extraPageviews);
-  const engagedByConversions = Math.min(sessions, Math.max(0, conversions));
-  const engagedSessions = Math.min(sessions, engagedByPageDepth + engagedByConversions);
+  const engagedSessions = Math.min(sessions, extraPageviews);
   return clamp(1 - engagedSessions / sessions, 0, 1);
 };
 
@@ -1273,14 +1271,13 @@ const Overview: React.FC = () => {
   const bounceRateAll = useMemo(() => {
     const pageviewsMap = mapByDay(pageviewsAll);
     const sessionsMap = mapByDay(sessionsAll);
-    const conversionsMap = mapByDay(conversionsAll);
-    const days = Array.from(new Set([...sessionsMap.keys(), ...pageviewsMap.keys(), ...conversionsMap.keys()])).sort((a, b) =>
+    const days = Array.from(new Set([...sessionsMap.keys(), ...pageviewsMap.keys()])).sort((a, b) =>
       a.localeCompare(b)
     );
     return makeDerivedSeries(days, (day) =>
-      deriveBounceRate(sessionsMap.get(day) ?? Number.NaN, pageviewsMap.get(day) ?? Number.NaN, conversionsMap.get(day) ?? 0)
+      deriveBounceRate(sessionsMap.get(day) ?? Number.NaN, pageviewsMap.get(day) ?? Number.NaN)
     );
-  }, [pageviewsAll, sessionsAll, conversionsAll]);
+  }, [pageviewsAll, sessionsAll]);
 
   const dailyBounceRate = useMemo(() => filterByRange(bounceRateAll, range, customRange), [bounceRateAll, range, customRange]);
 
@@ -1466,7 +1463,7 @@ const Overview: React.FC = () => {
     const conversions = series.conversions.reduce((sum, row) => sum + row.value, 0);
     const revenue = series.revenue.reduce((sum, row) => sum + row.value, 0);
     const avgPagesPerVisit = safeRatio(pageviews, sessions);
-    const bounceRate = deriveBounceRate(sessions, pageviews, conversions);
+    const bounceRate = deriveBounceRate(sessions, pageviews);
     const durationAverage =
       series.visitDuration.length > 0
         ? series.visitDuration.reduce((sum, row) => sum + row.value, 0) / series.visitDuration.length

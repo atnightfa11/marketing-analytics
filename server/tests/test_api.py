@@ -430,6 +430,105 @@ async def test_collect_enriches_country_from_ip_lookup_and_timezone_hint(client,
         assert row.payload.get("_timezone_hint") == "America/New_York"
 
 
+@pytest.mark.asyncio
+async def test_collect_drops_likely_bot_user_agent(client, monkeypatch):
+    monkeypatch.setattr(shuffle_router.settings, "BOT_FILTER_ENABLED", True)
+    site_id = "site-bot-filtered-ua"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    collect_payload = {
+        "site_id": site_id,
+        "server_received_at": now_iso,
+        "reports": [
+            {
+                "site_id": site_id,
+                "kind": "pageviews",
+                "payload": {"url": "/"},
+                "epsilon_used": 0.0,
+                "sampling_rate": 1.0,
+                "client_timestamp": now_iso,
+            }
+        ],
+    }
+    headers = {
+        **COLLECT_HEADERS,
+        "Origin": "https://example.com",
+        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    }
+    resp = client.post("/api/collect", json=collect_payload, headers=headers)
+    assert resp.status_code == 202
+
+    async with async_session_factory() as session:
+        stmt = select(RawReport).where(RawReport.site_id == site_id)
+        assert (await session.execute(stmt)).scalars().first() is None
+
+
+@pytest.mark.asyncio
+async def test_collect_drops_likely_bot_by_score_header(client, monkeypatch):
+    monkeypatch.setattr(shuffle_router.settings, "BOT_FILTER_ENABLED", True)
+    monkeypatch.setattr(shuffle_router.settings, "BOT_FILTER_MIN_CF_SCORE", 30)
+    site_id = "site-bot-filtered-score"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    collect_payload = {
+        "site_id": site_id,
+        "server_received_at": now_iso,
+        "reports": [
+            {
+                "site_id": site_id,
+                "kind": "pageviews",
+                "payload": {"url": "/"},
+                "epsilon_used": 0.0,
+                "sampling_rate": 1.0,
+                "client_timestamp": now_iso,
+            }
+        ],
+    }
+    headers = {
+        **COLLECT_HEADERS,
+        "Origin": "https://example.com",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_0)",
+        "CF-Bot-Score": "1",
+    }
+    resp = client.post("/api/collect", json=collect_payload, headers=headers)
+    assert resp.status_code == 202
+
+    async with async_session_factory() as session:
+        stmt = select(RawReport).where(RawReport.site_id == site_id)
+        assert (await session.execute(stmt)).scalars().first() is None
+
+
+@pytest.mark.asyncio
+async def test_collect_keeps_human_traffic_when_bot_filter_enabled(client, monkeypatch):
+    monkeypatch.setattr(shuffle_router.settings, "BOT_FILTER_ENABLED", True)
+    site_id = "site-human-kept"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    collect_payload = {
+        "site_id": site_id,
+        "server_received_at": now_iso,
+        "reports": [
+            {
+                "site_id": site_id,
+                "kind": "pageviews",
+                "payload": {"url": "/"},
+                "epsilon_used": 0.0,
+                "sampling_rate": 1.0,
+                "client_timestamp": now_iso,
+            }
+        ],
+    }
+    headers = {
+        **COLLECT_HEADERS,
+        "Origin": "https://example.com",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_0) AppleWebKit/537.36",
+    }
+    resp = client.post("/api/collect", json=collect_payload, headers=headers)
+    assert resp.status_code == 202
+
+    async with async_session_factory() as session:
+        stmt = select(RawReport).where(RawReport.site_id == site_id)
+        row = (await session.execute(stmt)).scalars().first()
+        assert row is not None
+
+
 def test_standard_hmac_session_key_stability_and_rollover():
     base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
     stable_key_1 = derive_standard_session_key(

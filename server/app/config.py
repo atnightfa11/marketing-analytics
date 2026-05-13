@@ -30,6 +30,9 @@ class Settings(BaseSettings):
   SESSION_WINDOW_MINUTES: int = Field(default=30)
   SESSION_HMAC_IP_PREFIX_V4: int = Field(default=24)
   SESSION_HMAC_IP_PREFIX_V6: int = Field(default=56)
+  BOT_FILTER_ENABLED: bool = Field(default=True)
+  BOT_FILTER_MIN_CF_SCORE: int = Field(default=30)
+  BOT_FILTER_UA_PATTERNS_CSV: str | None = None
   GEOIP_COUNTRY_DB_PATH: str | None = None
   GEOIP_COUNTRY_DB_URL: str | None = None
   GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS: int = Field(default=20)

@@ -38,6 +38,37 @@ logger = logging.getLogger(__name__)
 _timezone_token_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,64}$")
 _geoip_reader = None
 _geoip_reader_path: str | None = None
+DEFAULT_BOT_UA_PATTERNS: tuple[str, ...] = (
+    "googlebot",
+    "bingbot",
+    "duckduckbot",
+    "applebot",
+    " bot",
+    "bot/",
+    "crawler",
+    "spider",
+    "headless",
+    "python-requests",
+    "python-urllib",
+    "curl/",
+    "wget/",
+    "go-http-client",
+    "postmanruntime",
+    "uptimerobot",
+    "pingdom",
+    "statuscake",
+    "site24x7",
+    "ahrefsbot",
+    "semrushbot",
+    "mj12bot",
+    "dotbot",
+    "bytespider",
+    "gptbot",
+    "claudebot",
+    "facebookexternalhit",
+    "slurp",
+    "bingpreview",
+)
 
 
 def decode_token(token: str) -> TokenClaims:
@@ -248,6 +279,46 @@ def _derive_timezone_hint(request: Request) -> str | None:
     return None
 
 
+def _parse_int_header(raw_value: str | None) -> int | None:
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _is_likely_bot_request(request: Request, user_agent: str) -> bool:
+    if not settings.BOT_FILTER_ENABLED:
+        return False
+
+    verified_bot_header = request.headers.get("CF-Verified-Bot")
+    if isinstance(verified_bot_header, str) and verified_bot_header.strip().lower() in {"1", "true", "yes"}:
+        return True
+
+    bot_score = _parse_int_header(request.headers.get("CF-Bot-Score"))
+    if bot_score is None:
+        bot_score = _parse_int_header(request.headers.get("X-Bot-Score"))
+    if bot_score is not None and bot_score < settings.BOT_FILTER_MIN_CF_SCORE:
+        return True
+
+    ua = (user_agent or "").lower()
+    if not ua:
+        return False
+
+    patterns = list(DEFAULT_BOT_UA_PATTERNS)
+    if settings.BOT_FILTER_UA_PATTERNS_CSV:
+        patterns.extend(
+            token.strip().lower()
+            for token in settings.BOT_FILTER_UA_PATTERNS_CSV.split(",")
+            if token and token.strip()
+        )
+    return any(pattern in ua for pattern in patterns)
+
+
 def _parse_ip_candidate(raw_value: str | None) -> str | None:
     if not isinstance(raw_value, str):
         return None
@@ -440,6 +511,9 @@ async def ingest_reports(
 
     resolved_client_ip = client_ip or resolve_client_ip(request)
     user_agent = request.headers.get("User-Agent", "")
+    if _is_likely_bot_request(request, user_agent):
+        counters["events_dropped_bot_total"].labels(site_id=collect.site_id).inc()
+        return
     request_hostname = hostname_from_request_headers(
         request.headers.get("Origin"),
         request.headers.get("Referer"),

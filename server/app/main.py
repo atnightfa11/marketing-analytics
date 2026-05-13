@@ -85,6 +85,9 @@ prometheus_counters = {
     "events_dropped_late_total": Counter(
         "events_dropped_late_total", "Count of events dropped for lateness", ["site_id"]
     ),
+    "events_dropped_bot_total": Counter(
+        "events_dropped_bot_total", "Count of events dropped by bot filter", ["site_id"]
+    ),
     "tokens_revoked_total": Counter(
         "tokens_revoked_total", "Count of token revocations", ["site_id"]
     ),
