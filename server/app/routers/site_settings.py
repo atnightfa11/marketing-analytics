@@ -9,7 +9,7 @@ from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import require_site_access
 from ..models import DashboardSite, get_session
 
-router = APIRouter(prefix="/api/site-settings", tags=["settings"])
+router = APIRouter(prefix="/site-settings", tags=["settings"])
 
 
 class SiteSettingsResponse(BaseModel):
@@ -24,7 +24,7 @@ class SiteSettingsUpdate(BaseModel):
 @router.get("", response_model=SiteSettingsResponse, dependencies=[Depends(require_dashboard_auth)])
 async def get_site_settings(
     site_id: str,
-    _: str = Depends(require_site_access),
+    _: None = Depends(require_site_access),
     session: AsyncSession = Depends(get_session),
 ) -> SiteSettingsResponse:
     site = (
@@ -39,7 +39,8 @@ async def get_site_settings(
 async def update_site_settings(
     site_id: str,
     payload: SiteSettingsUpdate,
-    _: str = Depends(require_site_access),
+    claims: dict | None = Depends(require_dashboard_auth),
+    _: None = Depends(require_site_access),
     session: AsyncSession = Depends(get_session),
 ) -> SiteSettingsResponse:
     try:
@@ -52,7 +53,17 @@ async def update_site_settings(
         await session.execute(select(DashboardSite).where(DashboardSite.site_id == site_id))
     ).scalar_one_or_none()
     if site is None:
-        raise HTTPException(status_code=404, detail="Site not found")
+        owner_username = claims.get("sub") if isinstance(claims, dict) else None
+        if not isinstance(owner_username, str) or not owner_username.strip():
+            raise HTTPException(status_code=400, detail="Unable to determine site owner for settings update")
+        site = DashboardSite(
+            site_id=site_id,
+            owner_username=owner_username.strip(),
+            site_name=site_id,
+            allowed_origin="https://pending.invalid",
+            timezone=payload.timezone,
+        )
+        session.add(site)
     site.timezone = payload.timezone
     await session.commit()
     return SiteSettingsResponse(site_id=site.site_id, timezone=site.timezone)

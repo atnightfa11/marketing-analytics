@@ -11,5 +11,5 @@ export function formatPercent(value: number): string {
 }
 
 export function formatShortDate(value: string): string {
-  return new Date(value).toLocaleDateString();
+  return new Date(`${value}T00:00:00`).toLocaleDateString();
 }

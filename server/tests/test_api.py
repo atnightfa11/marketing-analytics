@@ -1973,6 +1973,73 @@ async def test_dashboard_auth_unclaimed_sites_require_explicit_opt_in(client):
 
 
 @pytest.mark.asyncio
+async def test_site_settings_update_claims_unclaimed_site_for_authed_user(client):
+    site_id = "site-settings-unclaimed"
+    await _set_site_plan(site_id, "free")
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = '{"alice":"pw-alice"}'
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-site-settings-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = True
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "alice", "password": "pw-alice"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        update = client.put(
+            "/api/site-settings",
+            params={"site_id": site_id},
+            json={"timezone": "America/Chicago"},
+            headers=headers,
+        )
+        assert update.status_code == 200, update.text
+        assert update.json()["timezone"] == "America/Chicago"
+
+        fetched = client.get("/api/site-settings", params={"site_id": site_id}, headers=headers)
+        assert fetched.status_code == 200
+        assert fetched.json()["timezone"] == "America/Chicago"
+
+        async with async_session_factory() as session:
+            row = await session.get(DashboardSite, site_id)
+            assert row is not None
+            assert row.owner_username == "alice"
+            assert row.timezone == "America/Chicago"
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_public_signup_free_creates_user_site_and_key(client):
     original = (
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,

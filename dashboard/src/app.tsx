@@ -256,9 +256,9 @@ const formatCompactCurrency = (value: number) => {
 };
 
 const formatAxisDate = (value: string) =>
-  new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const formatTooltipDate = (value: string) =>
-  new Date(value).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
 type ChartGranularity = "day" | "week" | "month";
 
@@ -277,13 +277,13 @@ const bucketKeyFor = (day: string, granularity: ChartGranularity): string => {
 };
 
 const formatAxisDateGranular = (value: string, granularity: ChartGranularity): string => {
-  const d = new Date(value);
+  const d = new Date(`${value}T00:00:00`);
   if (granularity === "month") return d.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
 
 const formatTooltipDateGranular = (value: string, granularity: ChartGranularity): string => {
-  const d = new Date(value);
+  const d = new Date(`${value}T00:00:00`);
   if (granularity === "month") {
     return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   }
@@ -340,7 +340,8 @@ type RangeOption = (typeof rangeOptions)[number];
 type DateRange = { start: string; end: string };
 
 const parseDay = (day: string) => new Date(`${day}T00:00:00`);
-const formatIsoDate = (date: Date) => date.toISOString().slice(0, 10);
+const formatIsoDate = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 const MS_PER_DAY = 86_400_000;
 
 const getQuarterWindow = (quarter: number, reference: Date) => {
@@ -507,23 +508,30 @@ const createEmptyBreakdownData = (
 });
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-const toIsoDate = (value: Date) => value.toISOString().slice(0, 10);
-const isoDayInTimeZone = (isoTimestamp: string, timeZone: string) =>
-  new Intl.DateTimeFormat("en-CA", {
+const isoDayForDateInTimeZone = (value: Date, timeZone: string): string => {
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date(isoTimestamp));
+  }).formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) return formatIsoDate(value);
+  return `${year}-${month}-${day}`;
+};
+const isoDayInTimeZone = (isoTimestamp: string, timeZone: string) =>
+  isoDayForDateInTimeZone(new Date(isoTimestamp), timeZone);
 
 const resolveRangeBounds = (
   rangeKey: RangeOption,
-  custom: DateRange
+  custom: DateRange,
+  timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
 ): { start: string; end: string } | null => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const end = new Date(today);
-  const start = new Date(today);
+  const todayDay = isoDayForDateInTimeZone(new Date(), timeZone);
+  const end = parseDay(todayDay);
+  const start = parseDay(todayDay);
 
   if (rangeKey === "Custom") {
     if (!custom.start || !custom.end) return null;
@@ -531,36 +539,36 @@ const resolveRangeBounds = (
     const endDate = parseDay(custom.end);
     const from = startDate <= endDate ? startDate : endDate;
     const to = startDate <= endDate ? endDate : startDate;
-    return { start: toIsoDate(from), end: toIsoDate(to) };
+    return { start: formatIsoDate(from), end: formatIsoDate(to) };
   }
 
   if (rangeKey === "Today") {
-    return { start: toIsoDate(start), end: toIsoDate(end) };
+    return { start: formatIsoDate(start), end: formatIsoDate(end) };
   }
   if (rangeKey === "Yesterday") {
     start.setDate(start.getDate() - 1);
     end.setDate(end.getDate() - 1);
-    return { start: toIsoDate(start), end: toIsoDate(end) };
+    return { start: formatIsoDate(start), end: formatIsoDate(end) };
   }
   if (rangeKey === "Last 7") {
     start.setDate(start.getDate() - 6);
-    return { start: toIsoDate(start), end: toIsoDate(end) };
+    return { start: formatIsoDate(start), end: formatIsoDate(end) };
   }
   if (rangeKey === "Last 30") {
     start.setDate(start.getDate() - 29);
-    return { start: toIsoDate(start), end: toIsoDate(end) };
+    return { start: formatIsoDate(start), end: formatIsoDate(end) };
   }
   if (rangeKey === "Last 90") {
     start.setDate(start.getDate() - 89);
-    return { start: toIsoDate(start), end: toIsoDate(end) };
+    return { start: formatIsoDate(start), end: formatIsoDate(end) };
   }
   if (rangeKey === "MTD") {
-    const first = new Date(today.getFullYear(), today.getMonth(), 1);
-    return { start: toIsoDate(first), end: toIsoDate(end) };
+    const first = new Date(end.getFullYear(), end.getMonth(), 1);
+    return { start: formatIsoDate(first), end: formatIsoDate(end) };
   }
   if (rangeKey === "YTD") {
-    const jan1 = new Date(today.getFullYear(), 0, 1);
-    return { start: toIsoDate(jan1), end: toIsoDate(end) };
+    const jan1 = new Date(end.getFullYear(), 0, 1);
+    return { start: formatIsoDate(jan1), end: formatIsoDate(end) };
   }
   return null;
 };
@@ -1146,7 +1154,7 @@ const Overview: React.FC = () => {
     custom: DateRange = customRange
   ) => {
     if (entries.length === 0) return entries;
-    const bounds = resolveRangeBounds(rangeKey, custom);
+    const bounds = resolveRangeBounds(rangeKey, custom, siteTimezone);
     if (!bounds) return entries;
     return entries.filter((entry) => entry.day >= bounds.start && entry.day <= bounds.end);
   };
@@ -1158,7 +1166,7 @@ const Overview: React.FC = () => {
   ): DailyValuePoint[] => {
     const isCountMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(metric);
     if (!isCountMetric) return entries;
-    const bounds = resolveRangeBounds(rangeKey, custom);
+    const bounds = resolveRangeBounds(rangeKey, custom, siteTimezone);
     if (!bounds) return entries;
     return fillMissingDaysWithZero(
       entries,
@@ -1200,27 +1208,27 @@ const Overview: React.FC = () => {
   const seededSeries = useMemo(() => buildSeededDailySeries(210), []);
   const pageviewsAll = useMemo(
     () => (showSeededBreakdowns ? seededSeries.pageviews : toDaily(aggregateMap.pageviews ?? [])),
-    [showSeededBreakdowns, seededSeries.pageviews, aggregateMap]
+    [showSeededBreakdowns, seededSeries.pageviews, aggregateMap, siteTimezone]
   );
   const uniquesAll = useMemo(
     () => (showSeededBreakdowns ? seededSeries.uniques : toDaily(aggregateMap.uniques ?? [])),
-    [showSeededBreakdowns, seededSeries.uniques, aggregateMap]
+    [showSeededBreakdowns, seededSeries.uniques, aggregateMap, siteTimezone]
   );
   const sessionsAll = useMemo(
     () => (showSeededBreakdowns ? seededSeries.sessions : toDaily(aggregateMap.sessions ?? [])),
-    [showSeededBreakdowns, seededSeries.sessions, aggregateMap]
+    [showSeededBreakdowns, seededSeries.sessions, aggregateMap, siteTimezone]
   );
   const conversionsAll = useMemo(
     () => (showSeededBreakdowns ? seededSeries.conversions : toDaily(aggregateMap.conversions ?? [])),
-    [showSeededBreakdowns, seededSeries.conversions, aggregateMap]
+    [showSeededBreakdowns, seededSeries.conversions, aggregateMap, siteTimezone]
   );
   const revenueAll = useMemo(
     () => (showSeededBreakdowns ? seededSeries.revenue : toDaily(aggregateMap.revenue ?? [])),
-    [showSeededBreakdowns, seededSeries.revenue, aggregateMap]
+    [showSeededBreakdowns, seededSeries.revenue, aggregateMap, siteTimezone]
   );
   const durationAll = useMemo(
     () => (showSeededBreakdowns ? seededSeries.visit_duration : toDaily(aggregateMap.avg_time_on_site ?? [])),
-    [showSeededBreakdowns, seededSeries.visit_duration, aggregateMap]
+    [showSeededBreakdowns, seededSeries.visit_duration, aggregateMap, siteTimezone]
   );
   const observedCountDayList = useMemo(() => {
     const set = new Set<string>();
@@ -1342,8 +1350,36 @@ const Overview: React.FC = () => {
     }
   };
 
-  const dailySelectedAll = useMemo(() => getUnfilteredSeries(selectedMetric), [selectedMetric, aggregateMap]);
-  const dailySelected = useMemo(() => getDailySeries(selectedMetric), [selectedMetric, aggregateMap, range, customRange]);
+  const dailySelectedAll = useMemo(
+    () => getUnfilteredSeries(selectedMetric),
+    [
+      selectedMetric,
+      pageviewsAll,
+      uniquesAll,
+      sessionsAll,
+      conversionsAll,
+      revenueAll,
+      avgPagesPerVisitAll,
+      visitDurationAll,
+      bounceRateAll,
+    ]
+  );
+  const dailySelected = useMemo(
+    () => getDailySeries(selectedMetric),
+    [
+      selectedMetric,
+      pageviewsAll,
+      uniquesAll,
+      sessionsAll,
+      conversionsAll,
+      revenueAll,
+      avgPagesPerVisitAll,
+      visitDurationAll,
+      bounceRateAll,
+      range,
+      customRange,
+    ]
+  );
   const breakdownDateRange = useMemo(() => {
     if (range === "Custom" && customRange.start && customRange.end) {
       return { start: customRange.start, end: customRange.end };
@@ -1567,7 +1603,10 @@ const Overview: React.FC = () => {
     });
   }, [availableBounds, compareMode, compareRange.start, compareRange.end]);
 
-  const selectedRangeBounds = useMemo(() => resolveRangeBounds(range, customRange), [range, customRange.start, customRange.end]);
+  const selectedRangeBounds = useMemo(
+    () => resolveRangeBounds(range, customRange, siteTimezone),
+    [range, customRange.start, customRange.end, siteTimezone]
+  );
   const lastActualDay = dailySelected.length > 0 ? dailySelected[dailySelected.length - 1].day : null;
   const primaryRangeBounds = useMemo(() => {
     if (selectedRangeBounds) return selectedRangeBounds;
@@ -2533,7 +2572,7 @@ const Overview: React.FC = () => {
     if (selectedMetric === "avg_pages_per_visit") return value.toFixed(2);
     return formatNumber(value);
   };
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = useMemo(() => isoDayForDateInTimeZone(new Date(), siteTimezone), [siteTimezone]);
   const showTodayLine =
     chartGranularity === "day" &&
     chartDomainDays.length > 0 &&
