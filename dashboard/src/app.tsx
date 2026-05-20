@@ -512,23 +512,23 @@ const getBreakdownDimensionHeaderLabel = (title: string, rowDimension?: string):
 };
 
 const breakdownBarColorsByDimension: Record<string, string> = {
-  channel: "#DCE6F5",
-  source: "#DCE6F5",
-  source_medium: "#DCE6F5",
-  campaign: "#DCE6F5",
-  content: "#DCE6F5",
-  term: "#DCE6F5",
-  page: "#EFE9DE",
-  country: "#EFE9DE",
-  device: "#DDEFE8",
-  goal: "#E8E1F0",
-  hour_of_day: "#E2E9F5",
-  day_of_week: "#E2E9F5",
-  hostname: "#E4ECF3",
+  channel: "#E8F5F5",
+  source: "#E8F5F5",
+  source_medium: "#E8F5F5",
+  campaign: "rgba(27, 127, 142, 0.14)",
+  content: "rgba(27, 127, 142, 0.14)",
+  term: "rgba(27, 127, 142, 0.14)",
+  page: "rgba(77, 184, 184, 0.14)",
+  country: "rgba(77, 184, 184, 0.14)",
+  device: "rgba(77, 184, 184, 0.18)",
+  goal: "rgba(10, 95, 111, 0.12)",
+  hour_of_day: "rgba(10, 95, 111, 0.1)",
+  day_of_week: "rgba(10, 95, 111, 0.1)",
+  hostname: "rgba(27, 127, 142, 0.12)",
 };
 
 const getBreakdownBarColor = (rowDimension?: string): string =>
-  (rowDimension && breakdownBarColorsByDimension[rowDimension]) || "#DCE6F5";
+  (rowDimension && breakdownBarColorsByDimension[rowDimension]) || "#E8F5F5";
 
 const createEmptyBreakdownData = (
   primaryMetric: BreakdownMetricKey,
