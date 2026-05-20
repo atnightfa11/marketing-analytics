@@ -954,7 +954,7 @@ async def test_sdk_bootstrap_success_and_origin_failure(client):
     denied = client.post(
         "/api/sdk/bootstrap",
         json={"site_key": site_key},
-        headers={"Origin": "https://evil.example.com"},
+        headers={"Origin": "https://unrelated-example.org"},
     )
     assert denied.status_code == 403
 
@@ -967,6 +967,88 @@ async def test_sdk_bootstrap_success_and_origin_failure(client):
     body = ok.json()
     assert body["upload_token"]
     assert body["config"]["site_id"] == "site-bootstrap"
+
+
+@pytest.mark.asyncio
+async def test_sdk_bootstrap_allows_www_and_subdomains_for_same_base_domain(client):
+    await _set_site_plan("site-bootstrap-domain-scope", "free")
+    site_key = "vsk_bootstrapscope_secretvalue"
+    await _create_site_api_key("site-bootstrap-domain-scope", "bootstrapscope", site_key, "https://example.com")
+
+    ok_www = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "https://www.example.com"},
+    )
+    assert ok_www.status_code == 200, ok_www.text
+
+    ok_subdomain = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "https://app.example.com"},
+    )
+    assert ok_subdomain.status_code == 200, ok_subdomain.text
+
+
+@pytest.mark.asyncio
+async def test_sdk_bootstrap_www_allowed_pattern_accepts_apex_origin(client):
+    await _set_site_plan("site-bootstrap-www-allowed", "free")
+    site_key = "vsk_bootstrapwww_secretvalue"
+    await _create_site_api_key("site-bootstrap-www-allowed", "bootstrapwww", site_key, "https://www.example.com")
+
+    ok_apex = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "https://example.com"},
+    )
+    assert ok_apex.status_code == 200, ok_apex.text
+
+
+@pytest.mark.asyncio
+async def test_sdk_bootstrap_rejects_scheme_mismatch(client):
+    await _set_site_plan("site-bootstrap-scheme-mismatch", "free")
+    site_key = "vsk_bootstrapscheme_secretvalue"
+    await _create_site_api_key("site-bootstrap-scheme-mismatch", "bootstrapscheme", site_key, "https://example.com")
+
+    denied = client.post(
+        "/api/sdk/bootstrap",
+        json={"site_key": site_key},
+        headers={"Origin": "http://example.com"},
+    )
+    assert denied.status_code == 403, denied.text
+
+
+@pytest.mark.asyncio
+async def test_shuffle_allows_subdomain_origin_for_apex_token(client):
+    token_resp = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": "site-shuffle-domain-scope",
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert token_resp.status_code == 200, token_resp.text
+    token = token_resp.json()["token"]
+
+    batch = [
+        {
+            "site_id": "site-shuffle-domain-scope",
+            "kind": "pageviews",
+            "payload": {"randomized_bit": 1},
+            "epsilon_used": 0.1,
+            "sampling_rate": 1.0,
+            "client_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
+    resp = client.post(
+        "/api/shuffle",
+        json={"token": token, "nonce": "nonce-shuffle-domain-scope", "batch": batch},
+        headers={"Origin": "https://www.example.com", "X-Bypass-Delay": "true"},
+    )
+    assert resp.status_code == 202, resp.text
 
 
 def test_sdk_bootstrap_preflight_allows_customer_https_origin(client):

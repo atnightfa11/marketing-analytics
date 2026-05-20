@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import defaultdict
-from fnmatch import fnmatch
 from typing import DefaultDict
 from urllib.parse import urlsplit
 
@@ -15,6 +14,7 @@ from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import require_site_access
 from ..models import RawReport, SiteApiKey, SitePlan, get_session
+from ..origin_policy import origin_matches_allowed_pattern
 from ..routers.upload_token import issue_upload_token
 from ..schemas import SdkBootstrapConfig, SdkBootstrapRequest, SdkBootstrapResponse, SdkInstallVerifyResponse
 
@@ -87,7 +87,7 @@ async def sdk_bootstrap(
     except argon_exceptions.VerifyMismatchError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Site key is invalid") from exc
 
-    if not fnmatch(origin, key_record.allowed_origin_pattern):
+    if not origin_matches_allowed_pattern(origin, key_record.allowed_origin_pattern):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Origin not allowed for this site key")
 
     ip = request.client.host if request.client else "unknown"

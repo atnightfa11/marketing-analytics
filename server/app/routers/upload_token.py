@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 import secrets
-from fnmatch import fnmatch
 from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
@@ -16,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..access_control import require_admin_api_token
 from ..config import Settings, TokenClaims, get_settings
 from ..models import UploadToken, get_session
+from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import UploadTokenRequest, UploadTokenResponse
 
 router = APIRouter(tags=["tokens"])
@@ -78,7 +78,7 @@ async def issue_upload_token(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TTL exceeds policy")
 
     normalized_origin = _normalize_origin(request_origin) if request_origin else None
-    if normalized_origin and not fnmatch(normalized_origin, allowed_origin):
+    if normalized_origin and not origin_matches_allowed_pattern(normalized_origin, allowed_origin):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Origin does not match allowed pattern")
 
     claims = TokenClaims(

@@ -11,7 +11,6 @@ import logging
 import re
 import secrets
 from collections import defaultdict
-from fnmatch import fnmatch
 from typing import DefaultDict
 from zoneinfo import ZoneInfo
 
@@ -23,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import TokenClaims, get_settings
 from ..hostnames import hostname_from_request_headers
 from ..models import LdpReport, RawReport, SitePlan, TokenNonce, UploadToken, get_session
+from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import CollectRequest, ShuffleRequest
 
 try:
@@ -455,7 +455,7 @@ async def shuffle_ingest(
     origin = request.headers.get("Origin")
     if not origin:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin header is required")
-    if not fnmatch(origin, claims.allowed_origin):
+    if not origin_matches_allowed_pattern(origin, claims.allowed_origin):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Origin mismatch")
     await validate_token(claims, payload.token, session)
     plan = await resolve_plan(claims.site_id, claims.plan, session)
