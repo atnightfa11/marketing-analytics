@@ -147,6 +147,23 @@ const readGoalStore = (): GoalStore => {
   }
 };
 
+const extractApiErrorMessage = (error: unknown): string | null => {
+  if (!error || typeof error !== "object") return null;
+  const maybeError = error as { response?: { status?: number; data?: { detail?: string } } };
+  const status = maybeError.response?.status;
+  const detail = maybeError.response?.data?.detail;
+  if (status === 403) {
+    return "This account does not have access to this site. Log out and sign in with the correct account.";
+  }
+  if (status === 401) {
+    return "Your session is not valid for this site. Log out and sign in again.";
+  }
+  if (typeof detail === "string" && detail.trim()) {
+    return detail.trim();
+  }
+  return null;
+};
+
 const writeGoalStore = (store: GoalStore) => {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(DASHBOARD_GOALS_STORAGE_KEY, JSON.stringify(store));
@@ -1077,6 +1094,7 @@ const Overview: React.FC = () => {
     hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
   });
   const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [customRange, setCustomRange] = useState<DateRange>(() => ({
     start: searchParams.get("start") ?? "",
     end: searchParams.get("end") ?? "",
@@ -1173,13 +1191,18 @@ const Overview: React.FC = () => {
       )
     )
       .then((results) => {
+        setAccessError(null);
         const next: Record<string, AggregateWindow[]> = {};
         results.forEach((item) => {
           next[item.metric] = item.data;
         });
         setAggregateMap(next);
       })
-      .catch(console.error);
+      .catch((error) => {
+        const message = extractApiErrorMessage(error);
+        if (message) setAccessError(message);
+        console.error(error);
+      });
   }, [canQuery, token, siteId, hostnameFilter]);
 
   useEffect(() => {
@@ -1202,10 +1225,15 @@ const Overview: React.FC = () => {
     if (!canQuery) return;
     fetchForecast(token ?? undefined, selectedMetric, siteId)
       .then((data) => {
+        setAccessError(null);
         setForecast(data.forecast);
         setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly });
       })
-      .catch(console.error);
+      .catch((error) => {
+        const message = extractApiErrorMessage(error);
+        if (message) setAccessError(message);
+        console.error(error);
+      });
   }, [canQuery, token, selectedMetric, siteId, showSeededBreakdowns]);
 
   const toDaily = (windows: AggregateWindow[]) => {
@@ -1474,12 +1502,15 @@ const Overview: React.FC = () => {
     const end = breakdownDateRange?.end;
     fetchBreakdown("hostnames", token ?? undefined, siteId, start, end, 50)
       .then((response) => {
+        setAccessError(null);
         const options = response.rows
           .map((row) => row.label)
           .filter((label) => label && label !== "Unknown");
         setHostnameOptions(options);
       })
-      .catch(() => {
+      .catch((error) => {
+        const message = extractApiErrorMessage(error);
+        if (message) setAccessError(message);
         setHostnameOptions([]);
       });
   }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
@@ -1527,6 +1558,7 @@ const Overview: React.FC = () => {
     )
       .then((results) => {
         if (cancelled) return;
+        setAccessError(null);
         const next: Record<BreakdownDimension, BreakdownData> = {
           sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
           pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
@@ -1550,7 +1582,11 @@ const Overview: React.FC = () => {
         });
         setBreakdownData(next);
       })
-      .catch(console.error);
+      .catch((error) => {
+        const message = extractApiErrorMessage(error);
+        if (message) setAccessError(message);
+        console.error(error);
+      });
 
     return () => {
       cancelled = true;
@@ -2973,6 +3009,11 @@ const Overview: React.FC = () => {
             Metrics · {range}{hostnameFilter ? ` · Host: ${hostnameFilter}` : ""}
           </div>
         </div>
+        {accessError && (
+          <div className="border-l-2 border-[#8B2635] bg-[#FFF4F5] px-4 py-3 text-sm text-[#6B1F2A]" style={fontBody}>
+            {accessError}
+          </div>
+        )}
         <KPIGrid
           values={scaledTotals}
           comparisonValues={scaledKpiComparisonValues}
