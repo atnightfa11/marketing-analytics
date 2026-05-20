@@ -497,6 +497,39 @@ const renderFilterDimensionLabel = (dimension: string): string =>
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 
+const breakdownFallbackDimensionLabels: Record<string, string> = {
+  acquisition: "Channel",
+  "top pages": "Page",
+  countries: "Country",
+  devices: "Device",
+  goals: "Goal",
+  "time parting": "Time",
+};
+
+const getBreakdownDimensionHeaderLabel = (title: string, rowDimension?: string): string => {
+  if (rowDimension) return renderFilterDimensionLabel(rowDimension);
+  return breakdownFallbackDimensionLabels[title.toLowerCase()] ?? "Dimension";
+};
+
+const breakdownBarColorsByDimension: Record<string, string> = {
+  channel: "#DCE6F5",
+  source: "#DCE6F5",
+  source_medium: "#DCE6F5",
+  campaign: "#DCE6F5",
+  content: "#DCE6F5",
+  term: "#DCE6F5",
+  page: "#EFE9DE",
+  country: "#EFE9DE",
+  device: "#DDEFE8",
+  goal: "#E8E1F0",
+  hour_of_day: "#E2E9F5",
+  day_of_week: "#E2E9F5",
+  hostname: "#E4ECF3",
+};
+
+const getBreakdownBarColor = (rowDimension?: string): string =>
+  (rowDimension && breakdownBarColorsByDimension[rowDimension]) || "#DCE6F5";
+
 const createEmptyBreakdownData = (
   primaryMetric: BreakdownMetricKey,
   metricKeys: BreakdownMetricKey[] = [primaryMetric]
@@ -841,11 +874,29 @@ const TableBlock: React.FC<{
         </div>
       );
     }
+    const dimensionLabel = getBreakdownDimensionHeaderLabel(title, rowDimension);
+    const metricMinWidth = compact ? "minmax(64px,auto)" : "minmax(86px,auto)";
+    const gridTemplateColumns = `minmax(0,1fr) ${metricKeys.map(() => metricMinWidth).join(" ")}`;
+    const gridStyle: React.CSSProperties = { gridTemplateColumns };
+    const barColor = getBreakdownBarColor(rowDimension);
     return (
-      <div className="space-y-2">
+      <div className="space-y-1.5">
+        <div
+          className={`grid items-center gap-2 border-b border-[var(--color-border-subtle)] pb-2 text-[11px] text-[#6B7280] ${
+            compact ? "" : "text-xs"
+          }`}
+          style={{ ...fontBody, ...gridStyle }}
+        >
+          <div className="uppercase tracking-[0.06em]">{dimensionLabel}</div>
+          {metricKeys.map((metricKey) => (
+            <div key={metricKey} className="text-right uppercase tracking-[0.06em]">
+              {breakdownMetricInlineLabels[metricKey]}
+            </div>
+          ))}
+        </div>
         {rows.map((row) => {
           const primaryValue = getBreakdownMetricValue(row, primaryMetric);
-          const width = maxValue > 0 ? Math.max(4, (primaryValue / maxValue) * 100) : 0;
+          const width = maxValue > 0 ? Math.max(5, (primaryValue / maxValue) * 100) : 0;
           const isActive = Boolean(
             rowDimension && activeFilters?.some((f) => f.dimension === rowDimension && f.value === row.label)
           );
@@ -854,11 +905,11 @@ const TableBlock: React.FC<{
             : "whitespace-normal break-words";
           const textSize = compact ? "text-[13px]" : "text-sm";
           return (
-            <div key={row.label} className={compact ? "py-1.5" : "py-2"}>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+            <div key={row.label} className={compact ? "py-1" : "py-1.5"}>
+              <div className="grid items-center gap-2" style={gridStyle}>
                 <button
                   type="button"
-                  className={`min-w-0 ${labelClass} text-left ${textSize} text-[#374151] transition-colors ${
+                  className={`relative min-w-0 overflow-hidden rounded-sm px-2 py-1.5 text-left ${textSize} text-[#374151] transition-colors ${
                     rowDimension && onToggleFilter
                       ? isActive
                         ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
@@ -871,23 +922,23 @@ const TableBlock: React.FC<{
                     onToggleFilter(rowDimension, row, totalValue, primaryMetric);
                   }}
                 >
-                  {renderBreakdownLabel(rowDimension, row.label)}
+                  <span
+                    className="pointer-events-none absolute inset-y-0 left-0 rounded-sm"
+                    style={{ width: `${width}%`, backgroundColor: barColor }}
+                  />
+                  <span className={`relative z-10 block min-w-0 ${labelClass}`}>
+                    {renderBreakdownLabel(rowDimension, row.label)}
+                  </span>
                 </button>
-                <div className="flex items-center gap-3 whitespace-nowrap text-right">
-                  {metricKeys.map((metricKey) => (
-                    <div key={metricKey} className="flex items-baseline gap-1 text-right">
-                      <div className={`${textSize} font-medium text-[#111827] metric-number`} style={fontMetric}>
-                        {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
-                      </div>
-                      <div className="text-[10px] text-[#6B7280]" style={fontBody}>
-                        {breakdownMetricInlineLabels[metricKey]}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="mt-2.5 h-1.5 w-full rounded-sm bg-[#EEF3F6]">
-                <div className="h-1.5 rounded-sm bg-[#A9C7CF]" style={{ width: `${width}%` }} />
+                {metricKeys.map((metricKey) => (
+                  <div
+                    key={metricKey}
+                    className={`${textSize} whitespace-nowrap text-right font-medium text-[#111827] metric-number`}
+                    style={fontMetric}
+                  >
+                    {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
+                  </div>
+                ))}
               </div>
             </div>
           );
