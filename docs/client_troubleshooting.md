@@ -6,7 +6,7 @@
 
 **Fix:**
 
-- Ensure `CORS_ORIGIN_REGEX` allows customer origins (recommended: `^https://.*$|^http://(localhost|127\\.0\\.0\\.1)(:\\d+)?$`).
+- Ensure `CORS_ORIGIN_REGEX` allows customer origins (recommended: `^https?://.*$`).
 - If you intentionally run a strict allow-list, add site origins via `CORS_ORIGINS_CSV`.
 - You can temporarily use `CORS_ALLOW_ALL=true` during incident mitigation.
 - Ensure request `Origin` matches site key allowed origin pattern.

@@ -985,6 +985,22 @@ def test_sdk_bootstrap_preflight_allows_customer_https_origin(client):
     assert "POST" in allow_methods
 
 
+def test_sdk_bootstrap_preflight_allows_customer_http_origin(client):
+    resp = client.options(
+        "/api/sdk/bootstrap",
+        headers={
+            "Origin": "http://customer.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert resp.status_code == 200
+    allowed_origin = resp.headers.get("access-control-allow-origin")
+    assert allowed_origin in {"*", "http://customer.example"}
+    allow_methods = (resp.headers.get("access-control-allow-methods") or "").upper()
+    assert "POST" in allow_methods
+
+
 @pytest.mark.asyncio
 async def test_sdk_bootstrap_rejects_site_id_mismatch(client):
     await _set_site_plan("site-bootstrap-mismatch", "standard")

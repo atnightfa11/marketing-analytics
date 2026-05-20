@@ -76,7 +76,7 @@ class Settings(BaseSettings):
   # Keep CORS broad for browser clients while endpoint-level token/origin checks
   # still enforce site-level authorization.
   cors_origin_regex: str | None = Field(
-      default=r"^https://.*$|^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+      default=r"^https?://.*$"
   )
 
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
