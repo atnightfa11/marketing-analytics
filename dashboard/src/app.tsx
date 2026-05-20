@@ -1003,6 +1003,27 @@ const TableBlock: React.FC<{
   );
 };
 
+const LogoutButton: React.FC<{ className?: string }> = ({ className }) => {
+  const { token, authEnabled, logout } = useAuth();
+  const navigate = useNavigate();
+
+  if (!authEnabled || !token) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        logout();
+        navigate("/", { replace: true });
+      }}
+      className={className ?? "border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500 hover:border-gray-300 hover:text-[#1F2937]"}
+      style={fontBody}
+    >
+      Log out
+    </button>
+  );
+};
+
 const Overview: React.FC = () => {
   const { token, authEnabled } = useAuth();
   const canQuery = !authEnabled || Boolean(token);
@@ -2937,6 +2958,7 @@ const Overview: React.FC = () => {
             >
               Settings
             </a>
+            <LogoutButton />
           </div>
         </div>
       </header>
@@ -3642,7 +3664,10 @@ const Charts: React.FC = () => (
         <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <LogoutButton />
+        </div>
       </div>
     </header>
     <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
@@ -3662,7 +3687,10 @@ const Alerts: React.FC = () => (
         <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <LogoutButton />
+        </div>
       </div>
     </header>
     <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
@@ -3768,7 +3796,10 @@ const Settings: React.FC = () => {
           <a href={`/?site_id=${encodeURIComponent(siteId)}`} className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </a>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <LogoutButton />
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-6xl space-y-4 px-6 pb-10 pt-6">
@@ -3940,6 +3971,7 @@ const BillingSuccess: React.FC = () => {
           <a href="/" className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </a>
+          <LogoutButton />
         </div>
       </header>
       <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
@@ -3980,6 +4012,7 @@ const BillingCancel: React.FC = () => (
         <a href="/" className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
           Valid
         </a>
+        <LogoutButton />
       </div>
     </header>
     <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
