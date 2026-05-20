@@ -194,7 +194,8 @@ def get_allowed_site_ids(claims: dict[str, Any] | None) -> set[str] | None:
 
     allowed = user_map.get(username)
     if allowed is None:
-        return set()
+        # No explicit mapping for this user: fall back to DB ownership checks.
+        return None
     if "*" in allowed:
         return None
     return allowed
