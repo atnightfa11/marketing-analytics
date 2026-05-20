@@ -72,7 +72,12 @@ class Settings(BaseSettings):
   )
   cors_origins_csv: str | None = None
   cors_allow_all: bool = False
-  cors_origin_regex: str | None = None
+  # Public SDK/browser ingest runs on customer-owned domains.
+  # Keep CORS broad for browser clients while endpoint-level token/origin checks
+  # still enforce site-level authorization.
+  cors_origin_regex: str | None = Field(
+      default=r"^https://.*$|^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+  )
 
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

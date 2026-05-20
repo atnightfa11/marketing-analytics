@@ -45,8 +45,13 @@ Optional attribution controls:
 
 1. Open your website and navigate a few pages.
 2. Confirm `POST https://api.validanalytics.io/api/shuffle` returns `202`.
-3. Open `https://app.validanalytics.io/site/live-validanalytics-io` and verify metrics populate.
-4. Optional API check:
+3. For immediate install confirmation (no reducer wait), call:
+   ```bash
+   curl -s "https://api.validanalytics.io/api/sdk/verify-install?site_id=live-validanalytics-io&lookback_minutes=15" \
+     -H "Authorization: Bearer <dashboard_token>"
+   ```
+4. Open `https://app.validanalytics.io/site/live-validanalytics-io` and verify metrics populate.
+5. Optional aggregate API check:
    ```bash
    curl -s 'https://api.validanalytics.io/api/aggregate?site_id=live-validanalytics-io&metric=pageviews&window=standard'
    ```

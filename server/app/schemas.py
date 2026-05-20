@@ -67,6 +67,15 @@ class SdkBootstrapResponse(BaseModel):
     config: SdkBootstrapConfig
 
 
+class SdkInstallVerifyResponse(BaseModel):
+    site_id: str
+    lookback_minutes: int
+    has_recent_activity: bool
+    recent_reports: int
+    counts_by_kind: dict[str, int]
+    last_report_at: dt.datetime | None = None
+
+
 class AuthStatusResponse(BaseModel):
     enabled: bool
 

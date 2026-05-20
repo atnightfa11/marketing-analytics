@@ -969,6 +969,22 @@ async def test_sdk_bootstrap_success_and_origin_failure(client):
     assert body["config"]["site_id"] == "site-bootstrap"
 
 
+def test_sdk_bootstrap_preflight_allows_customer_https_origin(client):
+    resp = client.options(
+        "/api/sdk/bootstrap",
+        headers={
+            "Origin": "https://customer.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert resp.status_code == 200
+    allowed_origin = resp.headers.get("access-control-allow-origin")
+    assert allowed_origin in {"*", "https://customer.example"}
+    allow_methods = (resp.headers.get("access-control-allow-methods") or "").upper()
+    assert "POST" in allow_methods
+
+
 @pytest.mark.asyncio
 async def test_sdk_bootstrap_rejects_site_id_mismatch(client):
     await _set_site_plan("site-bootstrap-mismatch", "standard")
@@ -995,6 +1011,81 @@ async def test_sdk_bootstrap_rejects_inactive_site_key(client):
         headers={"Origin": "https://example.com"},
     )
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_install_returns_recent_raw_activity(client):
+    site_id = "site-verify-install"
+    await _set_site_plan(site_id, "free")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"randomized_bit": 1},
+        server_received_at=now - timedelta(minutes=2),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="sessions",
+        payload={"randomized_bit": 1},
+        server_received_at=now - timedelta(minutes=1),
+    )
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-verify-install-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "owner", "password": "secret-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = client.get(
+            "/api/sdk/verify-install",
+            params={"site_id": site_id, "lookback_minutes": 15},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["site_id"] == site_id
+        assert body["has_recent_activity"] is True
+        assert body["recent_reports"] >= 2
+        assert body["counts_by_kind"].get("pageviews", 0) >= 1
+        assert body["counts_by_kind"].get("sessions", 0) >= 1
+        assert body["last_report_at"] is not None
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
 
 
 @pytest.mark.asyncio

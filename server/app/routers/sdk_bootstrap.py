@@ -7,14 +7,16 @@ from typing import DefaultDict
 from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher, exceptions as argon_exceptions
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..models import SiteApiKey, SitePlan, get_session
+from ..dashboard_auth import require_dashboard_auth
+from ..dependencies import require_site_access
+from ..models import RawReport, SiteApiKey, SitePlan, get_session
 from ..routers.upload_token import issue_upload_token
-from ..schemas import SdkBootstrapConfig, SdkBootstrapRequest, SdkBootstrapResponse
+from ..schemas import SdkBootstrapConfig, SdkBootstrapRequest, SdkBootstrapResponse, SdkInstallVerifyResponse
 
 router = APIRouter(tags=["sdk"])
 settings = get_settings()
@@ -117,4 +119,50 @@ async def sdk_bootstrap(
             shuffle_url="/api/shuffle",
             token_ttl_seconds=settings.UPLOAD_TOKEN_TTL_SECONDS,
         ),
+    )
+
+
+@router.get(
+    "/sdk/verify-install",
+    response_model=SdkInstallVerifyResponse,
+    dependencies=[Depends(require_dashboard_auth)],
+)
+async def sdk_verify_install(
+    site_id: str,
+    lookback_minutes: int = Query(default=15, ge=1, le=24 * 60),
+    _: None = Depends(require_site_access),
+    session: AsyncSession = Depends(get_session),
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(minutes=lookback_minutes)
+
+    counts_rows = (
+        await session.execute(
+            select(RawReport.kind, func.count(RawReport.id))
+            .where(
+                RawReport.site_id == site_id,
+                RawReport.server_received_at >= cutoff,
+            )
+            .group_by(RawReport.kind)
+        )
+    ).all()
+    counts_by_kind = {kind: int(count) for kind, count in counts_rows}
+    recent_reports = int(sum(counts_by_kind.values()))
+
+    last_report_at = (
+        await session.execute(
+            select(func.max(RawReport.server_received_at)).where(
+                RawReport.site_id == site_id,
+                RawReport.server_received_at >= cutoff,
+            )
+        )
+    ).scalar_one_or_none()
+
+    return SdkInstallVerifyResponse(
+        site_id=site_id,
+        lookback_minutes=lookback_minutes,
+        has_recent_activity=recent_reports > 0,
+        recent_reports=recent_reports,
+        counts_by_kind=counts_by_kind,
+        last_report_at=last_report_at,
     )
