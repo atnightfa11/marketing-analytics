@@ -2171,6 +2171,70 @@ async def test_dashboard_auth_site_access_map_missing_user_falls_back_to_db_owne
 
 
 @pytest.mark.asyncio
+async def test_dashboard_auth_site_access_map_overrides_global_allowed_site_ids(client):
+    site_id = "site-access-map-overrides-allowlist"
+    base_start = datetime(2026, 4, 11, 18, 30, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=5.0,
+        window_start=base_start,
+    )
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = '{"validheather":"pw-heather"}'
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-map-precedence-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = "live-validanalytics-io"
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = (
+        '{"validheather":["site-access-map-overrides-allowlist"]}'
+    )
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "validheather", "password": "pw-heather"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+
+        resp = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_dashboard_auth_unclaimed_sites_require_explicit_opt_in(client):
     site_id = "site-unclaimed-access"
     base_start = datetime(2026, 4, 11, 17, 0, tzinfo=timezone.utc)

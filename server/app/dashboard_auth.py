@@ -20,6 +20,13 @@ settings: Settings = get_settings()
 password_hasher = PasswordHasher()
 
 
+def _normalize_username(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
 def _b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
 
@@ -77,15 +84,18 @@ def _decode_access_token(token: str) -> dict[str, Any]:
 
 def validate_credentials(username: str, password: str) -> bool:
     _require_auth_config()
+    normalized_username = _normalize_username(username)
+    if not normalized_username:
+        return False
     users = _parsed_auth_users()
     if users:
-        expected_password = users.get(username)
+        expected_password = users.get(normalized_username)
         return isinstance(expected_password, str) and secrets.compare_digest(password, expected_password)
-    configured_username = settings.DASHBOARD_AUTH_USERNAME
+    configured_username = _normalize_username(settings.DASHBOARD_AUTH_USERNAME)
     configured_password = settings.DASHBOARD_AUTH_PASSWORD
     if not configured_username or not configured_password:
         return False
-    return secrets.compare_digest(username, configured_username) and secrets.compare_digest(password, configured_password)
+    return secrets.compare_digest(normalized_username, configured_username) and secrets.compare_digest(password, configured_password)
 
 
 async def validate_credentials_async(username: str, password: str, session: AsyncSession) -> bool:
@@ -125,9 +135,7 @@ def _parse_auth_users(raw: str) -> dict[str, str]:
 
     users: dict[str, str] = {}
     for username, value in parsed.items():
-        if not isinstance(username, str):
-            continue
-        normalized_username = username.strip()
+        normalized_username = _normalize_username(username)
         if not normalized_username:
             continue
         if isinstance(value, str):
@@ -158,7 +166,8 @@ def _parse_site_access_map(raw: str) -> dict[str, set[str]]:
         raise RuntimeError("DASHBOARD_SITE_ACCESS_JSON must be a JSON object")
     access_map: dict[str, set[str]] = {}
     for username, site_ids in parsed.items():
-        if not isinstance(username, str):
+        normalized_username = _normalize_username(username)
+        if not normalized_username:
             continue
         if isinstance(site_ids, str):
             ids = {site_ids.strip()} if site_ids.strip() else set()
@@ -166,7 +175,7 @@ def _parse_site_access_map(raw: str) -> dict[str, set[str]]:
             ids = {str(site_id).strip() for site_id in site_ids if str(site_id).strip()}
         else:
             ids = set()
-        access_map[username] = ids
+        access_map[normalized_username] = ids
     return access_map
 
 
@@ -178,27 +187,25 @@ def get_allowed_site_ids(claims: dict[str, Any] | None) -> set[str] | None:
     if not settings.DASHBOARD_AUTH_ENABLED:
         return None
 
+    username = _normalize_username(claims.get("sub") if isinstance(claims, dict) else None)
+
+    user_map = _parsed_site_access_map()
+    if user_map:
+        if not username:
+            return set()
+        allowed = user_map.get(username)
+        if allowed is not None:
+            if "*" in allowed:
+                return None
+            return allowed
+
     if settings.DASHBOARD_ALLOWED_SITE_IDS:
         allowed = {item.strip() for item in settings.DASHBOARD_ALLOWED_SITE_IDS.split(",") if item.strip()}
         if "*" in allowed:
             return None
         return allowed
 
-    user_map = _parsed_site_access_map()
-    if not user_map:
-        return None
-
-    username = claims.get("sub") if isinstance(claims, dict) else None
-    if not isinstance(username, str) or not username:
-        return set()
-
-    allowed = user_map.get(username)
-    if allowed is None:
-        # No explicit mapping for this user: fall back to DB ownership checks.
-        return None
-    if "*" in allowed:
-        return None
-    return allowed
+    return None
 
 
 def enforce_site_access(site_id: str, claims: dict[str, Any] | None) -> None:
@@ -224,8 +231,8 @@ async def enforce_site_access_with_db(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
         return
 
-    username = claims.get("sub") if isinstance(claims, dict) else None
-    if not isinstance(username, str) or not username:
+    username = _normalize_username(claims.get("sub") if isinstance(claims, dict) else None)
+    if not username:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
 
     site = await session.get(DashboardSite, site_id)
@@ -234,5 +241,6 @@ async def enforce_site_access_with_db(
             # Temporary compatibility path for legacy sites not yet claimed in dashboard_sites.
             return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
-    if site.owner_username != username:
+    site_owner = _normalize_username(site.owner_username)
+    if site_owner != username:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")

@@ -65,7 +65,7 @@ Set these environment variables on the backend service:
 - `DASHBOARD_AUTH_USERS_JSON={"alice":"pw1","bob":"pw2"}` (optional, recommended for friend beta; when set, this overrides single-user username/password)
 - `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
 - `DASHBOARD_ALLOWED_SITE_IDS=<comma-separated-site-ids>` (optional, recommended for ownership auth on `site_id` endpoints)
-- `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; unmapped users are denied by default when this is set)
+- `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; explicit user mappings take precedence over `DASHBOARD_ALLOWED_SITE_IDS`, and unmapped users fall back to DB ownership checks)
 - `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended for public launch; set `true` only as a temporary fallback while migrating legacy demo sites)
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
 - `ENABLE_PROD_SCHEDULER=true`
