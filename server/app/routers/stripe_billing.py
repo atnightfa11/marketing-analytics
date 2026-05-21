@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import Settings, get_settings
 from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth
 from ..models import SitePlan, get_session
-from ..schemas import CheckoutSessionRequest, CheckoutSessionResponse
+from ..schemas import BillingStatusResponse, CheckoutSessionRequest, CheckoutSessionResponse
 
 router = APIRouter(tags=["billing"])
 settings: Settings = get_settings()
@@ -141,6 +141,19 @@ async def create_checkout_session(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc.user_message or str(exc))) from exc
 
     return CheckoutSessionResponse(checkout_url=checkout_session.url, session_id=checkout_session.id)
+
+
+@router.get("/billing/status", response_model=BillingStatusResponse, status_code=status.HTTP_200_OK)
+async def billing_status(
+    site_id: str,
+    auth_claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+):
+    await enforce_site_access_with_db(site_id=site_id, claims=auth_claims, session=session)
+    record = await session.get(SitePlan, site_id)
+    plan = record.plan if record else "free"
+    has_subscription = bool(record and record.stripe_subscription_id)
+    return BillingStatusResponse(site_id=site_id, plan=plan, has_subscription=has_subscription)
 
 
 @router.post("/stripe/webhook", status_code=status.HTTP_200_OK)

@@ -48,6 +48,12 @@ class CheckoutSessionResponse(BaseModel):
     session_id: str
 
 
+class BillingStatusResponse(BaseModel):
+    site_id: str
+    plan: Literal["free", "standard", "pro"]
+    has_subscription: bool
+
+
 class SdkBootstrapRequest(BaseModel):
     site_key: str = Field(min_length=12)
     site_id: str | None = None

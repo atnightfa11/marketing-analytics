@@ -16,7 +16,9 @@ import {
   BreakdownDimension,
   BreakdownMetricKey,
   BreakdownRow,
+  createCheckoutSession,
   fetchAggregate,
+  fetchBillingStatus,
   fetchBreakdown,
   fetchForecast,
   fetchSiteSettings,
@@ -28,7 +30,6 @@ import {
 import { AlertsPanel } from "./components/AlertsPanel";
 import { DeviceBreakdown } from "./components/DeviceBreakdown";
 import { KPIGrid } from "./components/KPIGrid";
-import { PrivacyControls } from "./components/PrivacyControls";
 import { TopCountries } from "./components/TopCountries";
 import { TopSources } from "./components/TopSources";
 import { useAuth } from "./hooks/useAuth";
@@ -3749,7 +3750,13 @@ const Settings: React.FC = () => {
   const querySiteId = searchParams.get("site_id") ?? undefined;
   const siteId = useMemo(() => resolveActiveSiteId(querySiteId), [querySiteId]);
   const [timezone, setTimezone] = useState<string>("UTC");
+  const [timezoneDraft, setTimezoneDraft] = useState<string>("UTC");
   const [timezoneStatus, setTimezoneStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
+  const [timezoneError, setTimezoneError] = useState<string | null>(null);
+  const [billingPlan, setBillingPlan] = useState<"free" | "standard" | "pro">("free");
+  const [hasSubscription, setHasSubscription] = useState<boolean>(false);
+  const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "redirecting" | "error">("idle");
+  const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [goals, setGoals] = useState<SiteGoalsMap>({});
   const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
@@ -3766,13 +3773,40 @@ const Settings: React.FC = () => {
     fetchSiteSettings(token ?? undefined, siteId)
       .then((settings) => {
         if (cancelled) return;
-        setTimezone(settings.timezone || "UTC");
+        const resolvedTimezone = settings.timezone || "UTC";
+        setTimezone(resolvedTimezone);
+        setTimezoneDraft(resolvedTimezone);
         setTimezoneStatus("idle");
+        setTimezoneError(null);
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) return;
         setTimezone("UTC");
+        setTimezoneDraft("UTC");
         setTimezoneStatus("error");
+        setTimezoneError(extractApiErrorMessage(error) ?? "Unable to load timezone settings.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, token, siteId]);
+
+  useEffect(() => {
+    if (!canQuery) return;
+    let cancelled = false;
+    setBillingStatus("loading");
+    setBillingMessage(null);
+    fetchBillingStatus(token ?? undefined, siteId)
+      .then((status) => {
+        if (cancelled) return;
+        setBillingPlan(status.plan);
+        setHasSubscription(Boolean(status.has_subscription));
+        setBillingStatus("idle");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setBillingStatus("error");
+        setBillingMessage(extractApiErrorMessage(error) ?? "Unable to load billing status right now.");
       });
     return () => {
       cancelled = true;
@@ -3792,19 +3826,85 @@ const Settings: React.FC = () => {
     [goals]
   );
 
-  const saveTimezone = async (nextTimezone: string) => {
-    setTimezone(nextTimezone);
+  const saveTimezone = async () => {
     setTimezoneStatus("saving");
+    setTimezoneError(null);
     try {
-      await updateSiteTimezone(nextTimezone, token ?? undefined, siteId);
+      const updated = await updateSiteTimezone(timezoneDraft, token ?? undefined, siteId);
+      const resolvedTimezone = updated.timezone || timezoneDraft;
+      setTimezone(resolvedTimezone);
+      setTimezoneDraft(resolvedTimezone);
       setTimezoneStatus("saved");
       window.setTimeout(() => {
         setTimezoneStatus((prev) => (prev === "saved" ? "idle" : prev));
       }, 1200);
-    } catch {
+    } catch (error) {
       setTimezoneStatus("error");
+      setTimezoneError(extractApiErrorMessage(error) ?? "Unable to update timezone right now.");
     }
   };
+
+  const beginStandardCheckout = async () => {
+    setBillingStatus("redirecting");
+    setBillingMessage(null);
+    try {
+      const origin = typeof window !== "undefined" ? window.location.origin : "https://app.validanalytics.io";
+      const successUrl = `${origin}/billing/success?site_id=${encodeURIComponent(siteId)}`;
+      const cancelUrl = `${origin}/settings?site_id=${encodeURIComponent(siteId)}`;
+      const checkoutPlan = billingPlan === "pro" ? "pro" : "standard";
+      const checkout = await createCheckoutSession(checkoutPlan, token ?? undefined, siteId, successUrl, cancelUrl);
+      window.location.assign(checkout.checkout_url);
+    } catch (error) {
+      setBillingStatus("error");
+      setBillingMessage(extractApiErrorMessage(error) ?? "Unable to start checkout right now.");
+    }
+  };
+
+  const hasTimezoneChanges = timezoneDraft !== timezone;
+
+  const billingDescription = (() => {
+    if (billingPlan === "standard") {
+      return hasSubscription
+        ? "Your Standard subscription is active for this site."
+        : "This site is marked Standard but no active subscription is linked yet.";
+    }
+    if (billingPlan === "pro") {
+      return "Your Pro subscription is active for this site.";
+    }
+    return "This site is on the Free plan.";
+  })();
+
+  const billingActionLabel =
+    billingPlan === "free"
+      ? "Upgrade To Standard"
+      : billingPlan === "standard"
+        ? "Update Standard Subscription"
+        : "Manage Pro Subscription";
+
+  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading";
+
+  const billingStatusText =
+    billingStatus === "loading"
+      ? "Loading billing status..."
+      : billingStatus === "redirecting"
+        ? "Opening secure Stripe checkout..."
+        : billingStatus === "error"
+          ? billingMessage ?? "Unable to load billing right now."
+          : billingDescription;
+
+  const timezoneStatusText =
+    timezoneStatus === "loading"
+      ? "Loading timezone..."
+      : timezoneStatus === "saving"
+        ? "Saving timezone..."
+        : timezoneStatus === "saved"
+          ? "Timezone updated."
+          : timezoneStatus === "error"
+            ? timezoneError ?? "Unable to update timezone right now."
+            : "Used to bucket daily trends and date-range reporting for this site.";
+
+  const timezoneStatusClassName = timezoneStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
+
 
   const submitGoal = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3871,8 +3971,8 @@ const Settings: React.FC = () => {
                 aria-label="Reporting timezone"
                 className="mt-2 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
                 style={fontBody}
-                value={timezone}
-                onChange={(event) => void saveTimezone(event.target.value)}
+                value={timezoneDraft}
+                onChange={(event) => setTimezoneDraft(event.target.value)}
               >
                 {timezoneOptions.map((tz) => (
                   <option key={tz} value={tz}>
@@ -3880,27 +3980,50 @@ const Settings: React.FC = () => {
                   </option>
                 ))}
               </select>
-              <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
-                {timezoneStatus === "loading" && "Loading timezone..."}
-                {timezoneStatus === "saving" && "Saving timezone..."}
-                {timezoneStatus === "saved" && "Timezone updated."}
-                {timezoneStatus === "error" && "Unable to update timezone right now."}
-                {(timezoneStatus === "idle" || !timezoneStatus) &&
-                  "Used to bucket daily trends and date-range reporting for this site."}
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => void saveTimezone()}
+                  disabled={!hasTimezoneChanges || timezoneStatus === "saving" || timezoneStatus === "loading"}
+                  className="border border-[#1B7F8E] bg-[#1B7F8E] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#0F6C79]"
+                  style={fontBody}
+                >
+                  Save Timezone
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimezoneDraft(timezone)}
+                  disabled={!hasTimezoneChanges || timezoneStatus === "saving"}
+                  className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                  style={fontBody}
+                >
+                  Reset
+                </button>
+              </div>
+              <div className={`mt-2 text-[11px] ${timezoneStatusClassName}`} style={fontBody}>
+                {timezoneStatusText}
               </div>
             </div>
             <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
               <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                Goal cadence
+                Subscription
               </div>
               <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
-                Period: Next 30 days
+                Current plan: <span className="font-semibold capitalize">{billingPlan}</span>
               </div>
-              <div className="text-sm text-[#1F2937]" style={fontBody}>
-                Repeat: Monthly
+              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                {billingStatusText}
               </div>
-              <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
-                Goals are shown in the forecast panel only for the metric currently selected on Overview.
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => void beginStandardCheckout()}
+                  disabled={billingActionDisabled}
+                  className="border border-[#1B7F8E] bg-[#1B7F8E] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#0F6C79]"
+                  style={fontBody}
+                >
+                  {billingActionLabel}
+                </button>
               </div>
             </div>
           </div>
@@ -3993,9 +4116,6 @@ const Settings: React.FC = () => {
           </div>
         </section>
 
-        <section className="border border-gray-200 bg-white p-4">
-          <PrivacyControls />
-        </section>
       </main>
     </div>
   );

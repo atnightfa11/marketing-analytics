@@ -66,6 +66,17 @@ export interface SiteSettings {
   timezone: string;
 }
 
+export interface BillingStatus {
+  site_id: string;
+  plan: "free" | "standard" | "pro";
+  has_subscription: boolean;
+}
+
+export interface CheckoutSessionResponse {
+  checkout_url: string;
+  session_id: string;
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
   withCredentials: false,
@@ -163,6 +174,36 @@ export async function updateSiteTimezone(timezone: string, token?: string, siteI
       headers: authHeaders(token),
       params: { site_id: resolvedSiteId },
     }
+  );
+  return response.data;
+}
+
+export async function fetchBillingStatus(token?: string, siteId?: string): Promise<BillingStatus> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/billing/status", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function createCheckoutSession(
+  plan: "standard" | "pro",
+  token?: string,
+  siteId?: string,
+  successUrl?: string,
+  cancelUrl?: string
+): Promise<CheckoutSessionResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/checkout/session",
+    {
+      site_id: resolvedSiteId,
+      plan,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    },
+    { headers: authHeaders(token) }
   );
   return response.data;
 }

@@ -1917,6 +1917,8 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             json={"site_id": site_id, "plan": "standard"},
         )
         assert unauthorized_checkout.status_code == 401
+        unauthorized_billing = client.get("/api/billing/status", params={"site_id": site_id})
+        assert unauthorized_billing.status_code == 401
 
         bad_login = client.post("/api/auth/login", json={"username": "owner", "password": "wrong"})
         assert bad_login.status_code == 401
@@ -1950,6 +1952,15 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert authorized_checkout.status_code in {502, 503}
+        authorized_billing = client.get(
+            "/api/billing/status",
+            params={"site_id": site_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert authorized_billing.status_code == 200
+        billing_body = authorized_billing.json()
+        assert billing_body["site_id"] == site_id
+        assert billing_body["plan"] == "free"
 
         forbidden_metrics = client.get(
             "/api/metrics",
