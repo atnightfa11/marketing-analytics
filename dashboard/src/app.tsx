@@ -38,7 +38,7 @@ import { formatNumber, formatPercent, formatShortDate } from "./utils/format";
 import { buildSourceMediumLabel, classifyChannelLabel, normalizeSourceLabel } from "./utils/sourceAttribution";
 import en from "./locales/en.json";
 
-const fontHeading: React.CSSProperties = { fontFamily: '"Playfair Display", serif' };
+const fontHeading: React.CSSProperties = { fontFamily: "var(--font-sans)" };
 const fontBody: React.CSSProperties = {
   fontFamily: "var(--font-sans)",
 };
@@ -530,23 +530,23 @@ const getBreakdownDimensionHeaderLabel = (title: string, rowDimension?: string):
 };
 
 const breakdownBarColorsByDimension: Record<string, string> = {
-  channel: "#E8F5F5",
-  source: "#E8F5F5",
-  source_medium: "#E8F5F5",
-  campaign: "#E8F5F5",
-  content: "#E8F5F5",
-  term: "#E8F5F5",
-  page: "#E8F5F5",
-  country: "#E8F5F5",
-  device: "#E8F5F5",
-  goal: "#E8F5F5",
-  hour_of_day: "#E8F5F5",
-  day_of_week: "#E8F5F5",
-  hostname: "#E8F5F5",
+  channel: "#eef2ff",
+  source: "#eef2ff",
+  source_medium: "#eef2ff",
+  campaign: "#eef2ff",
+  content: "#eef2ff",
+  term: "#eef2ff",
+  page: "#eef2ff",
+  country: "#eef2ff",
+  device: "#eef2ff",
+  goal: "#eef2ff",
+  hour_of_day: "#eef2ff",
+  day_of_week: "#eef2ff",
+  hostname: "#eef2ff",
 };
 
 const getBreakdownBarColor = (rowDimension?: string): string =>
-  (rowDimension && breakdownBarColorsByDimension[rowDimension]) || "#E8F5F5";
+  (rowDimension && breakdownBarColorsByDimension[rowDimension]) || "#eef2ff";
 
 const createEmptyBreakdownData = (
   primaryMetric: BreakdownMetricKey,
@@ -812,7 +812,7 @@ const ThemeToggle: React.FC = () => {
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       title={isDark ? "Switch to light mode" : "Switch to dark mode"}
       onClick={toggleTheme}
-      className="inline-flex h-7 w-7 items-center justify-center border border-gray-200 bg-white text-[#1F2937] transition-colors hover:text-[#0A5F6F] no-print"
+      className="inline-flex h-7 w-7 items-center justify-center border border-gray-200 bg-white text-[#1F2937] transition-colors hover:text-[#4338ca] no-print"
     >
       {isDark ? <SunIcon /> : <MoonIcon />}
     </button>
@@ -930,8 +930,8 @@ const TableBlock: React.FC<{
                   className={`relative min-w-0 overflow-hidden rounded-sm px-2 py-1.5 text-left ${textSize} text-[#374151] transition-colors ${
                     rowDimension && onToggleFilter
                       ? isActive
-                        ? "text-[#0A5F6F] underline decoration-[#0A5F6F] underline-offset-2"
-                        : "hover:text-[#0A5F6F] hover:underline hover:decoration-[#0A5F6F] hover:underline-offset-2"
+                        ? "text-[#4338ca] underline decoration-[#4338ca] underline-offset-2"
+                        : "hover:text-[#4338ca] hover:underline hover:decoration-[#4338ca] hover:underline-offset-2"
                       : ""
                   }`}
                   style={fontBody}
@@ -3081,7 +3081,7 @@ const Overview: React.FC = () => {
             </div>
           )}
         {activeFilters.length > 0 && (
-          <div className="sticky top-0 z-30 bg-[#0A5F6F] py-2 text-white shadow-sm no-print">
+          <div className="sticky top-0 z-30 bg-[#4338ca] py-2 text-white shadow-sm no-print">
             <div className="flex flex-wrap items-center gap-2 px-3 text-[12px]" style={fontBody}>
               <span className="text-[10px] uppercase tracking-[0.18em] text-white/70" style={fontMeta}>
                 Segment
@@ -3277,7 +3277,7 @@ const Overview: React.FC = () => {
                         dataKey="forecastBandSpan"
                         stackId="forecast-band"
                         stroke="none"
-                        fill="#4DB8B8"
+                        fill="#6366f1"
                         fillOpacity={0.16}
                         isAnimationActive={false}
                       />
@@ -3289,7 +3289,7 @@ const Overview: React.FC = () => {
                         type="linear"
                         dataKey="deltaPositiveRange"
                         stroke="none"
-                        fill="#1B7F8E"
+                        fill="#4f46e5"
                         fillOpacity={0.14}
                         isAnimationActive={false}
                         activeDot={false}
@@ -3311,7 +3311,7 @@ const Overview: React.FC = () => {
                     <Line
                       type="linear"
                       dataKey="actual"
-                      stroke="#1B7F8E"
+                      stroke="#4f46e5"
                       strokeWidth={2}
                       dot={false}
                       isAnimationActive={false}
@@ -3333,7 +3333,7 @@ const Overview: React.FC = () => {
                     <Line
                       type="linear"
                       dataKey="forecastLine"
-                      stroke="#0A5F6F"
+                      stroke="#4338ca"
                       strokeWidth={2}
                       strokeDasharray="6 6"
                       strokeOpacity={0.9}
@@ -3348,7 +3348,7 @@ const Overview: React.FC = () => {
           <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-[#4B5563]" style={fontBody}>
             {hasActual && (
               <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 bg-[#1B7F8E]" />
+                <span className="h-0.5 w-5 bg-[#4f46e5]" />
                 Actual
               </span>
             )}
@@ -3359,7 +3359,7 @@ const Overview: React.FC = () => {
                   Comparison
                 </span>
                 <span className="flex items-center gap-2">
-                  <span className="inline-block h-2.5 w-3 bg-[#1B7F8E]/20" />
+                  <span className="inline-block h-2.5 w-3 bg-[#4f46e5]/20" />
                   Ahead
                 </span>
                 <span className="flex items-center gap-2">
@@ -3370,13 +3370,13 @@ const Overview: React.FC = () => {
             )}
             {hasForecast && (
               <span className="flex items-center gap-2">
-                <span className="h-0.5 w-5 border-b border-dashed border-[#0A5F6F]" />
+                <span className="h-0.5 w-5 border-b border-dashed border-[#4338ca]" />
                 Forecast
               </span>
             )}
             {hasForecastBand && (
               <span className="flex items-center gap-2">
-                <span className="h-2 w-5 bg-[#4DB8B8]/30" />
+                <span className="h-2 w-5 bg-[#6366f1]/30" />
                 Forecast interval
               </span>
             )}
@@ -3985,7 +3985,7 @@ const Settings: React.FC = () => {
                   type="button"
                   onClick={() => void saveTimezone()}
                   disabled={!hasTimezoneChanges || timezoneStatus === "saving" || timezoneStatus === "loading"}
-                  className="border border-[#1B7F8E] bg-[#1B7F8E] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#0F6C79]"
+                  className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                   style={fontBody}
                 >
                   Save Timezone
@@ -4019,7 +4019,7 @@ const Settings: React.FC = () => {
                   type="button"
                   onClick={() => void beginStandardCheckout()}
                   disabled={billingActionDisabled}
-                  className="border border-[#1B7F8E] bg-[#1B7F8E] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#0F6C79]"
+                  className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                   style={fontBody}
                 >
                   {billingActionLabel}
@@ -4068,7 +4068,7 @@ const Settings: React.FC = () => {
             </div>
             <button
               type="submit"
-              className="self-end border border-[#1B7F8E] bg-[#1B7F8E] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#0F6C79]"
+              className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
               style={fontBody}
             >
               Save goal

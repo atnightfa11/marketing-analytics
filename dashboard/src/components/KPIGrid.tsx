@@ -92,7 +92,7 @@ export const KPIGrid: React.FC<Props> = ({
           : "—";
         const deltaClass = Number.isFinite(delta)
           ? delta >= 0
-            ? "text-[#0A5F6F]"
+            ? "text-[#4338ca]"
             : "text-[#8B2635]"
           : "text-gray-400";
         const isActive = selectedMetric === card.key;
@@ -105,12 +105,12 @@ export const KPIGrid: React.FC<Props> = ({
             type="button"
             onClick={() => onSelectMetric?.(card.key)}
             className={`flex ${showComparisonRows ? "min-h-[132px]" : "min-h-[96px]"} flex-col justify-between border-b border-r border-[var(--color-border-subtle)] px-4 py-2 text-left transition-colors ${
-              isActive ? "bg-[#E8F5F5]" : "bg-white hover:bg-[#F9FAFB]"
+              isActive ? "bg-[#eef2ff]" : "bg-white hover:bg-[#F9FAFB]"
             }`}
           >
             <div className="min-w-0">
               <div
-                className={`label-tight truncate font-bold ${isActive ? "text-[#0A5F6F]" : "text-[#1F2937]"}`}
+                className={`label-tight truncate font-bold ${isActive ? "text-[#4338ca]" : "text-[#1F2937]"}`}
                 style={fontBody}
                 title={card.label}
               >
