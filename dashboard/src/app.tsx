@@ -24,6 +24,7 @@ import {
   fetchSiteSettings,
   ForecastEntry,
   ForecastResponse,
+  importHistoricalCsv,
   resolveActiveSiteId,
   updateSiteTimezone,
 } from "./api";
@@ -3757,6 +3758,9 @@ const Settings: React.FC = () => {
   const [hasSubscription, setHasSubscription] = useState<boolean>(false);
   const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "redirecting" | "error">("idle");
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
+  const [importCsvText, setImportCsvText] = useState<string>("");
+  const [importStatus, setImportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [importMessage, setImportMessage] = useState<string | null>(null);
   const [goals, setGoals] = useState<SiteGoalsMap>({});
   const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
@@ -3860,7 +3864,41 @@ const Settings: React.FC = () => {
     }
   };
 
+  const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setImportStatus("idle");
+    setImportMessage(null);
+    try {
+      setImportCsvText(await file.text());
+    } catch {
+      setImportStatus("error");
+      setImportMessage("Unable to read that CSV file.");
+    }
+  };
+
+  const submitHistoricalImport = async () => {
+    const csvText = importCsvText.trim();
+    if (!csvText) {
+      setImportStatus("error");
+      setImportMessage("Paste or upload a CSV before importing.");
+      return;
+    }
+    setImportStatus("loading");
+    setImportMessage(null);
+    try {
+      const result = await importHistoricalCsv(csvText, token ?? undefined, siteId);
+      setImportStatus("success");
+      setImportMessage(`Imported ${formatNumber(result.imported_rows)} rows across ${formatNumber(result.reduced_days)} days.`);
+    } catch (error) {
+      setImportStatus("error");
+      setImportMessage(extractApiErrorMessage(error) ?? "Unable to import historical data right now.");
+    }
+  };
+
   const hasTimezoneChanges = timezoneDraft !== timezone;
+  const canImportHistoricalData = billingPlan === "standard";
+  const importStatusClassName = importStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
 
   const billingDescription = (() => {
     if (billingPlan === "standard") {
@@ -4027,6 +4065,111 @@ const Settings: React.FC = () => {
               </div>
             </div>
           </div>
+        </section>
+
+        <section className="border border-gray-200 bg-white p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                Historical Import
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                Import daily aggregate CSV data for forecasting and long-range trend continuity.
+              </div>
+            </div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+              Standard only
+            </div>
+          </div>
+          {canImportHistoricalData ? (
+            <div className="mt-4 grid gap-3">
+              <div>
+                <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                  CSV File
+                </label>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => void handleImportFileChange(event)}
+                  className="mt-1 block w-full text-sm text-[#1F2937] file:mr-3 file:border file:border-gray-300 file:bg-white file:px-3 file:py-1.5 file:text-[10px] file:font-semibold file:uppercase file:tracking-[0.14em] file:text-gray-700 hover:file:border-gray-400"
+                  style={fontBody}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                  CSV Text
+                </label>
+                <textarea
+                  className="mt-1 min-h-[140px] w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                  style={fontMeta}
+                  value={importCsvText}
+                  onChange={(event) => {
+                    setImportCsvText(event.target.value);
+                    setImportStatus("idle");
+                    setImportMessage(null);
+                  }}
+                  placeholder={"day,metric,value\n2026-01-01,pageviews,1200\n2026-01-01,revenue,340.5"}
+                />
+                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                  Required columns: day, metric, value. Metrics: pageviews, uniques, sessions, conversions, revenue.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void submitHistoricalImport()}
+                  disabled={importStatus === "loading" || !importCsvText.trim()}
+                  className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                  style={fontBody}
+                >
+                  {importStatus === "loading" ? "Importing..." : "Import CSV"}
+                </button>
+                {importCsvText ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportCsvText("");
+                      setImportStatus("idle");
+                      setImportMessage(null);
+                    }}
+                    className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+              {importMessage ? (
+                <div className={`text-[11px] ${importStatusClassName}`} style={fontBody}>
+                  {importMessage}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+              <div className="text-sm text-[#1F2937]" style={fontBody}>
+                {billingPlan === "free"
+                  ? "Historical imports are available on Standard."
+                  : "Historical imports are currently limited to Standard sites."}
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                {billingPlan === "free"
+                  ? "Upgrade to bring in prior analytics data and use it for long-range trends and forecasts."
+                  : "This import path uses Standard aggregate storage and is not available for the current plan."}
+              </div>
+              {billingPlan === "free" ? (
+                <button
+                  type="button"
+                  onClick={() => void beginStandardCheckout()}
+                  disabled={billingActionDisabled}
+                  className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                  style={fontBody}
+                >
+                  Upgrade To Standard
+                </button>
+              ) : null}
+            </div>
+          )}
         </section>
 
         <section className="border border-gray-200 bg-white p-4">

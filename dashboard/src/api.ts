@@ -77,6 +77,12 @@ export interface CheckoutSessionResponse {
   session_id: string;
 }
 
+export interface HistoricalImportResponse {
+  site_id: string;
+  imported_rows: number;
+  reduced_days: number;
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
   withCredentials: false,
@@ -202,6 +208,23 @@ export async function createCheckoutSession(
       plan,
       success_url: successUrl,
       cancel_url: cancelUrl,
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function importHistoricalCsv(
+  csvText: string,
+  token?: string,
+  siteId?: string
+): Promise<HistoricalImportResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/import/historical-csv",
+    {
+      site_id: resolvedSiteId,
+      csv_text: csvText,
     },
     { headers: authHeaders(token) }
   );

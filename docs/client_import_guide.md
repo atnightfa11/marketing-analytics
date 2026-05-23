@@ -1,6 +1,8 @@
 # Client Historical Import Guide
 
-Valid supports historical import for migration and immediate forecasting.
+Valid supports Standard-plan historical import for migration and immediate forecasting.
+
+Imported data is aggregate-only. Valid does not import user-level, session-level, IP, or user-agent data.
 
 ## JSON endpoint
 
@@ -8,7 +10,7 @@ Valid supports historical import for migration and immediate forecasting.
 
 Headers:
 
-- `X-Upload-Token: <upload_token>`
+- `Authorization: Bearer <dashboard_token>`
 
 Body:
 
@@ -28,7 +30,7 @@ Body:
 
 Headers:
 
-- `X-Upload-Token: <upload_token>`
+- `Authorization: Bearer <dashboard_token>`
 
 Body:
 

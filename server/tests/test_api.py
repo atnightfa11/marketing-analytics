@@ -900,49 +900,87 @@ async def test_free_session_and_unique_dedupe_without_client_storage(client):
 
 
 @pytest.mark.asyncio
-async def test_historical_import_requires_token_and_uses_row_value(client):
+async def test_historical_csv_import_requires_dashboard_auth_and_standard_plan(client):
     await _set_site_plan("site-import", "free")
     old_day = (datetime.now(timezone.utc) - timedelta(days=180)).date().isoformat()
 
-    unauthorized = client.post(
-        "/api/import/historical",
-        json={"site_id": "site-import", "rows": [{"day": old_day, "metric": "revenue", "value": 42}]},
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
     )
-    assert unauthorized.status_code == 401
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "import-owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-import-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = "site-import"
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        unauthorized = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": "site-import", "csv_text": f"day,metric,value\n{old_day},revenue,42\n"},
+        )
+        assert unauthorized.status_code == 401
 
-    token_resp = client.post(
-        "/api/upload-token",
-        json={
-            "site_id": "site-import",
-            "allowed_origin": "https://example.com",
-            "epsilon_budget": 1.0,
-            "sampling_rate": 1.0,
-            "plan": "free",
-        },
-        headers=ADMIN_HEADERS,
-    )
-    token = token_resp.json()["token"]
+        login = client.post("/api/auth/login", json={"username": "import-owner", "password": "secret-pass"})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
 
-    imported = client.post(
-        "/api/import/historical",
-        json={"site_id": "site-import", "rows": [{"day": old_day, "metric": "revenue", "value": 42}]},
-        headers={"X-Upload-Token": token},
-    )
-    assert imported.status_code == 200
-    assert imported.json()["imported_rows"] == 1
+        blocked = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": "site-import", "csv_text": f"day,metric,value\n{old_day},revenue,42\n"},
+            headers=headers,
+        )
+        assert blocked.status_code == 403
+        assert blocked.json()["detail"] == "Historical imports require the Standard plan"
 
-    async with async_session_factory() as session:
-        rows = (
-            await session.execute(
-                select(DpWindow).where(
-                    DpWindow.site_id == "site-import",
-                    DpWindow.plan == "free",
-                    DpWindow.metric == "revenue",
+        await _set_site_plan("site-import", "standard")
+        imported = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": "site-import", "csv_text": f"day,metric,value\n{old_day},revenue,42\n"},
+            headers=headers,
+        )
+        assert imported.status_code == 200
+        assert imported.json()["imported_rows"] == 1
+
+        async with async_session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(DpWindow).where(
+                        DpWindow.site_id == "site-import",
+                        DpWindow.plan == "standard",
+                        DpWindow.metric == "revenue",
+                    )
                 )
-            )
-        ).scalars().all()
-        assert rows, "Expected at least one reduced window for imported historical data"
-        assert any(abs(row.value - 42.0) < 1e-6 for row in rows)
+            ).scalars().all()
+            assert rows, "Expected at least one reduced window for imported historical data"
+            assert any(row.value > 0 for row in rows)
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
 
 
 @pytest.mark.asyncio

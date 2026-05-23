@@ -808,7 +808,7 @@
         "operationId": "import_historical_api_import_historical_post",
         "parameters": [
           {
-            "name": "X-Upload-Token",
+            "name": "authorization",
             "in": "header",
             "required": false,
             "schema": {
@@ -820,7 +820,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Upload-Token"
+              "title": "Authorization"
             }
           }
         ],
@@ -867,7 +867,7 @@
         "operationId": "import_historical_csv_api_import_historical_csv_post",
         "parameters": [
           {
-            "name": "X-Upload-Token",
+            "name": "authorization",
             "in": "header",
             "required": false,
             "schema": {
@@ -879,7 +879,7 @@
                   "type": "null"
                 }
               ],
-              "title": "X-Upload-Token"
+              "title": "Authorization"
             }
           }
         ],

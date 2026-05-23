@@ -4,11 +4,11 @@ import csv
 import datetime as dt
 import io
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import RawReport, SitePlan, get_session
-from .shuffle import decode_token, resolve_plan, validate_token
+from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth
 from ..scheduler.nightly_reduce import reduce_reports
 from ..scheduler.prophet_job import train_prophet
 from ..schemas import HistoricalCsvImportRequest, HistoricalImportRequest, HistoricalImportResponse
@@ -16,14 +16,20 @@ from ..schemas import HistoricalCsvImportRequest, HistoricalImportRequest, Histo
 router = APIRouter(tags=["imports"])
 
 
-async def _authorize_import(site_id: str, import_token: str | None, session: AsyncSession) -> str:
-    if not import_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing import token")
-    claims = decode_token(import_token)
-    await validate_token(claims, import_token, session)
-    if claims.site_id != site_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token site mismatch")
-    return await resolve_plan(site_id, claims.plan, session)
+async def _require_standard_import_access(
+    site_id: str,
+    claims: dict | None,
+    session: AsyncSession,
+) -> str:
+    await enforce_site_access_with_db(site_id=site_id, claims=claims, session=session)
+    plan_record = await session.get(SitePlan, site_id)
+    target_plan = plan_record.plan if plan_record else "free"
+    if target_plan != "standard":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Historical imports require the Standard plan",
+        )
+    return target_plan
 
 
 async def _import_rows(
@@ -65,21 +71,17 @@ async def _import_rows(
 @router.post("/import/historical", response_model=HistoricalImportResponse)
 async def import_historical(
     payload: HistoricalImportRequest,
-    x_upload_token: str | None = Header(default=None, alias="X-Upload-Token"),
+    auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
-    plan_record = await session.get(SitePlan, payload.site_id)
-    target_plan = plan_record.plan if plan_record else "free"
-    if target_plan == "pro":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pro imports are not supported")
-    await _authorize_import(payload.site_id, x_upload_token, session)
+    target_plan = await _require_standard_import_access(payload.site_id, auth_claims, session)
     return await _import_rows(payload, session, target_plan=target_plan)
 
 
 @router.post("/import/historical-csv", response_model=HistoricalImportResponse)
 async def import_historical_csv(
     payload: HistoricalCsvImportRequest,
-    x_upload_token: str | None = Header(default=None, alias="X-Upload-Token"),
+    auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
     content = payload.csv_text
@@ -102,9 +104,5 @@ async def import_historical_csv(
             ) from exc
 
     parsed_payload = HistoricalImportRequest(site_id=payload.site_id, rows=rows)
-    plan_record = await session.get(SitePlan, payload.site_id)
-    target_plan = plan_record.plan if plan_record else "free"
-    if target_plan == "pro":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pro imports are not supported")
-    await _authorize_import(payload.site_id, x_upload_token, session)
+    target_plan = await _require_standard_import_access(payload.site_id, auth_claims, session)
     return await _import_rows(parsed_payload, session, target_plan=target_plan)
