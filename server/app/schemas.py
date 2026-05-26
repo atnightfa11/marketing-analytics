@@ -101,6 +101,17 @@ class AuthMeResponse(BaseModel):
     username: str
 
 
+class DashboardSiteSummary(BaseModel):
+    site_id: str
+    site_name: str
+    allowed_origin: str
+    plan: Literal["free", "standard", "pro"] = "free"
+
+
+class DashboardSitesResponse(BaseModel):
+    sites: list[DashboardSiteSummary]
+
+
 class PublicSignupRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     email: str = Field(min_length=5, max_length=255)

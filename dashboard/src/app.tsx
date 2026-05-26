@@ -17,9 +17,11 @@ import {
   BreakdownMetricKey,
   BreakdownRow,
   createCheckoutSession,
+  DashboardSiteSummary,
   fetchAggregate,
   fetchBillingStatus,
   fetchBreakdown,
+  fetchDashboardSites,
   fetchForecast,
   fetchSiteSettings,
   ForecastEntry,
@@ -56,6 +58,8 @@ const fontMeta: React.CSSProperties = {
   fontFeatureSettings: '"tnum" 1, "lnum" 1',
   letterSpacing: "0.01em",
 };
+
+const LAST_SITE_ID_STORAGE_KEY = "valid_last_site_id";
 
 const metricLabels: Record<string, string> = {
   uniques: "Unique Visitors",
@@ -1061,6 +1065,11 @@ const Overview: React.FC = () => {
       navigate(`/site/${encodeURIComponent(query)}`, { replace: true });
     }
   }, [navigate, pathSiteId, querySiteId]);
+  useEffect(() => {
+    if (hasExplicitSiteSelection && siteId) {
+      localStorage.setItem(LAST_SITE_ID_STORAGE_KEY, siteId);
+    }
+  }, [hasExplicitSiteSelection, siteId]);
   const [selectedMetric, setSelectedMetric] = useState<string>(() => {
     const m = searchParams.get("metric");
     return m && metricLabels[m] ? m : "pageviews";
@@ -4463,6 +4472,46 @@ const LoginGate: React.FC = () => {
   );
 };
 
+const HomeRoute: React.FC = () => {
+  const { token, authEnabled } = useAuth();
+  const [searchParams] = useSearchParams();
+  const querySiteId = searchParams.get("site_id")?.trim();
+  const [targetSiteId, setTargetSiteId] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (!authEnabled || !token || querySiteId) {
+      setTargetSiteId(null);
+      return;
+    }
+    let cancelled = false;
+    fetchDashboardSites(token)
+      .then((sites: DashboardSiteSummary[]) => {
+        if (cancelled) return;
+        const ids = sites.map((site) => site.site_id);
+        const lastSiteId = localStorage.getItem(LAST_SITE_ID_STORAGE_KEY);
+        const nextSiteId = lastSiteId && ids.includes(lastSiteId) ? lastSiteId : ids[0];
+        setTargetSiteId(nextSiteId ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setTargetSiteId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authEnabled, querySiteId, token]);
+
+  if (!authEnabled || !token || querySiteId) {
+    return <Overview />;
+  }
+  if (targetSiteId === undefined) {
+    return <div className="p-6 text-sm text-gray-500">{en.loading}</div>;
+  }
+  if (targetSiteId) {
+    return <Navigate to={`/site/${encodeURIComponent(targetSiteId)}`} replace />;
+  }
+  return <Overview />;
+};
+
 export const App: React.FC = () => {
   const { token, authEnabled, ready } = useAuth();
   useTheme();
@@ -4478,7 +4527,7 @@ export const App: React.FC = () => {
     <BrowserRouter future={{ v7_relativeSplatPath: true }}>
       <Suspense fallback={<div>{en.loading}</div>}>
         <Routes>
-          <Route path="/" element={<Overview />} />
+          <Route path="/" element={<HomeRoute />} />
           <Route path="/site/:siteId" element={<Overview />} />
           <Route path="/charts" element={<Charts />} />
           <Route path="/alerts" element={<Alerts />} />

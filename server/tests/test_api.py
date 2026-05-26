@@ -2610,6 +2610,17 @@ async def test_public_signup_free_creates_user_site_and_key(client):
         token = login.json()["access_token"]
         assert token
 
+        sites = client.get("/api/sites", headers={"Authorization": f"Bearer {token}"})
+        assert sites.status_code == 200
+        assert sites.json()["sites"] == [
+            {
+                "site_id": body["site_id"],
+                "site_name": "Signup Free Site",
+                "allowed_origin": "https://example-signup-free.com",
+                "plan": "free",
+            }
+        ]
+
         own_metrics = client.get("/api/metrics", params={"site_id": body["site_id"]}, headers={"Authorization": f"Bearer {token}"})
         assert own_metrics.status_code == 200
     finally:

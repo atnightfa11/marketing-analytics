@@ -85,6 +85,13 @@ export interface HistoricalImportResponse {
   reduced_days: number;
 }
 
+export interface DashboardSiteSummary {
+  site_id: string;
+  site_name: string;
+  allowed_origin: string;
+  plan: "free" | "standard" | "pro";
+}
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000",
   withCredentials: false,
@@ -171,6 +178,13 @@ export async function fetchSiteSettings(token?: string, siteId?: string): Promis
     params: { site_id: resolvedSiteId },
   });
   return response.data;
+}
+
+export async function fetchDashboardSites(token?: string): Promise<DashboardSiteSummary[]> {
+  const response = await api.get("/api/sites", {
+    headers: authHeaders(token),
+  });
+  return response.data.sites ?? [];
 }
 
 export async function updateSiteTimezone(timezone: string, token?: string, siteId?: string): Promise<SiteSettings> {
