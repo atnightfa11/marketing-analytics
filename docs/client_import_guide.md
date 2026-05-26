@@ -2,7 +2,7 @@
 
 Valid supports Standard-plan historical import for migration and immediate forecasting.
 
-Imported data is aggregate-only. Valid does not import user-level, session-level, IP, or user-agent data.
+Imported data is aggregate-only and is reduced into Standard daily aggregate buckets. Valid does not import user-level, session-level, IP, or user-agent data.
 
 ## JSON endpoint
 

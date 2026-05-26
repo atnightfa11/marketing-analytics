@@ -555,6 +555,21 @@
             }
           },
           {
+            "name": "day_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "all",
+                "weekday",
+                "weekend"
+              ],
+              "type": "string",
+              "default": "all",
+              "title": "Day Type"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,

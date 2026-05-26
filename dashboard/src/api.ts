@@ -61,6 +61,8 @@ export type BreakdownDimension =
   | "day_of_week"
   | "hostnames";
 
+export type TimePartingDayType = "all" | "weekday" | "weekend";
+
 export interface SiteSettings {
   site_id: string;
   timezone: string;
@@ -238,12 +240,13 @@ export async function fetchBreakdown(
   start?: string,
   end?: string,
   limit: number = 10,
-  hostname?: string
+  hostname?: string,
+  dayType?: TimePartingDayType
 ): Promise<BreakdownResponse> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/breakdown", {
     headers: authHeaders(token),
-    params: { site_id: resolvedSiteId, dimension, start, end, limit, hostname },
+    params: { site_id: resolvedSiteId, dimension, start, end, limit, hostname, day_type: dayType },
   });
   return response.data;
 }

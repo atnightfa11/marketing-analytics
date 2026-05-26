@@ -13,7 +13,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 - `pageviews`: sum of reduced `pageviews` windows.
 - `sessions`:
   - Free: sum of reduced `sessions` events.
-  - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, then central-DP Laplace noise is added at aggregate publish time.
+  - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, rolled into daily aggregate buckets, then central-DP Laplace noise is added at aggregate publish time.
   - Pro: reduced LDP estimate from `sessions` randomized-response reports.
 - `uniques`: reduced estimate from `uniques` events (presence signal).
 - `conversions`: sum of reduced `conversions` events.
@@ -35,6 +35,7 @@ Dashboard-derived engagement metrics:
   - `start`, `end` (optional ISO dates; if omitted, defaults to last 30 days)
   - `limit` (optional, default `10`)
   - `hostname` (optional exact host filter, for subdomain/site-section views)
+  - `day_type` (optional for `hour_of_day`/`day_of_week`; `all`, `weekday`, or `weekend`)
 
 Breakdown definitions:
 
@@ -45,8 +46,8 @@ Breakdown definitions:
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
 - `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`) and, when headers are unavailable, optional server-side GeoIP country lookup from request IP. Fallback `Unknown`.
 - `hostnames`: from normalized request hostname (`_hostname`) for subdomain-aware reporting.
-- `hour_of_day`: from server receive hour, aggregated across selected date range.
-- `day_of_week`: from server receive weekday, aggregated across selected date range.
+- `hour_of_day`: from captured timezone hint when available, otherwise the site timezone, aggregated across selected date range.
+- `day_of_week`: from captured timezone hint when available, otherwise the site timezone, aggregated across selected date range.
 
 Current caveats:
 
@@ -55,6 +56,7 @@ Current caveats:
 - Time-parting (`hour_of_day`, `day_of_week`) has server-side privacy gates:
   - minimum selected range: 7 days
   - bucket suppression: rows require at least 10 sessions
+  - `day_type=weekday` and `day_type=weekend` filter rows before privacy gating.
 - All breakdown dimensions have suppression gates before response rows are returned:
   - `pages`: minimum 2 pageviews
   - `sources`: minimum 2 sessions
@@ -67,7 +69,7 @@ Current caveats:
 Quality notes:
 
 - Metrics publish only after minimum volume and SNR checks in reducers/routes.
-- For short windows, Standard sessions are clamped to not exceed deduped session baseline after noise to avoid obviously broken output.
+- Standard aggregate windows publish daily. Sessions are clamped to not exceed the deduped session baseline after noise to avoid obviously broken output.
 - `conversion_rate` is derived from already published aggregates.
 - Standard session dedupe is replay-resistant and coarse-context based.
 

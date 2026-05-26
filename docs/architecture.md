@@ -35,6 +35,7 @@ For each report, reducer-friendly coarse fields are stored:
 - `_visitor_day_hmac` (daily unique dedupe key, server-derived)
 - `_device_bucket` (`mobile`, `desktop`, `tablet`, `unknown`)
 - `_country_code` (2-letter code or `Unknown`)
+- `_timezone_hint` when supplied by request infrastructure
 - `_hostname` (normalized host for subdomain filtering)
 - event payload fields such as `url`, `conversion_type`, `referrer_bucket`, `referrer_source`
 
@@ -42,7 +43,9 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
 
 ## Reducer + publish model
 
-- Reducer writes windowed aggregates to `dp_windows`.
+- Reducer writes aggregates to `dp_windows`.
+  - Free publishes short reducer windows for live/low-latency dashboard views.
+  - Standard publishes daily central-DP aggregate windows for better utility and lower storage/write volume.
 - Forecast job trains and writes forecast rows from `dp_windows`.
 - Production scheduler behavior:
   - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
@@ -58,6 +61,7 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
   - `GET /api/breakdown`
   - dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
   - supports `hostname=<host>` filter for subdomain tracking
+  - time-parting dimensions support `day_type=all|weekday|weekend`
 
 All dashboard metrics endpoints require dashboard auth and site-access authorization.
 

@@ -7,7 +7,7 @@ import math
 import secrets
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -88,6 +88,10 @@ def _bucket_start(timestamp: dt.datetime, bucket_minutes: int) -> dt.datetime:
     return dt.datetime.fromtimestamp(floored, tz=dt.timezone.utc)
 
 
+def _day_start(day: dt.date) -> dt.datetime:
+    return dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc)
+
+
 async def _upsert_window(
     session: AsyncSession,
     *,
@@ -152,6 +156,16 @@ async def reduce_reports(
         rec.site_id: rec.plan
         for rec in (await session.execute(select(SitePlan))).scalars().all()
     }
+    standard_site_ids = [site_id for site_id, plan in plan_map.items() if plan == "standard"]
+    if standard_site_ids:
+        await session.execute(
+            delete(DpWindow).where(
+                DpWindow.site_id.in_(standard_site_ids),
+                DpWindow.plan == "standard",
+                DpWindow.window_start >= _day_start(start),
+                DpWindow.window_start < _day_start(end + dt.timedelta(days=1)),
+            )
+        )
 
     # Free + Standard raw path
     raw_reports = (
@@ -162,7 +176,6 @@ async def reduce_reports(
         )
     ).scalars().all()
     raw_buckets: dict[tuple[str, str, dt.datetime], list[RawReport]] = defaultdict(list)
-    standard_session_keys: dict[tuple[str, dt.datetime], set[str]] = defaultdict(set)
     deduped_session_markers: set[tuple[str, dt.datetime, str]] = set()
     deduped_unique_markers: set[tuple[str, dt.date, str]] = set()
     epsilon_totals: dict[tuple[str, dt.date], float] = defaultdict(float)
@@ -187,51 +200,40 @@ async def reduce_reports(
                 if marker in deduped_unique_markers:
                     continue
                 deduped_unique_markers.add(marker)
-        window_start = report.server_received_at.replace(second=0, microsecond=0)
-        if plan == "standard" and report.kind == "sessions":
-            window_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)
+        window_start = (
+            _day_start(report.day) if plan == "standard" else report.server_received_at.replace(second=0, microsecond=0)
+        )
         raw_buckets[(report.site_id, report.kind, window_start)].append(report)
-        if plan == "standard":
-            session_hmac = payload.get("_session_hmac")
-            if isinstance(session_hmac, str) and session_hmac:
-                session_bucket_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)
-                standard_session_keys[(report.site_id, session_bucket_start)].add(session_hmac)
         if plan == "standard":
             epsilon_totals[(report.site_id, report.day)] += min(
                 settings.AGGREGATE_DP_EPSILON, max(0.0, report.epsilon_used)
             )
 
-    pageview_counts: dict[tuple[str, dt.datetime], float] = {}
     standard_pageview_counts: dict[tuple[str, dt.datetime], float] = defaultdict(float)
     for (site_id, metric, window_start), items in raw_buckets.items():
         if metric != "pageviews":
             continue
         count = sum(_raw_report_value(item) for item in items)
-        pageview_counts[(site_id, window_start)] = count
         if plan_map.get(site_id, "free") == "standard":
-            session_bucket_start = _bucket_start(window_start, settings.SESSION_WINDOW_MINUTES)
-            standard_pageview_counts[(site_id, session_bucket_start)] += count
+            standard_pageview_counts[(site_id, window_start)] += count
 
     for (site_id, metric, window_start), items in raw_buckets.items():
         historical_bucket = any(
             isinstance(item.payload, dict) and bool(item.payload.get("historical_import")) for item in items
         )
-        if not historical_bucket and len(items) < settings.MIN_REPORTS_PER_WINDOW:
-            continue
         plan = plan_map.get(site_id, "free")
-        window_end = window_start + dt.timedelta(
-            minutes=settings.SESSION_WINDOW_MINUTES if (plan == "standard" and metric == "sessions") else (3 if metric == "uniques" else 15)
+        if plan != "standard" and not historical_bucket and len(items) < settings.MIN_REPORTS_PER_WINDOW:
+            continue
+        window_end = (
+            window_start + dt.timedelta(days=1)
+            if plan == "standard"
+            else window_start + dt.timedelta(minutes=3 if metric == "uniques" else 15)
         )
         base_value = sum(_raw_report_value(item) for item in items)
         if plan == "standard" and metric == "sessions":
-            key = (site_id, window_start)
-            deduped_sessions = float(len(standard_session_keys.get(key, set())))
-            if deduped_sessions == 0:
-                deduped_sessions = base_value
             pageview_cap = standard_pageview_counts.get((site_id, window_start))
             if pageview_cap is not None:
-                deduped_sessions = min(deduped_sessions, pageview_cap)
-            base_value = deduped_sessions
+                base_value = min(base_value, pageview_cap)
         if base_value <= 0:
             continue
         if plan == "standard":

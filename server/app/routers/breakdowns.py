@@ -4,6 +4,7 @@ import datetime as dt
 from collections import defaultdict
 from typing import Literal
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -13,12 +14,13 @@ from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..hostnames import hostname_from_payload, normalize_hostname
-from ..models import RawReport, get_session
+from ..models import DashboardSite, RawReport, get_session
 from ..schemas import BreakdownResponse, BreakdownRow
 
 router = APIRouter(tags=["metrics"])
 BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions", "hour_of_day", "day_of_week", "hostnames"]
 BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions"]
+TimePartingDayType = Literal["all", "weekday", "weekend"]
 settings = get_settings()
 
 HOUR_OF_DAY_LABELS = [
@@ -324,6 +326,29 @@ def _window_days(start_day: dt.date, end_day: dt.date) -> int:
     return (end_day - start_day).days + 1
 
 
+def _matches_time_parting_day_type(timestamp: dt.datetime, day_type: TimePartingDayType) -> bool:
+    if day_type == "all":
+        return True
+    is_weekend = timestamp.weekday() >= 5
+    return is_weekend if day_type == "weekend" else not is_weekend
+
+
+def _as_utc(timestamp: dt.datetime) -> dt.datetime:
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.timezone.utc)
+    return timestamp.astimezone(dt.timezone.utc)
+
+
+def _time_parting_timestamp(timestamp: dt.datetime, payload: dict, site_timezone: str) -> dt.datetime:
+    timezone_name = payload.get("_timezone_hint")
+    if not isinstance(timezone_name, str) or not timezone_name:
+        timezone_name = site_timezone or "UTC"
+    try:
+        return _as_utc(timestamp).astimezone(ZoneInfo(timezone_name))
+    except (ZoneInfoNotFoundError, ValueError):
+        return _as_utc(timestamp)
+
+
 def _payload_matches_hostname(payload: dict, hostname_filter: str | None) -> bool:
     if not hostname_filter:
         return True
@@ -359,6 +384,7 @@ async def breakdown(
     start: str | None = None,
     end: str | None = None,
     hostname: str | None = None,
+    day_type: TimePartingDayType = "all",
     _auth_claims: dict | None = Depends(require_dashboard_auth),
     _site_access: None = Depends(require_site_access),
     plan: str = Depends(get_site_plan),
@@ -391,6 +417,8 @@ async def breakdown(
             metric_keys=metric_keys,
         )
 
+    site = await session.get(DashboardSite, site_id)
+    site_timezone = site.timezone if site and site.timezone else "UTC"
     report_kinds = BREAKDOWN_REPORT_KINDS[dimension]
     stmt = (
         select(RawReport)
@@ -424,6 +452,11 @@ async def breakdown(
         if payload.get("historical_import"):
             continue
         if not _payload_matches_hostname(payload, hostname_filter):
+            continue
+        label_timestamp = report.server_received_at
+        if dimension in TIME_PARTING_DIMENSIONS:
+            label_timestamp = _time_parting_timestamp(report.server_received_at, payload, site_timezone)
+        if dimension in TIME_PARTING_DIMENSIONS and not _matches_time_parting_day_type(label_timestamp, day_type):
             continue
         session_marker = _session_marker(report.server_received_at, payload)
         visitor_marker = _visitor_marker(report.day, payload)
@@ -463,7 +496,7 @@ async def breakdown(
                 _increment_metric(buckets, totals, label, "uniques")
             continue
 
-        label = _resolve_label(dimension, payload, report.server_received_at)
+        label = _resolve_label(dimension, payload, label_timestamp)
         if report.kind == "pageviews":
             _increment_metric(buckets, totals, label, "pageviews")
         elif report.kind == "sessions":

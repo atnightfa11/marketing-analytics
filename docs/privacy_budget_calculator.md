@@ -9,7 +9,7 @@ Use `scripts/calc_budget.py --tier ...` and `scripts/validate_privacy_budget.py 
 
 ## Standard (Central DP)
 
-For count queries with sensitivity 1:
+For daily aggregate count queries with sensitivity 1:
 
 - Laplace scale: `b = 1 / epsilon`
 - Variance: `Var = 2 * b^2`
@@ -59,4 +59,4 @@ python scripts/validate_privacy_budget.py --tier pro --epsilon 1.0 --sampling 0.
 ## Notes
 
 - Free tier does not currently add DP noise; it remains privacy-respecting via data minimization (no cookies, no persistent user IDs, coarse metadata handling).
-- Standard central DP can be too noisy for very low traffic; expect better utility at higher volumes.
+- Standard central DP can be too noisy for very low traffic, but daily aggregate buckets give materially better utility than sparse minute buckets.

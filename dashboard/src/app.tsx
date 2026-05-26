@@ -26,6 +26,7 @@ import {
   ForecastResponse,
   importHistoricalCsv,
   resolveActiveSiteId,
+  TimePartingDayType,
   updateSiteTimezone,
 } from "./api";
 import { AlertsPanel } from "./components/AlertsPanel";
@@ -1124,6 +1125,10 @@ const Overview: React.FC = () => {
     const tp = searchParams.get("tp");
     return tp === "hour_of_day" ? "hour_of_day" : "day_of_week";
   });
+  const [timePartingDayType, setTimePartingDayType] = useState<TimePartingDayType>(() => {
+    const raw = searchParams.get("tpDays");
+    return raw === "weekday" || raw === "weekend" ? raw : "all";
+  });
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>(() => {
     const raw = searchParams.get("filter");
     if (!raw) return [];
@@ -1551,7 +1556,8 @@ const Overview: React.FC = () => {
           start,
           end,
           dimension === "hour_of_day" ? 24 : dimension === "day_of_week" ? 7 : 10,
-          hostnameFilter
+          hostnameFilter,
+          dimension === "hour_of_day" || dimension === "day_of_week" ? timePartingDayType : undefined
         ).then((response) => ({
           dimension,
           response,
@@ -1593,7 +1599,16 @@ const Overview: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end, hostnameFilter]);
+  }, [
+    canQuery,
+    showSeededBreakdowns,
+    token,
+    siteId,
+    breakdownDateRange?.start,
+    breakdownDateRange?.end,
+    hostnameFilter,
+    timePartingDayType,
+  ]);
 
   const computeKpiValues = (series: {
     pageviews: { day: string; value: number }[];
@@ -2382,6 +2397,7 @@ const Overview: React.FC = () => {
       "tab",
       "camp",
       "tp",
+      "tpDays",
       "filter",
     ];
     managedKeys.forEach((k) => next.delete(k));
@@ -2402,6 +2418,7 @@ const Overview: React.FC = () => {
     if (acquisitionTab !== "channels") next.set("tab", acquisitionTab);
     if (campaignDimension !== "campaign") next.set("camp", campaignDimension);
     if (timePartingTab !== "day_of_week") next.set("tp", timePartingTab);
+    if (timePartingDayType !== "all") next.set("tpDays", timePartingDayType);
     if (activeFilters.length > 0) {
       next.set(
         "filter",
@@ -2429,6 +2446,7 @@ const Overview: React.FC = () => {
     acquisitionTab,
     campaignDimension,
     timePartingTab,
+    timePartingDayType,
     activeFilters,
     searchParams,
     setSearchParams,
@@ -3667,21 +3685,43 @@ const Overview: React.FC = () => {
             <TableBlock
               title="Time Parting"
               header={
-                <div className="flex flex-wrap items-center gap-4 text-[13px] font-semibold text-gray-500" style={fontBody}>
-                  <button
-                    type="button"
-                    className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                    onClick={() => setTimePartingTab("day_of_week")}
-                  >
-                    Day of Week
-                  </button>
-                  <button
-                    type="button"
-                    className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                    onClick={() => setTimePartingTab("hour_of_day")}
-                  >
-                    Hour of Day
-                  </button>
+                <div className="flex flex-wrap items-center gap-5 text-[13px] font-semibold text-gray-500" style={fontBody}>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <button
+                      type="button"
+                      className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      onClick={() => setTimePartingTab("day_of_week")}
+                    >
+                      Day of Week
+                    </button>
+                    <button
+                      type="button"
+                      className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      onClick={() => setTimePartingTab("hour_of_day")}
+                    >
+                      Hour of Day
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1 border border-gray-200 bg-white p-0.5 text-[11px]">
+                    {([
+                      ["all", "All"],
+                      ["weekday", "Weekdays"],
+                      ["weekend", "Weekends"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={
+                          timePartingDayType === value
+                            ? "bg-[#1F2937] px-2 py-1 text-white"
+                            : "px-2 py-1 text-gray-500 hover:text-[#1F2937]"
+                        }
+                        onClick={() => setTimePartingDayType(value)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               }
               rows={timePartingRows}

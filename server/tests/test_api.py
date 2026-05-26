@@ -805,6 +805,50 @@ async def test_standard_session_dedup_replay_resistance(client):
 
 
 @pytest.mark.asyncio
+async def test_standard_reducer_publishes_daily_windows_and_replaces_old_minute_rows(client):
+    site_id = "site-standard-daily"
+    target_day = date(2026, 5, 4)
+    await _set_site_plan(site_id, "standard")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="pageviews",
+        value=99.0,
+        window_start=datetime(2026, 5, 4, 12, 30, tzinfo=timezone.utc),
+    )
+    for minute in (5, 35, 55):
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={"url": "/daily"},
+            day=target_day,
+            server_received_at=datetime(2026, 5, 4, 12, minute, tzinfo=timezone.utc),
+        )
+
+    async with async_session_factory() as session:
+        original_epsilon = reduce_settings.AGGREGATE_DP_EPSILON
+        reduce_settings.AGGREGATE_DP_EPSILON = 100.0
+        try:
+            await reduce_reports(session, start_day=target_day, end_day=target_day)
+        finally:
+            reduce_settings.AGGREGATE_DP_EPSILON = original_epsilon
+
+        rows = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == site_id,
+                    DpWindow.plan == "standard",
+                    DpWindow.metric == "pageviews",
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].window_start.replace(tzinfo=timezone.utc) == datetime(2026, 5, 4, 0, 0, tzinfo=timezone.utc)
+        assert rows[0].window_end.replace(tzinfo=timezone.utc) == datetime(2026, 5, 5, 0, 0, tzinfo=timezone.utc)
+        assert rows[0].value == pytest.approx(3.0, abs=0.1)
+
+
+@pytest.mark.asyncio
 async def test_free_session_and_unique_dedupe_without_client_storage(client):
     await _set_site_plan("site-free-dedupe", "free")
 
@@ -1899,6 +1943,94 @@ async def test_time_parting_breakdown_requires_min_range_and_k_threshold(client)
             "metrics": {"uniques": 10.0, "sessions": 10.0, "pageviews": 0.0, "conversions": 0.0},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_time_parting_hour_of_day_can_filter_weekdays_and_weekends(client):
+    site_id = "site-time-parting-day-type"
+    await _set_site_plan(site_id, "standard")
+    start_day = date(2026, 4, 5)
+    end_day = date(2026, 4, 11)
+    for index in range(10):
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={
+                "referrer_bucket": "direct",
+                "_session_hmac": f"weekday-{index}",
+                "_visitor_day_hmac": f"weekday-visitor-{index}",
+            },
+            day=date(2026, 4, 6),
+            server_received_at=datetime(2026, 4, 6, 9, index, tzinfo=timezone.utc),
+        )
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={
+                "referrer_bucket": "direct",
+                "_session_hmac": f"weekend-{index}",
+                "_visitor_day_hmac": f"weekend-visitor-{index}",
+            },
+            day=end_day,
+            server_received_at=datetime(2026, 4, 11, 11, index, tzinfo=timezone.utc),
+        )
+
+    base_params = {
+        "site_id": site_id,
+        "dimension": "hour_of_day",
+        "start": start_day.isoformat(),
+        "end": end_day.isoformat(),
+    }
+    weekday_resp = client.get("/api/breakdown", params={**base_params, "day_type": "weekday"})
+    assert weekday_resp.status_code == 200
+    assert weekday_resp.json()["rows"] == [
+        {
+            "label": "9 AM",
+            "value": 10.0,
+            "metrics": {"uniques": 10.0, "sessions": 10.0, "pageviews": 0.0, "conversions": 0.0},
+        }
+    ]
+
+    weekend_resp = client.get("/api/breakdown", params={**base_params, "day_type": "weekend"})
+    assert weekend_resp.status_code == 200
+    assert weekend_resp.json()["rows"] == [
+        {
+            "label": "11 AM",
+            "value": 10.0,
+            "metrics": {"uniques": 10.0, "sessions": 10.0, "pageviews": 0.0, "conversions": 0.0},
+        }
+    ]
+
+    local_site_id = "site-time-parting-local-day-type"
+    await _set_site_plan(local_site_id, "standard")
+    for index in range(10):
+        await _insert_raw_report(
+            site_id=local_site_id,
+            kind="sessions",
+            payload={
+                "referrer_bucket": "direct",
+                "_timezone_hint": "America/Chicago",
+                "_session_hmac": f"local-weekday-{index}",
+                "_visitor_day_hmac": f"local-weekday-visitor-{index}",
+            },
+            day=date(2026, 4, 10),
+            server_received_at=datetime(2026, 4, 11, 1, index, tzinfo=timezone.utc),
+        )
+
+    local_params = {**base_params, "site_id": local_site_id}
+    local_weekday_resp = client.get("/api/breakdown", params={**local_params, "day_type": "weekday"})
+    assert local_weekday_resp.status_code == 200
+    assert local_weekday_resp.json()["rows"] == [
+        {
+            "label": "8 PM",
+            "value": 10.0,
+            "metrics": {"uniques": 10.0, "sessions": 10.0, "pageviews": 0.0, "conversions": 0.0},
+        }
+    ]
+
+    local_weekend_resp = client.get("/api/breakdown", params={**local_params, "day_type": "weekend"})
+    assert local_weekend_resp.status_code == 200
+    assert local_weekend_resp.json()["rows"] == []
 
 
 @pytest.mark.asyncio
