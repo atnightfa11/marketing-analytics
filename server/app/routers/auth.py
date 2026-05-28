@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dashboard_auth import create_access_token, get_allowed_site_ids, require_dashboard_auth, settings, validate_credentials_async
+from ..dashboard_auth import create_access_token, require_dashboard_auth, settings, validate_credentials_async
 from ..models import DashboardSite, SitePlan, get_session
 from ..schemas import AuthLoginRequest, AuthLoginResponse, AuthMeResponse, AuthStatusResponse, DashboardSiteSummary, DashboardSitesResponse
 
@@ -43,8 +43,8 @@ async def list_dashboard_sites(
 ) -> DashboardSitesResponse:
     username = claims.get("sub") if isinstance(claims, dict) else None
     normalized_username = username.strip().lower() if isinstance(username, str) else None
-    explicit_access_config = bool(settings.DASHBOARD_ALLOWED_SITE_IDS or settings.DASHBOARD_SITE_ACCESS_JSON)
-    allowed_site_ids = get_allowed_site_ids(claims)
+    allowed_site_ids: set[str] | None = None
+    allow_all_sites = not settings.DASHBOARD_AUTH_ENABLED
 
     stmt = (
         select(DashboardSite, SitePlan.plan)
@@ -52,14 +52,55 @@ async def list_dashboard_sites(
         .order_by(DashboardSite.created_at.desc(), DashboardSite.site_id)
     )
     if settings.DASHBOARD_AUTH_ENABLED:
-        if explicit_access_config and allowed_site_ids is not None:
-            if not allowed_site_ids:
-                return DashboardSitesResponse(sites=[])
-            stmt = stmt.where(DashboardSite.site_id.in_(allowed_site_ids))
-        elif not explicit_access_config:
+        user_map = {}
+        if settings.DASHBOARD_SITE_ACCESS_JSON:
+            import json
+
+            try:
+                parsed = json.loads(settings.DASHBOARD_SITE_ACCESS_JSON)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Invalid DASHBOARD_SITE_ACCESS_JSON",
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="DASHBOARD_SITE_ACCESS_JSON must be a JSON object",
+                )
+            user_map = parsed
+
+        if normalized_username and normalized_username in user_map:
+            raw_site_ids = user_map.get(normalized_username)
+            if isinstance(raw_site_ids, str):
+                mapped_ids = {raw_site_ids.strip()} if raw_site_ids.strip() else set()
+            elif isinstance(raw_site_ids, list):
+                mapped_ids = {str(site_id).strip() for site_id in raw_site_ids if str(site_id).strip()}
+            else:
+                mapped_ids = set()
+            if "*" in mapped_ids:
+                allow_all_sites = True
+            else:
+                allowed_site_ids = mapped_ids
+        elif settings.DASHBOARD_SITE_ACCESS_JSON:
             if not normalized_username:
                 return DashboardSitesResponse(sites=[])
             stmt = stmt.where(DashboardSite.owner_username == normalized_username)
+        elif settings.DASHBOARD_ALLOWED_SITE_IDS:
+            configured_ids = {item.strip() for item in settings.DASHBOARD_ALLOWED_SITE_IDS.split(",") if item.strip()}
+            if "*" in configured_ids:
+                allow_all_sites = True
+            else:
+                allowed_site_ids = configured_ids
+        elif normalized_username:
+            stmt = stmt.where(DashboardSite.owner_username == normalized_username)
+        else:
+            return DashboardSitesResponse(sites=[])
+
+        if allowed_site_ids is not None:
+            if not allowed_site_ids:
+                return DashboardSitesResponse(sites=[])
+            stmt = stmt.where(DashboardSite.site_id.in_(allowed_site_ids))
 
     rows = (await session.execute(stmt)).all()
     sites = [
@@ -72,7 +113,7 @@ async def list_dashboard_sites(
         for site, plan in rows
     ]
 
-    if explicit_access_config and allowed_site_ids:
+    if not allow_all_sites and allowed_site_ids:
         listed_ids = {site.site_id for site in sites}
         missing_ids = allowed_site_ids - listed_ids
         if missing_ids:
