@@ -17,6 +17,8 @@ class Settings(BaseSettings):
   STRIPE_SIGNUP_SUCCESS_URL: str = Field(default="https://validanalytics.io/signup/complete")
   STRIPE_SIGNUP_CANCEL_URL: str = Field(default="https://validanalytics.io/signup")
   UPLOAD_TOKEN_TTL_SECONDS: int = Field(default=900)
+  UPLOAD_TOKEN_PURGE_GRACE_SECONDS: int = Field(default=24 * 60 * 60)
+  UPLOAD_TOKEN_PURGE_INTERVAL_SECONDS: int = Field(default=5 * 60)
   MIN_REPORTS_PER_WINDOW: int = Field(default=40)
   LIVE_WATERMARK_SECONDS: int = Field(default=120)
   MAX_OUT_OF_ORDER_SECONDS: int = Field(default=300)

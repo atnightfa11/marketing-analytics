@@ -23,13 +23,14 @@ ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
 COLLECT_HEADERS = {"X-Collect-Token": os.environ["COLLECT_ENDPOINT_TOKEN"]}
 
 from app.main import app  # noqa: E402
-from sqlalchemy import select
+from sqlalchemy import select  # noqa: E402
 
-from argon2 import PasswordHasher
+from argon2 import PasswordHasher  # noqa: E402
 
-from app.models import Base, DashboardSite, DashboardUser, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, DashboardSite, DashboardUser, DpWindow, IS_POSTGRES, LdpReport, RawReport, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
+from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
 from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
@@ -199,6 +200,66 @@ async def test_token_issue_and_revoke(client):
         headers={"Origin": "https://example.com"},
     )
     assert shuffle.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_upload_tokens_keeps_recent_and_active_tokens():
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    original_grace_seconds = maintenance_settings.UPLOAD_TOKEN_PURGE_GRACE_SECONDS
+    maintenance_settings.UPLOAD_TOKEN_PURGE_GRACE_SECONDS = 24 * 60 * 60
+    hasher = PasswordHasher()
+    try:
+        async with async_session_factory() as session:
+            session.add_all(
+                [
+                    UploadToken(
+                        site_id="site-purge",
+                        jti="purge-old-expired",
+                        token_hash=hasher.hash("purge-old-expired-token"),
+                        iat=now - timedelta(days=3),
+                        exp=now - timedelta(days=2),
+                        allowed_origin="https://example.com",
+                        sampling_rate=1.0,
+                        epsilon_budget=1.0,
+                    ),
+                    UploadToken(
+                        site_id="site-purge",
+                        jti="purge-recent-expired",
+                        token_hash=hasher.hash("purge-recent-expired-token"),
+                        iat=now - timedelta(hours=2),
+                        exp=now - timedelta(hours=1),
+                        allowed_origin="https://example.com",
+                        sampling_rate=1.0,
+                        epsilon_budget=1.0,
+                    ),
+                    UploadToken(
+                        site_id="site-purge",
+                        jti="purge-active",
+                        token_hash=hasher.hash("purge-active-token"),
+                        iat=now,
+                        exp=now + timedelta(minutes=15),
+                        allowed_origin="https://example.com",
+                        sampling_rate=1.0,
+                        epsilon_budget=1.0,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            deleted = await purge_expired_upload_tokens(session, now=now)
+            remaining = {
+                token.jti
+                for token in (
+                    await session.execute(
+                        select(UploadToken).where(UploadToken.site_id == "site-purge")
+                    )
+                ).scalars()
+            }
+
+        assert deleted == 1
+        assert remaining == {"purge-recent-expired", "purge-active"}
+    finally:
+        maintenance_settings.UPLOAD_TOKEN_PURGE_GRACE_SECONDS = original_grace_seconds
 
 
 @pytest.mark.asyncio

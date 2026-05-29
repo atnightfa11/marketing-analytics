@@ -134,7 +134,10 @@ class Forecast(Base):
 
 class UploadToken(Base):
     __tablename__ = "upload_tokens"
-    __table_args__ = (Index("ix_upload_tokens_site", "site_id"),)
+    __table_args__ = (
+        Index("ix_upload_tokens_site", "site_id"),
+        Index("ix_upload_tokens_exp", "exp"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)

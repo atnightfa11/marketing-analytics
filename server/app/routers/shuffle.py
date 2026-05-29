@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import TokenClaims, get_settings
 from ..hostnames import hostname_from_request_headers
+from ..maintenance import maybe_purge_expired_upload_tokens
 from ..models import LdpReport, RawReport, SitePlan, TokenNonce, UploadToken, get_session
 from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import CollectRequest, ShuffleRequest
@@ -487,6 +488,7 @@ async def shuffle_ingest(
     )
     await ingest_reports(collect_payload, request, session, plan, client_ip=client_ip)
     await purge_old_nonces(session)
+    await maybe_purge_expired_upload_tokens(session)
 
 
 async def ingest_reports(

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -14,6 +13,7 @@ from .config import Settings, get_settings
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .geoip_db import ensure_geoip_database
 from .job_status import mark_job_error, mark_job_run, mark_job_success
+from .maintenance import purge_expired_upload_tokens
 from .models import async_session_factory
 from .scheduler.nightly_reduce import reduce_reports
 from .scheduler.prophet_job import train_prophet
@@ -142,6 +142,13 @@ async def on_startup():
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await init_db()
+    try:
+        async with async_session_factory() as session:
+            deleted_tokens = await purge_expired_upload_tokens(session)
+        if deleted_tokens:
+            logger.info("Purged expired upload tokens", extra={"deleted_tokens": deleted_tokens})
+    except Exception:
+        logger.exception("Failed to purge expired upload tokens on startup")
     # Enable a lightweight reducer loop in dev if requested
     if os.environ.get("ENABLE_DEV_SCHEDULER", "").lower() in {"1", "true", "yes"}:
         try:
@@ -152,6 +159,7 @@ async def on_startup():
                 async with async_session_factory() as session:
                     try:
                         await reduce_reports(session)
+                        await purge_expired_upload_tokens(session)
                         mark_job_success("reduce")
                     except Exception as exc:
                         mark_job_error("reduce", exc)
@@ -174,6 +182,7 @@ async def on_startup():
                 async with async_session_factory() as session:
                     try:
                         await reduce_reports(session)
+                        await purge_expired_upload_tokens(session)
                         mark_job_success("reduce")
                     except Exception as exc:
                         mark_job_error("reduce", exc)

@@ -10,8 +10,9 @@ import argparse
 # Add the current directory to Python path so we can import app modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app.scheduler.nightly_reduce import reduce_reports
-from app.models import async_session_factory
+from app.scheduler.nightly_reduce import reduce_reports  # noqa: E402
+from app.maintenance import purge_expired_upload_tokens  # noqa: E402
+from app.models import async_session_factory  # noqa: E402
 
 async def main():
     """Run the nightly reduce process"""
@@ -23,6 +24,7 @@ async def main():
     # Create a session and run the reduce process
     async with async_session_factory() as session:
         await reduce_reports(session, days=max(1, args.days))
+        await purge_expired_upload_tokens(session)
 
     print("Nightly reduce completed successfully!")
 
