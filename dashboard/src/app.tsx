@@ -256,15 +256,6 @@ const formatDailyPace = (metric: string, value: number) => {
   return `${formatNumber(value)}/day`;
 };
 
-const formatGoalGap = (metric: string, value: number) => {
-  if (!Number.isFinite(value)) return "—";
-  const sign = value >= 0 ? "+" : "-";
-  const abs = Math.abs(value);
-  if (metric === "revenue") return `${sign}${formatCurrency(abs)}`;
-  if (abs < 10 && !Number.isInteger(abs)) return `${sign}${abs.toFixed(1)}`;
-  return `${sign}${formatNumber(abs)}`;
-};
-
 const metricSupportsGoals = (metric: string): metric is GoalMetric =>
   (goalEligibleMetrics as readonly string[]).includes(metric);
 
@@ -439,6 +430,7 @@ interface ComparisonPoint {
 interface TrendChartPoint {
   day: string;
   actual: number | null;
+  todaySoFar: number | null;
   compare: number | null;
   compareDay: string | null;
   forecast: number | null;
@@ -523,6 +515,7 @@ const renderFilterDimensionLabel = (dimension: string): string =>
 
 const breakdownFallbackDimensionLabels: Record<string, string> = {
   acquisition: "Channel",
+  "traffic sources": "Channel",
   "top pages": "Page",
   countries: "Country",
   devices: "Device",
@@ -818,7 +811,7 @@ const ThemeToggle: React.FC = () => {
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       title={isDark ? "Switch to light mode" : "Switch to dark mode"}
       onClick={toggleTheme}
-      className="inline-flex h-7 w-7 items-center justify-center border border-gray-200 bg-white text-[#1F2937] transition-colors hover:text-[#4338ca] no-print"
+      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[#DDE4EC] bg-white text-[#5F6673] shadow-sm transition-colors hover:border-[#C7D0DC] hover:text-[#4338ca] no-print"
     >
       {isDark ? <SunIcon /> : <MoonIcon />}
     </button>
@@ -972,13 +965,13 @@ const TableBlock: React.FC<{
   };
 
   return (
-    <div className="border border-[var(--color-border-subtle)] bg-white p-4">
-      <div className="mb-3 flex items-start justify-between gap-2">
+    <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <div className="mb-4 flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {header ? (
             header
           ) : (
-            <div className="text-[13px] font-semibold text-[#1F2937]" style={fontBody}>
+            <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
               {title}
             </div>
           )}
@@ -1003,7 +996,7 @@ const TableBlock: React.FC<{
           onClick={() => setExpanded(false)}
         >
           <div
-            className="flex max-h-[90vh] w-full max-w-3xl flex-col border border-[var(--color-border-subtle)] bg-white shadow-xl"
+            className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg border border-[var(--color-border-subtle)] bg-white shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] px-5 py-3">
@@ -1026,6 +1019,228 @@ const TableBlock: React.FC<{
     </div>
   );
 };
+
+const shortDayOfWeekLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+const hourTickIndexes = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22] as const;
+
+const getHourIndexFromLabel = (label: string): number => {
+  const numeric = Number(label);
+  if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 23) return numeric;
+  const normalized = label.trim().toLowerCase();
+  const exactIndex = hourOfDayLabels.findIndex((hour) => hour.toLowerCase() === normalized);
+  if (exactIndex >= 0) return exactIndex;
+  return -1;
+};
+
+const getDayIndexFromLabel = (label: string): number => {
+  const normalized = label.trim().toLowerCase();
+  const exactIndex = dayOfWeekLabels.findIndex((day) => day.toLowerCase() === normalized);
+  if (exactIndex >= 0) return exactIndex;
+  const shortIndex = shortDayOfWeekLabels.findIndex((day) => day.toLowerCase() === normalized.slice(0, 3));
+  if (shortIndex >= 0) return shortIndex;
+  const numeric = Number(label);
+  if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 6) return numeric;
+  return -1;
+};
+
+const TimePartingHeatmap: React.FC<{
+  hourRows: BreakdownTableRow[];
+  dayRows: BreakdownTableRow[];
+  primaryMetric: BreakdownMetricKey;
+  dayType: TimePartingDayType;
+  setDayType: (value: TimePartingDayType) => void;
+  emptyState: string;
+  rangeLabel: string;
+}> = ({ hourRows, dayRows, primaryMetric, dayType, setDayType, emptyState, rangeLabel }) => {
+  const hourValues = Array.from({ length: 24 }, () => 0);
+  const dayValues = Array.from({ length: 7 }, () => 0);
+
+  hourRows.forEach((row) => {
+    const index = getHourIndexFromLabel(row.label);
+    if (index >= 0) hourValues[index] = getBreakdownMetricValue(row, primaryMetric);
+  });
+  dayRows.forEach((row) => {
+    const index = getDayIndexFromLabel(row.label);
+    if (index >= 0) dayValues[index] = getBreakdownMetricValue(row, primaryMetric);
+  });
+
+  const visibleDayIndexes =
+    dayType === "weekday" ? [0, 1, 2, 3, 4] : dayType === "weekend" ? [5, 6] : [0, 1, 2, 3, 4, 5, 6];
+  const maxHour = Math.max(...hourValues, 0);
+  const maxDay = Math.max(...dayValues, 0);
+  const hasData = maxHour > 0 || maxDay > 0;
+  let peakLabel = "No peak yet";
+  let peakValue = 0;
+
+  const getIntensity = (dayIndex: number, hourIndex: number) => {
+    const hourShare = maxHour > 0 ? hourValues[hourIndex] / maxHour : 0;
+    const dayShare = maxDay > 0 ? dayValues[dayIndex] / maxDay : 0;
+    if (!hasData) return 0;
+    return clamp(hourShare * 0.72 + dayShare * 0.28, 0.08, 1);
+  };
+
+  visibleDayIndexes.forEach((dayIndex) => {
+    hourValues.forEach((_, hourIndex) => {
+      const intensity = getIntensity(dayIndex, hourIndex);
+      if (intensity > peakValue) {
+        peakValue = intensity;
+        peakLabel = `${shortDayOfWeekLabels[dayIndex]} · ${hourOfDayLabels[hourIndex]}`;
+      }
+    });
+  });
+
+  return (
+    <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
+          When visitors arrive
+        </div>
+        <div className="flex items-center gap-1 rounded-md bg-[#F1F3F6] p-0.5 text-[11px]" style={fontBody}>
+          {([
+            ["all", "All"],
+            ["weekday", "Weekdays"],
+            ["weekend", "Weekends"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              className={
+                dayType === value
+                  ? "rounded bg-white px-2.5 py-1 font-semibold text-[#1F2937] shadow-sm"
+                  : "px-2.5 py-1 font-semibold text-[#7B8190] hover:text-[#1F2937]"
+              }
+              onClick={() => setDayType(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {!hasData ? (
+        <div className="py-10 text-xs text-gray-400" style={fontBody}>
+          {emptyState}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-[38px_1fr] gap-x-2 gap-y-1">
+            <div />
+            <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1 text-[10px] text-[#9CA3AF]" style={fontMeta}>
+              {hourTickIndexes.map((hour) => (
+                <div key={hour} className="col-span-2 text-center">
+                  {hour}
+                </div>
+              ))}
+            </div>
+            {visibleDayIndexes.map((dayIndex) => (
+              <React.Fragment key={dayIndex}>
+                <div className="flex h-4 items-center text-[11px] text-[#6B7280]" style={fontBody}>
+                  {shortDayOfWeekLabels[dayIndex]}
+                </div>
+                <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1">
+                  {hourValues.map((_, hourIndex) => {
+                    const intensity = getIntensity(dayIndex, hourIndex);
+                    const alpha = 0.1 + intensity * 0.68;
+                    return (
+                      <div
+                        key={`${dayIndex}-${hourIndex}`}
+                        className="h-4 rounded-[2px]"
+                        title={`${dayOfWeekLabels[dayIndex]} ${hourOfDayLabels[hourIndex]}`}
+                        style={{ backgroundColor: `rgba(79, 70, 229, ${alpha})` }}
+                      />
+                    );
+                  })}
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#7B8190]" style={fontBody}>
+            <span>
+              Peak · <span className="font-semibold text-[#4B5563]">{peakLabel}</span>
+            </span>
+            <span>Period · {rangeLabel}</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+const GoalsProgressCard: React.FC<{
+  goals: MetricGoal[];
+  values: Record<string, number>;
+  dayCount: number;
+  rangeLabel: string;
+  siteId: string;
+}> = ({ goals, values, dayCount, rangeLabel, siteId }) => (
+  <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+    <div className="mb-4 flex items-start justify-between gap-2">
+      <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
+        Goals
+      </div>
+      <a
+        href={`/settings?site_id=${encodeURIComponent(siteId)}`}
+        className="text-[11px] font-semibold text-[#5b55ff] hover:text-[#4338ca]"
+        style={fontBody}
+      >
+        + Add goal
+      </a>
+    </div>
+    {goals.length === 0 ? (
+      <div className="py-10 text-xs text-gray-400" style={fontBody}>
+        Goals set in Settings will show here with pacing against the selected period.
+      </div>
+    ) : (
+      <div className="space-y-4">
+        {goals.slice(0, 4).map((goal) => {
+          const currentValue = values[goal.metric] ?? Number.NaN;
+          const targetForWindow = goal.target * (Math.max(1, dayCount) / Math.max(1, goal.periodDays));
+          const progressPct =
+            Number.isFinite(currentValue) && Number.isFinite(targetForWindow) && targetForWindow > 0
+              ? clamp(currentValue / targetForWindow, 0, 1.25)
+              : 0;
+          const gap = Number.isFinite(currentValue) && Number.isFinite(targetForWindow) ? currentValue - targetForWindow : Number.NaN;
+          const statusClass = Number.isFinite(gap) && gap >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-[#FFF1F2] text-[#8B2635]";
+          const statusLabel = Number.isFinite(gap)
+            ? gap >= 0
+              ? "On pace"
+              : "Behind"
+            : "Needs data";
+          return (
+            <div key={goal.metric}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-[13px] font-semibold text-[#374151]" style={fontBody}>
+                    {metricLabels[goal.metric] ?? goal.metric}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-[#7B8190]" style={fontBody}>
+                    Target · {formatMetricValue(goal.metric, targetForWindow)}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="metric-number text-[13px] font-semibold text-[#111827]" style={fontMetric}>
+                    {formatMetricValue(goal.metric, currentValue)}
+                  </div>
+                  <span className={`mt-1 inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${statusClass}`} style={fontBody}>
+                    {statusLabel}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#EEF1F4]">
+                <div
+                  className="h-full rounded-full bg-[#5b55ff]"
+                  style={{ width: `${Math.min(100, progressPct * 100)}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+        <div className="pt-1 text-right text-[11px] text-[#7B8190]" style={fontBody}>
+          Period · {rangeLabel}
+        </div>
+      </div>
+    )}
+  </div>
+);
 
 const LogoutButton: React.FC<{ className?: string }> = ({ className }) => {
   const { token, authEnabled, logout } = useAuth();
@@ -1129,10 +1344,6 @@ const Overview: React.FC = () => {
     const c = searchParams.get("camp");
     if (c === "content" || c === "term") return c;
     return "campaign";
-  });
-  const [timePartingTab, setTimePartingTab] = useState<"hour_of_day" | "day_of_week">(() => {
-    const tp = searchParams.get("tp");
-    return tp === "hour_of_day" ? "hour_of_day" : "day_of_week";
   });
   const [timePartingDayType, setTimePartingDayType] = useState<TimePartingDayType>(() => {
     const raw = searchParams.get("tpDays");
@@ -1741,7 +1952,13 @@ const Overview: React.FC = () => {
     () => resolveRangeBounds(range, customRange, siteTimezone),
     [range, customRange.start, customRange.end, siteTimezone]
   );
+  const todayKey = useMemo(() => isoDayForDateInTimeZone(new Date(), siteTimezone), [siteTimezone]);
   const lastActualDay = dailySelected.length > 0 ? dailySelected[dailySelected.length - 1].day : null;
+  const hasTodayActual = dailySelected.some((entry) => entry.day === todayKey);
+  const lastCompleteActualDay =
+    hasTodayActual
+      ? [...dailySelected].reverse().find((entry) => entry.day < todayKey)?.day ?? null
+      : lastActualDay;
   const primaryRangeBounds = useMemo(() => {
     if (selectedRangeBounds) return selectedRangeBounds;
     if (dailySelected.length === 0) return null;
@@ -1752,12 +1969,22 @@ const Overview: React.FC = () => {
     (forecastOptions.find((option) => option.key === forecastKey) as ForecastOption) ??
     (forecastOptions.find((option) => option.key === "30d") as ForecastOption);
   const forecastWindow = useMemo(
-    () => resolveForecastWindow(forecast, lastActualDay, selectedForecast),
-    [forecast, lastActualDay, selectedForecast]
+    () => resolveForecastWindow(forecast, lastCompleteActualDay, selectedForecast),
+    [forecast, lastCompleteActualDay, selectedForecast]
   );
 
   const forecastLabel = forecastWindow.label;
-  const forecastHorizon = forecastWindow.entries;
+  const forecastHorizon = useMemo(() => {
+    const entries = forecastWindow.entries;
+    if (!hasTodayActual) return entries;
+    if (entries.some((entry) => entry.day === todayKey)) return entries;
+    const firstFutureEntry = entries.find((entry) => entry.day > todayKey) ?? forecast.find((entry) => entry.day > todayKey);
+    if (!firstFutureEntry) return entries;
+    const todayEntry: ForecastEntry = { ...firstFutureEntry, day: todayKey };
+    const nextEntries = [todayEntry, ...entries.filter((entry) => entry.day > todayKey)];
+    if (selectedForecast.kind === "days") return nextEntries.slice(0, selectedForecast.days);
+    return nextEntries;
+  }, [forecastWindow.entries, hasTodayActual, todayKey, forecast, selectedForecast]);
 
   const previousBounds = useMemo(() => {
     if (!availableBounds || !primaryRangeBounds) return null;
@@ -1891,9 +2118,20 @@ const Overview: React.FC = () => {
     return [];
   }, [primaryRangeBounds, dailySelected]);
   const actualByDay = useMemo(() => new Map(dailySelected.map((row) => [row.day, row.value])), [dailySelected]);
+  const priorActualDayForToday = useMemo(() => {
+    for (let index = dailySelected.length - 1; index >= 0; index -= 1) {
+      if (dailySelected[index].day < todayKey) return dailySelected[index].day;
+    }
+    return null;
+  }, [dailySelected, todayKey]);
   const forecastCandidates = useMemo(
-    () => forecastHorizon.filter((entry) => (!lastActualDay ? true : entry.day > lastActualDay)),
-    [forecastHorizon, lastActualDay]
+    () =>
+      forecastHorizon.filter((entry) => {
+        if (hasTodayActual) return entry.day >= todayKey;
+        if (!lastActualDay) return true;
+        return entry.day > lastActualDay;
+      }),
+    [forecastHorizon, hasTodayActual, todayKey, lastActualDay]
   );
   const forecastSummary = useMemo(() => {
     if (forecastCandidates.length === 0) return null;
@@ -1910,21 +2148,12 @@ const Overview: React.FC = () => {
     });
     return map;
   }, [forecastCandidates]);
-  const forecastAnchorDay = useMemo(() => {
-    if (!lastActualDay || forecastCandidates.length === 0) return null;
-    const rangeStartDay = rangeDomainDays[0];
-    if (rangeStartDay && lastActualDay < rangeStartDay) return null;
-    return lastActualDay;
-  }, [lastActualDay, forecastCandidates.length, rangeDomainDays]);
   const chartDomainDays = useMemo(() => {
     if (forecastCandidates.length === 0) return rangeDomainDays;
     const merged = new Set<string>(rangeDomainDays);
-    if (forecastAnchorDay) {
-      merged.add(forecastAnchorDay);
-    }
     forecastCandidates.forEach((entry) => merged.add(entry.day));
     return Array.from(merged).sort((a, b) => a.localeCompare(b));
-  }, [rangeDomainDays, forecastCandidates, forecastAnchorDay]);
+  }, [rangeDomainDays, forecastCandidates]);
   const forecastStartDay = useMemo(() => {
     for (const day of chartDomainDays) {
       if (forecastByDay.has(day)) return day;
@@ -1940,7 +2169,11 @@ const Overview: React.FC = () => {
         const upper = forecastEntry?.yhat_upper;
         const hasBand = Number.isFinite(lower) && Number.isFinite(upper);
         const bandSpan = hasBand ? Math.max(0, (upper as number) - (lower as number)) : null;
-        const actualValue = actualByDay.get(day) ?? null;
+        const rawActualValue = actualByDay.get(day) ?? null;
+        const isTodayPoint = day === todayKey;
+        const actualValue = isTodayPoint && hasTodayActual ? null : rawActualValue;
+        const todaySoFarValue =
+          hasTodayActual && (isTodayPoint || day === priorActualDayForToday) ? rawActualValue : null;
         const compareValue = comparisonEntry?.value ?? null;
         const hasDelta =
           Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(compareValue ?? Number.NaN);
@@ -1953,12 +2186,11 @@ const Overview: React.FC = () => {
         return {
           day,
           actual: actualValue,
+          todaySoFar: todaySoFarValue,
           compare: compareValue,
           compareDay: comparisonEntry?.day ?? null,
           forecast: forecastEntry?.yhat ?? null,
-          forecastLine:
-            forecastEntry?.yhat ??
-            (forecastAnchorDay && day === forecastAnchorDay ? actualValue : null),
+          forecastLine: forecastEntry?.yhat ?? null,
           forecastLower: hasBand ? (lower as number) : null,
           forecastUpper: hasBand ? (upper as number) : null,
           forecastBandSpan: hasBand ? bandSpan : null,
@@ -1966,7 +2198,7 @@ const Overview: React.FC = () => {
           deltaNegativeRange,
         } satisfies TrendChartPoint;
       }),
-    [chartDomainDays, forecastByDay, actualByDay, comparisonAligned, forecastAnchorDay]
+    [chartDomainDays, forecastByDay, actualByDay, comparisonAligned, todayKey, hasTodayActual, priorActualDayForToday]
   );
 
   const scaledKpiComparisonValues = useMemo(() => {
@@ -2004,6 +2236,7 @@ const Overview: React.FC = () => {
       string,
       {
         actual: number | null;
+        todaySoFar: number | null;
         compare: number | null;
         forecast: number | null;
         forecastLine: number | null;
@@ -2019,6 +2252,7 @@ const Overview: React.FC = () => {
       const key = bucketKeyFor(point.day, chartGranularity);
       const current = buckets.get(key) ?? {
         actual: null,
+        todaySoFar: null,
         compare: null,
         forecast: null,
         forecastLine: null,
@@ -2027,6 +2261,7 @@ const Overview: React.FC = () => {
       };
       buckets.set(key, {
         actual: addTo(current.actual, point.actual),
+        todaySoFar: addTo(current.todaySoFar, point.todaySoFar),
         compare: addTo(current.compare, point.compare),
         forecast: addTo(current.forecast, point.forecast),
         forecastLine: addTo(current.forecastLine, point.forecastLine),
@@ -2051,6 +2286,7 @@ const Overview: React.FC = () => {
         return {
           day: key,
           actual: acc.actual,
+          todaySoFar: acc.todaySoFar,
           compare: acc.compare,
           compareDay: null,
           forecast: acc.forecast,
@@ -2075,6 +2311,9 @@ const Overview: React.FC = () => {
         return {
           ...point,
           actual: Number.isFinite(point.actual ?? Number.NaN) ? (point.actual ?? 0) * trendScale : point.actual,
+          todaySoFar: Number.isFinite(point.todaySoFar ?? Number.NaN)
+            ? (point.todaySoFar ?? 0) * trendScale
+            : point.todaySoFar,
           compare: Number.isFinite(point.compare ?? Number.NaN) ? (point.compare ?? 0) * trendScale : point.compare,
           forecast: Number.isFinite(point.forecast ?? Number.NaN) ? (point.forecast ?? 0) * trendScale : point.forecast,
           forecastLine: Number.isFinite(point.forecastLine ?? Number.NaN)
@@ -2097,6 +2336,7 @@ const Overview: React.FC = () => {
   );
 
   const hasActual = chartData.some((point) => point.actual !== null);
+  const hasTodaySoFar = chartData.some((point) => point.todaySoFar !== null);
   const hasCompare = chartData.some((point) => point.compare !== null);
   const hasForecast = chartData.some((point) => point.forecast !== null);
   const hasForecastBand = chartData.some((point) => point.forecastBandSpan !== null);
@@ -2286,36 +2526,9 @@ const Overview: React.FC = () => {
     [seededBreakdownTotals]
   );
   const timePartingEligible = showSeededBreakdowns || selectedRangeDayCount >= 7;
-  const timePartingRows = useMemo(() => {
-    if (!timePartingEligible) return [] as BreakdownTableRow[];
-    if (showSeededBreakdowns) {
-      return timePartingTab === "hour_of_day" ? seededHourRows : seededDayRows;
-    }
-    return timePartingTab === "hour_of_day" ? breakdownData.hour_of_day.rows : breakdownData.day_of_week.rows;
-  }, [
-    timePartingEligible,
-    showSeededBreakdowns,
-    timePartingTab,
-    seededHourRows,
-    seededDayRows,
-    breakdownData.hour_of_day.rows,
-    breakdownData.day_of_week.rows,
-  ]);
-  const timePartingMetricKeys = showSeededBreakdowns
-    ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
-    : timePartingTab === "hour_of_day"
-      ? breakdownData.hour_of_day.metricKeys
-      : breakdownData.day_of_week.metricKeys;
   const timePartingPrimaryMetric = showSeededBreakdowns
     ? ("sessions" as BreakdownMetricKey)
-    : timePartingTab === "hour_of_day"
-      ? breakdownData.hour_of_day.primaryMetric
-      : breakdownData.day_of_week.primaryMetric;
-  const timePartingTotal = showSeededBreakdowns
-    ? scaledTotals.sessions
-    : timePartingTab === "hour_of_day"
-      ? breakdownData.hour_of_day.total
-      : breakdownData.day_of_week.total;
+    : breakdownData.hour_of_day.primaryMetric;
   const timePartingEmptyState = timePartingEligible
     ? "No time-parting data yet for the selected range."
     : "Time-parting analysis becomes useful once you view at least 7 days.";
@@ -2426,7 +2639,6 @@ const Overview: React.FC = () => {
     if (forecastKey !== "30d") next.set("forecast", forecastKey);
     if (acquisitionTab !== "channels") next.set("tab", acquisitionTab);
     if (campaignDimension !== "campaign") next.set("camp", campaignDimension);
-    if (timePartingTab !== "day_of_week") next.set("tp", timePartingTab);
     if (timePartingDayType !== "all") next.set("tpDays", timePartingDayType);
     if (activeFilters.length > 0) {
       next.set(
@@ -2454,7 +2666,6 @@ const Overview: React.FC = () => {
     forecastKey,
     acquisitionTab,
     campaignDimension,
-    timePartingTab,
     timePartingDayType,
     activeFilters,
     searchParams,
@@ -2558,8 +2769,10 @@ const Overview: React.FC = () => {
   ]);
 
   const mapeValue = forecastMeta?.mape ?? Number.NaN;
-  const forecastMape = Number.isFinite(mapeValue) ? `${(mapeValue * 100).toFixed(1)}%` : "—";
-  const mapeClass = Number.isFinite(mapeValue)
+  const forecastAccuracy = Number.isFinite(mapeValue)
+    ? `${clamp((1 - mapeValue) * 100, 0, 100).toFixed(0)}%`
+    : "Building";
+  const forecastAccuracyClass = Number.isFinite(mapeValue)
     ? mapeValue <= 0.1
       ? "text-emerald-600"
       : "text-amber-600"
@@ -2586,109 +2799,18 @@ const Overview: React.FC = () => {
     forecastSummary && Number.isFinite(goalTargetForWindow ?? Number.NaN)
       ? forecastSummary.total - (goalTargetForWindow ?? 0)
       : null;
-  const neededPacePerDay =
-    Number.isFinite(goalTargetForWindow ?? Number.NaN) && forecastDayCount > 0
-      ? (goalTargetForWindow as number) / forecastDayCount
-      : null;
-  const forecastPacePerDay = forecastSummary?.average ?? null;
   const goalGapPct =
     Number.isFinite(goalGap ?? Number.NaN) && Number.isFinite(goalTargetForWindow ?? Number.NaN) && (goalTargetForWindow ?? 0) > 0
       ? ((goalGap ?? 0) / (goalTargetForWindow ?? 1)) * 100
       : Number.NaN;
-  const goalStatus =
-    Number.isFinite(goalGap ?? Number.NaN) && (goalGap ?? 0) >= 0 ? "Ahead of pace" : "Behind pace";
   const goalSentence =
     Number.isFinite(goalGapPct)
       ? `At the current pace, ${selectedMetricLower} is forecasted to finish ${Math.abs(goalGapPct).toFixed(0)}% ${
           (goalGap ?? 0) >= 0 ? "above" : "below"
         } goal.`
       : null;
-  const visitDurationComparisonValue = scaledKpiComparisonValues?.visit_duration ?? Number.NaN;
-  const visitDurationDeltaPct =
-    Number.isFinite(scaledTotals.visit_duration) &&
-    Number.isFinite(visitDurationComparisonValue) &&
-    Math.abs(visitDurationComparisonValue) > 0
-      ? (scaledTotals.visit_duration - visitDurationComparisonValue) / visitDurationComparisonValue
-      : Number.NaN;
   const topChannelLabel = topChannel?.label ?? null;
   const topChannelSharePct = topChannel ? Math.round(topChannel.share * 100) : null;
-  const insights = useMemo(() => {
-    const lines: string[] = [];
-    if (Number.isFinite(goalGap ?? Number.NaN) && (goalGap ?? 0) < 0) {
-      lines.push(`${selectedMetricLabel} is forecasted to finish below goal.`);
-    }
-    if (forecastMeta?.has_anomaly) {
-      lines.push(`${selectedMetricLabel} moved outside the forecast interval recently.`);
-    }
-    if (Number.isFinite(selectedMetricDeltaPct) && Math.abs(selectedMetricDeltaPct) >= 0.1) {
-      lines.push(
-        `${selectedMetricLabel} is ${selectedMetricDeltaPct > 0 ? "up" : "down"} ${Math.abs(
-          selectedMetricDeltaPct * 100
-        ).toFixed(1)}% vs ${compareEnabled ? "comparison" : "previous"} period.`
-      );
-    }
-    if (topChannelLabel && Number.isFinite(topChannelSharePct ?? Number.NaN) && (topChannelSharePct ?? 0) >= 45) {
-      lines.push(`${topChannelLabel} currently contributes ${topChannelSharePct}% of sessions.`);
-    }
-    if (Number.isFinite(mapeValue) && mapeValue > 0.18) {
-      lines.push(`Forecast accuracy is lower right now (~${(mapeValue * 100).toFixed(1)}% error).`);
-    }
-    if (lines.length === 0) {
-      lines.push("No major changes detected.");
-    }
-    return lines.slice(0, 5);
-  }, [
-    goalGap,
-    selectedMetricLabel,
-    forecastMeta?.has_anomaly,
-    selectedMetricDeltaPct,
-    compareEnabled,
-    topChannelLabel,
-    topChannelSharePct,
-    mapeValue,
-  ]);
-  const summaryLines = useMemo(() => {
-    const lines: string[] = [];
-    if (Number.isFinite(selectedMetricDeltaPct)) {
-      lines.push(
-        `${selectedMetricLabel} ${selectedMetricDeltaPct >= 0 ? "increased" : "decreased"} ${Math.abs(
-          selectedMetricDeltaPct * 100
-        ).toFixed(1)}% over ${currentRangeLabel ?? "the selected period"}.`
-      );
-    }
-    if (forecastSummary) {
-      lines.push(`Next ${forecastDayCount} days forecast: ${formatMetricValue(selectedMetric, forecastSummary.total)}.`);
-    }
-    if (Number.isFinite(goalGap ?? Number.NaN) && Number.isFinite(goalTargetForWindow ?? Number.NaN)) {
-      lines.push(
-        `${selectedMetricLabel} is currently pacing ${formatGoalGap(
-          selectedMetric,
-          goalGap ?? 0
-        )} ${(goalGap ?? 0) >= 0 ? "ahead of" : "behind"} goal.`
-      );
-    }
-    if (topChannelLabel) {
-      lines.push(`Main contributor: ${topChannelLabel}.`);
-    }
-    if (Number.isFinite(visitDurationDeltaPct) && visitDurationDeltaPct <= -0.02) {
-      lines.push(`Watch: visit duration is down ${Math.abs(visitDurationDeltaPct * 100).toFixed(1)}% vs prior period.`);
-    }
-    if (lines.length === 0) {
-      lines.push("No major changes detected for the selected metric.");
-    }
-    return lines.slice(0, 5);
-  }, [
-    selectedMetricDeltaPct,
-    selectedMetricLabel,
-    currentRangeLabel,
-    forecastSummary,
-    forecastDayCount,
-    selectedMetric,
-    goalGap,
-    goalTargetForWindow,
-    topChannelLabel,
-    visitDurationDeltaPct,
-  ]);
   const selectedRangeEndDay = rangeDomainDays.length > 0 ? rangeDomainDays[rangeDomainDays.length - 1] : null;
   const trendFooterNote = useMemo(() => {
     const notes: string[] = [];
@@ -2709,12 +2831,98 @@ const Overview: React.FC = () => {
     if (selectedMetric === "avg_pages_per_visit") return value.toFixed(2);
     return formatNumber(value);
   };
-  const todayKey = useMemo(() => isoDayForDateInTimeZone(new Date(), siteTimezone), [siteTimezone]);
   const showTodayLine =
     chartGranularity === "day" &&
     chartDomainDays.length > 0 &&
     todayKey >= chartDomainDays[0] &&
     todayKey <= chartDomainDays[chartDomainDays.length - 1];
+  const todayActualValue = actualByDay.get(todayKey) ?? Number.NaN;
+  const todayForecastEntry = forecastHorizon.find((entry) => entry.day === todayKey);
+  const todayProjectionValue = Number.isFinite(todayForecastEntry?.yhat ?? Number.NaN)
+    ? (todayForecastEntry?.yhat as number)
+    : todayActualValue;
+  const todayProgressPct =
+    Number.isFinite(todayActualValue) && Number.isFinite(todayProjectionValue) && todayProjectionValue > 0
+      ? clamp((todayActualValue / todayProjectionValue) * 100, 0, 999)
+      : Number.NaN;
+  const todayProgressNote = Number.isFinite(todayActualValue)
+    ? `${formatMetricValue(selectedMetric, todayActualValue)} so far${
+        Number.isFinite(todayProgressPct) ? ` · ${todayProgressPct.toFixed(0)}% complete` : ""
+      }`
+    : "No same-day actuals yet";
+  const chartSubtitle = [
+    currentRangeLabel ?? range,
+    lastCompleteActualDay ? `actual through ${formatShortDate(lastCompleteActualDay)}` : "awaiting actual data",
+    hasForecast ? `forecast through ${forecastLabel.toLowerCase()}` : forecastMutedNote,
+  ].join(" · ");
+  const periodDeltaDisplay = Number.isFinite(selectedMetricDeltaPct)
+    ? `${selectedMetricDeltaPct >= 0 ? "↑" : "↓"} ${Math.abs(selectedMetricDeltaPct * 100).toFixed(0)}%`
+    : "N/A";
+  const periodDeltaNote = kpiComparisonLabel ?? "vs previous period";
+  const forecastTileHeading =
+    forecastDayCount > 0
+      ? `Next ${forecastDayCount} days · total`
+      : selectedForecast.kind === "days"
+        ? `Next ${selectedForecast.days} days · total`
+        : `${forecastLabel} · total`;
+  const dashboardGoals = Object.values(siteGoals).filter((goal): goal is MetricGoal => Boolean(goal));
+  const insightItems = useMemo(() => {
+    const items: { label: string; text: string }[] = [];
+    if (forecastMeta?.has_anomaly) {
+      items.push({
+        label: "Anomaly",
+        text: `${selectedMetricLabel} moved outside the forecast interval recently. Review alerts before making campaign changes.`,
+      });
+    }
+    if (topChannelLabel && Number.isFinite(topChannelSharePct ?? Number.NaN)) {
+      items.push({
+        label: "Contributor",
+        text: `${topChannelLabel} drives ${topChannelSharePct}% of sessions in this period.`,
+      });
+    }
+    if (Number.isFinite(selectedMetricDeltaPct)) {
+      items.push({
+        label: "Trend",
+        text: `${selectedMetricLabel} is ${selectedMetricDeltaPct >= 0 ? "up" : "down"} ${Math.abs(
+          selectedMetricDeltaPct * 100
+        ).toFixed(1)}% ${periodDeltaNote}.`,
+      });
+    }
+    if (forecastSummary) {
+      items.push({
+        label: "Pacing",
+        text: `The next ${forecastDayCount} days are projected at ${formatMetricValue(
+          selectedMetric,
+          forecastSummary.total
+        )}, averaging ${formatDailyPace(selectedMetric, forecastSummary.average)}.`,
+      });
+    }
+    if (goalSentence) {
+      items.push({ label: "Goal", text: goalSentence });
+    } else if (dashboardGoals.length > 0) {
+      items.push({ label: "Goal", text: "Goals are being tracked against the selected period below." });
+    }
+    if (items.length === 0) {
+      items.push({ label: "Status", text: "No major changes detected for this period." });
+    }
+    return items.slice(0, 5);
+  }, [
+    forecastMeta?.has_anomaly,
+    selectedMetricLabel,
+    topChannelLabel,
+    topChannelSharePct,
+    selectedMetricDeltaPct,
+    periodDeltaNote,
+    forecastSummary,
+    forecastDayCount,
+    selectedMetric,
+    goalSentence,
+    dashboardGoals.length,
+  ]);
+  const dashboardControlClass =
+    "h-8 rounded-md border border-[#DDE4EC] bg-white px-3 text-xs font-medium text-[#424A57] shadow-sm outline-none transition-colors hover:border-[#C7D0DC] focus:border-[#5b55ff]";
+  const dashboardActionClass =
+    "inline-flex h-8 items-center rounded-md border border-[#DDE4EC] bg-white px-3 text-[11px] font-semibold text-[#5F6673] shadow-sm transition-colors hover:border-[#C7D0DC] hover:text-[#1F2937]";
 
   const slugify = (value: string) => value.toLowerCase().replace(/\s+/g, "-");
   const downloadCsv = (lines: string[], filename: string) => {
@@ -2848,16 +3056,22 @@ const Overview: React.FC = () => {
   }, [dailySelected, forecastHorizon]);
 
   return (
-    <div className="min-h-screen bg-[#F9FAFB] print-bg">
-      <header className="border-b border-gray-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
-            Valid
+    <div className="min-h-screen bg-[#F5F6F8] print-bg">
+      <header className="no-print">
+        <div className="mx-auto flex max-w-[1180px] flex-wrap items-start justify-between gap-4 px-5 pb-3 pt-8 sm:px-8">
+          <div>
+            <div className="text-[22px] font-semibold leading-none text-[#111827]" style={fontHeading}>
+              Valid
+            </div>
+            <div className="mt-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+              Site · {siteId}
+            </div>
           </div>
-          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap no-print">
+          <div className="flex max-w-full flex-col items-end gap-2">
+            <div className="flex max-w-full items-center gap-2 overflow-x-auto whitespace-nowrap">
             <select
               aria-label="Date range"
-              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+              className={`${dashboardControlClass} border-[#6B63FF] text-[#5b55ff]`}
               style={fontBody}
               value={range}
               onChange={(event) => setRange(event.target.value as RangeOption)}
@@ -2871,7 +3085,7 @@ const Overview: React.FC = () => {
             {!showSeededBreakdowns && (
               <select
                 aria-label="Hostname filter"
-                className="w-[210px] border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                className={`${dashboardControlClass} w-[190px]`}
                 style={fontBody}
                 value={selectedHostname}
                 onChange={(event) => setSelectedHostname(event.target.value)}
@@ -2890,7 +3104,7 @@ const Overview: React.FC = () => {
                 <input
                   type="date"
                   aria-label="Custom range start date"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                  className={dashboardControlClass}
                   style={fontBody}
                   min={availableBounds?.min}
                   max={availableBounds?.max}
@@ -2910,7 +3124,7 @@ const Overview: React.FC = () => {
                 <input
                   type="date"
                   aria-label="Custom range end date"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                  className={dashboardControlClass}
                   style={fontBody}
                   min={availableBounds?.min}
                   max={availableBounds?.max}
@@ -2925,7 +3139,7 @@ const Overview: React.FC = () => {
                 />
               </div>
             )}
-            <label className="flex items-center gap-1 text-[10px] uppercase tracking-[0.2em] text-gray-500">
+            <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#DDE4EC] bg-white px-3 text-[11px] font-semibold text-[#5F6673] shadow-sm">
               <input
                 type="checkbox"
                 checked={compareEnabled}
@@ -2937,7 +3151,7 @@ const Overview: React.FC = () => {
               <>
                 <select
                   aria-label="Comparison period"
-                  className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                  className={dashboardControlClass}
                   style={fontBody}
                   value={compareMode}
                   onChange={(event) => setCompareMode(event.target.value as "previous" | "custom")}
@@ -2950,7 +3164,7 @@ const Overview: React.FC = () => {
                     <input
                       type="date"
                       aria-label="Comparison start date"
-                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                      className={dashboardControlClass}
                       style={fontBody}
                       min={availableBounds?.min}
                       max={availableBounds?.max}
@@ -2969,7 +3183,7 @@ const Overview: React.FC = () => {
                     <input
                       type="date"
                       aria-label="Comparison end date"
-                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                      className={dashboardControlClass}
                       style={fontBody}
                       min={availableBounds?.min}
                       max={availableBounds?.max}
@@ -2988,7 +3202,7 @@ const Overview: React.FC = () => {
             )}
             <select
               aria-label="Export format"
-              className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+              className={dashboardControlClass}
               style={fontBody}
               value={exportFormat}
               onChange={(event) => setExportFormat(event.target.value as "csv" | "pdf")}
@@ -2999,7 +3213,7 @@ const Overview: React.FC = () => {
             {exportFormat === "csv" && (
               <select
                 aria-label="CSV export scope"
-                className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                className={`${dashboardControlClass} w-[150px]`}
                 style={fontBody}
                 value={exportMode}
                 onChange={(event) => setExportMode(event.target.value as "current" | "all")}
@@ -3011,33 +3225,28 @@ const Overview: React.FC = () => {
             <button
               type="button"
               onClick={() => void handleExportAction()}
-              className="border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500"
+              className={dashboardActionClass}
               style={fontBody}
             >
               Export
             </button>
             <a
               href={`/settings?site_id=${encodeURIComponent(siteId)}`}
-              className="border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500 hover:border-gray-300 hover:text-[#1F2937]"
+              className={dashboardActionClass}
               style={fontBody}
             >
               Settings
             </a>
-            <LogoutButton />
+            <ThemeToggle />
+            <LogoutButton className={dashboardActionClass} />
+            </div>
+            <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+              Metrics · {range}{hostnameFilter ? ` · ${hostnameFilter}` : ""}
+            </div>
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl space-y-6 px-6 pb-10 pt-6 print-container">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-              Site: {siteId}
-            </div>
-          </div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-            Metrics · {range}{hostnameFilter ? ` · Host: ${hostnameFilter}` : ""}
-          </div>
-        </div>
+      <main className="mx-auto max-w-[1180px] space-y-5 px-5 pb-12 pt-0 sm:px-8 print-container">
         {accessError && (
           <div className="border-l-2 border-[#8B2635] bg-[#FFF4F5] px-4 py-3 text-sm text-[#6B1F2A]" style={fontBody}>
             {accessError}
@@ -3144,14 +3353,42 @@ const Overview: React.FC = () => {
             </div>
           </div>
         )}
-        <section className="border border-[var(--color-border-subtle)] bg-white p-4">
-          <div>
+        <section className="rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="text-[18px] font-semibold text-[#1F2937]" style={fontBody}>
+                {selectedMetricLabel}
+              </div>
+              <div className="mt-1 text-[12px] text-[#7B8190]" style={fontBody}>
+                {chartSubtitle}
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+                Forecast horizon
+              </span>
+              <select
+                aria-label="Forecast horizon"
+                className={dashboardControlClass}
+                style={fontBody}
+                value={forecastKey}
+                onChange={(event) => setForecastKey(event.target.value as ForecastOption["key"])}
+              >
+                {forecastOptions.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="mt-6">
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
                 No chart data yet. Seed events, run the reducer, and reload.
               </div>
             ) : (
-              <ResponsiveContainer width="100%" height={280}>
+              <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart data={chartData}>
                   <CartesianGrid stroke={chartGridStroke} strokeDasharray="2 6" vertical={false} />
                   <XAxis
@@ -3177,6 +3414,7 @@ const Overview: React.FC = () => {
                       const point = payload[0]?.payload as TrendChartPoint | undefined;
                       if (!point) return null;
                       const actualValue = point.actual;
+                      const todaySoFarValue = point.todaySoFar;
                       const compareValue = point.compare;
                       const forecastValue = point.forecast;
                       const delta =
@@ -3208,6 +3446,14 @@ const Overview: React.FC = () => {
                               <span className="text-gray-200" style={fontBody}>{formatTooltipDateGranular(String(label), chartGranularity)}</span>
                               <span className="metric-number text-white" style={fontMetric}>
                                 {formatMetricValue(selectedMetric, actualValue ?? Number.NaN)}
+                              </span>
+                            </div>
+                          )}
+                          {Number.isFinite(todaySoFarValue ?? Number.NaN) && String(label) === todayKey && (
+                            <div className="flex items-center justify-between gap-4 py-1 text-sm">
+                              <span className="text-gray-200" style={fontBody}>Today so far</span>
+                              <span className="metric-number text-white" style={fontMetric}>
+                                {formatMetricValue(selectedMetric, todaySoFarValue ?? Number.NaN)}
                               </span>
                             </div>
                           )}
@@ -3268,7 +3514,7 @@ const Overview: React.FC = () => {
                       stroke={chartReferenceStroke}
                       strokeDasharray="3 6"
                       label={{
-                        value: "Today",
+                        value: "Now",
                         position: "top",
                         fill: chartAxisTick,
                         fontSize: 10,
@@ -3276,7 +3522,7 @@ const Overview: React.FC = () => {
                       }}
                     />
                   )}
-                  {hasForecast && forecastStartDay && (
+                  {hasForecast && forecastStartDay && !showTodayLine && (
                     <ReferenceLine
                       x={forecastStartDay}
                       stroke={chartReferenceStroke}
@@ -3345,6 +3591,16 @@ const Overview: React.FC = () => {
                       isAnimationActive={false}
                     />
                   )}
+                  {hasTodaySoFar && (
+                    <Line
+                      type="linear"
+                      dataKey="todaySoFar"
+                      stroke="#9b8cf6"
+                      strokeWidth={2}
+                      dot={{ r: 3, fill: "#9b8cf6", stroke: "#ffffff", strokeWidth: 1.5 }}
+                      isAnimationActive={false}
+                    />
+                  )}
                   {compareEnabled && hasCompare && (
                     <Line
                       type="linear"
@@ -3378,6 +3634,12 @@ const Overview: React.FC = () => {
               <span className="flex items-center gap-2">
                 <span className="h-0.5 w-5 bg-[#4f46e5]" />
                 Actual
+              </span>
+            )}
+            {hasTodaySoFar && (
+              <span className="flex items-center gap-2">
+                <span className="h-0.5 w-5 bg-[#9b8cf6]" />
+                Today so far
               </span>
             )}
             {compareEnabled && hasCompare && (
@@ -3419,214 +3681,134 @@ const Overview: React.FC = () => {
                 className={`${chartGranularity !== "day" ? "" : "ml-auto"} text-[11px] text-[#4B5563]`}
                 style={fontBody}
               >
-                MAPE: <span className={`metric-number ${mapeClass}`} style={fontMetric}>{forecastMape}</span>
+                Forecast accuracy <span className={`metric-number ${forecastAccuracyClass}`} style={fontMetric}>{forecastAccuracy}</span>
               </span>
             )}
           </div>
-        </section>
-        <section className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                {selectedMetricLabel} Forecast
+          <div className="mt-4 border-t border-[var(--color-border-subtle)] pt-4">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B8190]" style={fontBody}>
+                  Today projected
+                </div>
+                <div className="mt-1 metric-number text-[21px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
+                  {formatMetricValue(selectedMetric, todayProjectionValue)}
+                </div>
+                <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
+                  {todayProgressNote}
+                </div>
               </div>
-              <div className="mt-1 text-[12px] text-[#6B7280]" style={fontBody}>
-                {currentRangeLabel ? `${currentRangeLabel}: ${formatMetricValue(selectedMetric, selectedMetricCurrentValue)}` : null}
+              <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B8190]" style={fontBody}>
+                  {forecastTileHeading}
+                </div>
+                <div className="mt-1 metric-number text-[21px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
+                  {forecastSummary ? formatMetricValue(selectedMetric, forecastSummary.total) : "N/A"}
+                </div>
+                <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
+                  {forecastSummary ? `Avg ${formatDailyPace(selectedMetric, forecastSummary.average)}` : forecastMutedNote}
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-[0.18em] text-[#6B7280]" style={fontMeta}>
-                Horizon
-              </span>
-              <select
-                aria-label="Forecast horizon"
-                className="border border-[#D6E1E7] bg-white px-2.5 py-1.5 text-xs text-[#1F2937]"
-                style={fontBody}
-                value={forecastKey}
-                onChange={(event) => setForecastKey(event.target.value as ForecastOption["key"])}
-              >
-                {forecastOptions.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B8190]" style={fontBody}>
+                  Vs prior period
+                </div>
+                <div
+                  className={`mt-1 metric-number text-[21px] font-semibold leading-tight ${
+                    Number.isFinite(selectedMetricDeltaPct) && selectedMetricDeltaPct < 0 ? "text-[#8B2635]" : "text-[#111827]"
+                  }`}
+                  style={fontMetric}
+                >
+                  {periodDeltaDisplay}
+                </div>
+                <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
+                  {periodDeltaNote}
+                </div>
+              </div>
             </div>
           </div>
-          {forecastSummary ? (
-            <>
-              {selectedMetricGoal ? (
-                <div className="mt-3 grid gap-3 md:grid-cols-4">
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                      Forecasted Total
-                    </div>
-                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                      {formatMetricValue(selectedMetric, forecastSummary.total)}
-                    </div>
-                  </div>
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                      Goal
-                    </div>
-                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                      {Number.isFinite(goalTargetForWindow ?? Number.NaN)
-                        ? formatMetricValue(selectedMetric, goalTargetForWindow ?? Number.NaN)
-                        : "—"}
-                    </div>
-                  </div>
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                      Gap
-                    </div>
-                    <div
-                      className={`mt-2 text-lg metric-number ${
-                        Number.isFinite(goalGap ?? Number.NaN) ? ((goalGap ?? 0) >= 0 ? "text-emerald-700" : "text-[#8B2635]") : "text-[#111827]"
-                      }`}
-                      style={fontMetric}
-                    >
-                      {Number.isFinite(goalGap ?? Number.NaN) ? formatGoalGap(selectedMetric, goalGap ?? Number.NaN) : "—"}
-                    </div>
-                  </div>
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                      Needed Pace
-                    </div>
-                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                      {formatDailyPace(selectedMetric, neededPacePerDay ?? Number.NaN)}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                      Forecasted Total
-                    </div>
-                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                      {formatMetricValue(selectedMetric, forecastSummary.total)}
-                    </div>
-                  </div>
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                      Forecasted Per Day
-                    </div>
-                    <div className="mt-2 text-lg text-[#111827] metric-number" style={fontMetric}>
-                      {formatDailyPace(selectedMetric, forecastPacePerDay ?? Number.NaN)}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {selectedMetricGoal ? (
-                <div className="mt-3 space-y-1 text-[12px] text-[#4B5563]" style={fontBody}>
-                  <div>
-                    Forecasted pace:{" "}
-                    <span className="metric-number text-[#1F2937]" style={fontMetric}>
-                      {formatDailyPace(selectedMetric, forecastPacePerDay ?? Number.NaN)}
-                    </span>{" "}
-                    · Status:{" "}
-                    <span
-                      className={`${
-                        goalStatus === "Ahead of pace" ? "text-emerald-700" : "text-[#8B2635]"
-                      }`}
-                    >
-                      {goalStatus}
-                    </span>
-                  </div>
-                  {goalSentence && <div>{goalSentence}</div>}
-                  {selectedMetricGoal.periodDays !== forecastDayCount && forecastDayCount > 0 && (
-                    <div className="text-[11px] text-[#6B7280]">
-                      Goal is prorated to match the selected forecast horizon.
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
-                  Add a goal in{" "}
-                  <a
-                    className="underline decoration-dotted underline-offset-2 hover:text-[#1F2937]"
-                    href={`/settings?site_id=${encodeURIComponent(siteId)}`}
-                  >
-                    Settings
-                  </a>{" "}
-                  to see whether this metric is on track.
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
-              {forecastMutedNote}
-            </div>
-          )}
         </section>
-        <section className="grid gap-4 lg:grid-cols-2">
-          <div className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
-            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-              Summary
-            </div>
-            <div className="mt-2 space-y-1.5 text-[12px] text-[#4B5563]" style={fontBody}>
-              {summaryLines.map((line) => (
-                <p key={line}>{line}</p>
-              ))}
-            </div>
+        <section>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+            Insights · {insightItems.length} things to know about this period
           </div>
-          <div className="border border-[var(--color-border-subtle)] bg-white px-4 py-3">
-            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-              Insights
-            </div>
-            <div className="mt-2 space-y-1.5 text-[12px] text-[#4B5563]" style={fontBody}>
-              {insights.map((line) => (
-                <p key={line}>{line}</p>
+          <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+            <div className="space-y-4">
+              {insightItems.map((item) => (
+                <div key={`${item.label}:${item.text}`} className="border-l-2 border-[#6B63FF] pl-3">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
+                    {item.label}
+                  </div>
+                  <div className="mt-1 text-[13px] leading-relaxed text-[#374151]" style={fontBody}>
+                    {item.text}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
         </section>
 
-        <section className="border border-[var(--color-border-subtle)] bg-white p-4">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-              Breakdowns
-            </div>
+        <section>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+            Breakdowns
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <TableBlock
-              title="Acquisition"
+              title="Traffic Sources"
               header={
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-4 text-[13px] font-semibold text-gray-500" style={fontBody}>
+                <div>
+                  <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
+                    Traffic sources
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-4 text-[12px] font-semibold text-gray-500" style={fontBody}>
                     <button
                       type="button"
-                      className={acquisitionTab === "channels" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      className={
+                        acquisitionTab === "channels"
+                          ? "rounded bg-[#F1F3F6] px-2 py-1 text-[#1F2937]"
+                          : "px-2 py-1 hover:text-[#1F2937]"
+                      }
                       onClick={() => setAcquisitionTab("channels")}
                     >
                       Channels
                     </button>
                     <button
                       type="button"
-                      className={acquisitionTab === "sources" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      className={
+                        acquisitionTab === "sources"
+                          ? "rounded bg-[#F1F3F6] px-2 py-1 text-[#1F2937]"
+                          : "px-2 py-1 hover:text-[#1F2937]"
+                      }
                       onClick={() => setAcquisitionTab("sources")}
                     >
                       Sources
                     </button>
                     <button
                       type="button"
-                      className={acquisitionTab === "source_medium" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      className={
+                        acquisitionTab === "source_medium"
+                          ? "rounded bg-[#F1F3F6] px-2 py-1 text-[#1F2937]"
+                          : "px-2 py-1 hover:text-[#1F2937]"
+                      }
                       onClick={() => setAcquisitionTab("source_medium")}
                     >
                       Source / Medium
                     </button>
                     <button
                       type="button"
-                      className={acquisitionTab === "campaigns" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
+                      className={
+                        acquisitionTab === "campaigns"
+                          ? "rounded bg-[#F1F3F6] px-2 py-1 text-[#1F2937]"
+                          : "px-2 py-1 hover:text-[#1F2937]"
+                      }
                       onClick={() => setAcquisitionTab("campaigns")}
                     >
                       Campaigns
                     </button>
-                  </div>
                   {acquisitionTab === "campaigns" && (
                     <select
                       aria-label="Campaign dimension"
-                      className="border border-gray-200 bg-white px-2 py-1 text-xs text-[#1F2937]"
+                      className={`${dashboardControlClass} h-7`}
                       style={fontBody}
                       value={campaignDimension}
                       onChange={(event) => setCampaignDimension(event.target.value as "campaign" | "content" | "term")}
@@ -3636,6 +3818,7 @@ const Overview: React.FC = () => {
                       <option value="term">Term</option>
                     </select>
                   )}
+                  </div>
                 </div>
               }
               rows={acquisitionRows}
@@ -3680,67 +3863,28 @@ const Overview: React.FC = () => {
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />
-            <TableBlock
-              title="Goals"
-              rows={breakdownCards[3]?.rows ?? []}
-              metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
-              primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
-              total={breakdownCards[3]?.total}
-              emptyState={breakdownCards[3]?.empty}
-              rowDimension={breakdownCards[3]?.dimension}
-              activeFilters={activeFilters}
-              onToggleFilter={toggleFilter}
+          </div>
+        </section>
+        <section>
+          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+            Goals & Timing
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <GoalsProgressCard
+              goals={dashboardGoals}
+              values={scaledTotals as Record<string, number>}
+              dayCount={selectedRangeDayCount}
+              rangeLabel={currentRangeLabel ?? range}
+              siteId={siteId}
             />
-            <TableBlock
-              title="Time Parting"
-              header={
-                <div className="flex flex-wrap items-center gap-5 text-[13px] font-semibold text-gray-500" style={fontBody}>
-                  <div className="flex flex-wrap items-center gap-4">
-                    <button
-                      type="button"
-                      className={timePartingTab === "day_of_week" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                      onClick={() => setTimePartingTab("day_of_week")}
-                    >
-                      Day of Week
-                    </button>
-                    <button
-                      type="button"
-                      className={timePartingTab === "hour_of_day" ? "text-[#1F2937]" : "hover:text-[#1F2937]"}
-                      onClick={() => setTimePartingTab("hour_of_day")}
-                    >
-                      Hour of Day
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-1 border border-gray-200 bg-white p-0.5 text-[11px]">
-                    {([
-                      ["all", "All"],
-                      ["weekday", "Weekdays"],
-                      ["weekend", "Weekends"],
-                    ] as const).map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={
-                          timePartingDayType === value
-                            ? "bg-[#1F2937] px-2 py-1 text-white"
-                            : "px-2 py-1 text-gray-500 hover:text-[#1F2937]"
-                        }
-                        onClick={() => setTimePartingDayType(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              }
-              rows={timePartingRows}
-              metricKeys={timePartingMetricKeys}
+            <TimePartingHeatmap
+              hourRows={showSeededBreakdowns ? seededHourRows : breakdownData.hour_of_day.rows}
+              dayRows={showSeededBreakdowns ? seededDayRows : breakdownData.day_of_week.rows}
               primaryMetric={timePartingPrimaryMetric}
-              total={timePartingTotal}
-              rowDimension={timePartingTab}
-              activeFilters={activeFilters}
-              onToggleFilter={toggleFilter}
+              dayType={timePartingDayType}
+              setDayType={setTimePartingDayType}
               emptyState={timePartingEmptyState}
+              rangeLabel={currentRangeLabel ?? range}
             />
           </div>
         </section>

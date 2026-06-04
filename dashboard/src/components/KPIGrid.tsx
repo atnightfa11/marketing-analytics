@@ -78,7 +78,7 @@ export const KPIGrid: React.FC<Props> = ({
   selectedMetric,
   onSelectMetric,
 }) => (
-  <div className="border border-[var(--color-border-subtle)] bg-white">
+  <div className="overflow-hidden rounded-lg border border-[var(--color-border-subtle)] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
       {cards.map((card) => {
         const value = values[card.key];
@@ -96,7 +96,6 @@ export const KPIGrid: React.FC<Props> = ({
             : "text-[#8B2635]"
           : "text-gray-400";
         const isActive = selectedMetric === card.key;
-        const isPrimary = card.tier === "primary";
         const showComparisonRows = showDetailedComparison && Boolean(currentRangeLabel && comparisonRangeLabel);
 
         return (
@@ -104,13 +103,13 @@ export const KPIGrid: React.FC<Props> = ({
             key={card.key}
             type="button"
             onClick={() => onSelectMetric?.(card.key)}
-            className={`flex ${showComparisonRows ? "min-h-[132px]" : "min-h-[96px]"} flex-col justify-between border-b border-r border-[var(--color-border-subtle)] px-4 py-2 text-left transition-colors ${
-              isActive ? "bg-[#eef2ff]" : "bg-white hover:bg-[#F9FAFB]"
+            className={`flex ${showComparisonRows ? "min-h-[122px]" : "min-h-[76px]"} flex-col justify-between border-b border-r border-[var(--color-border-subtle)] px-4 py-3 text-left transition-colors last:border-r-0 xl:border-b-0 ${
+              isActive ? "bg-[#fbfbff]" : "bg-white hover:bg-[#F9FAFB]"
             }`}
           >
             <div className="min-w-0">
               <div
-                className={`label-tight truncate font-bold ${isActive ? "text-[#4338ca]" : "text-[#1F2937]"}`}
+                className={`label-tight truncate font-bold ${isActive ? "text-[#5b55ff]" : "text-[#7B8190]"}`}
                 style={fontBody}
                 title={card.label}
               >
@@ -119,7 +118,7 @@ export const KPIGrid: React.FC<Props> = ({
             </div>
             <div className="min-w-0">
               <div
-                className={`${isPrimary ? "text-[var(--type-kpi-primary)] font-semibold text-[#111827]" : "text-[var(--type-kpi-secondary)] font-medium text-[#374151]"} metric-number truncate leading-tight`}
+                className="metric-number truncate text-[21px] font-semibold leading-tight text-[#111827]"
                 style={fontMetric}
                 title={formatMetricValue(card.key, value)}
               >
@@ -148,14 +147,16 @@ export const KPIGrid: React.FC<Props> = ({
                 </>
               ) : (
                 <>
-                  <div className={`mt-1 text-[11px] ${deltaClass} metric-number leading-tight`} style={fontMetric}>
-                    {deltaDisplay}
+                  <div className="mt-1 flex min-w-0 items-center gap-1 text-[11px] leading-tight">
+                    <span className={`${deltaClass} metric-number shrink-0`} style={fontMetric}>
+                      {deltaDisplay}
+                    </span>
+                    {comparisonLabel && (
+                      <span className="truncate text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
+                        {comparisonLabel}
+                      </span>
+                    )}
                   </div>
-                  {comparisonLabel && (
-                    <div className="mt-1 truncate text-[10px] text-gray-400 normal-case tracking-normal" style={fontBody}>
-                      {comparisonLabel}
-                    </div>
-                  )}
                 </>
               )}
             </div>
