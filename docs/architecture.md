@@ -58,6 +58,7 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
 - Production scheduler behavior:
   - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
   - forecast training: daily at `PROD_SCHEDULER_HOUR_UTC` (+15 minute offset)
+  - preferred deployment: run the same image with `VALID_PROCESS_TYPE=worker` as a separate Railway worker service, with `ENABLE_PROD_SCHEDULER=false` on the API service.
 
 ## Serving endpoints
 

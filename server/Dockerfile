@@ -32,4 +32,4 @@ print(f"Prepared bundled CmdStan at {candidate}")
 PY
 COPY . .
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "if [ \"$VALID_PROCESS_TYPE\" = \"worker\" ]; then python -m app.worker; else uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}; fi"]

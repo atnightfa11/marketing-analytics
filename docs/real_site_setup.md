@@ -69,9 +69,10 @@ Set these environment variables on the backend service:
 - `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; explicit user mappings take precedence over `DASHBOARD_ALLOWED_SITE_IDS`, and unmapped users fall back to DB ownership checks)
 - `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended for public launch; set `true` only as a temporary fallback while migrating legacy demo sites)
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
-- `ENABLE_PROD_SCHEDULER=true`
+- `ENABLE_PROD_SCHEDULER=false` on the API service when a separate worker is deployed
 - `PROD_SCHEDULER_HOUR_UTC=2`
 - `PROD_REDUCER_INTERVAL_MINUTES=60` (hourly reducer cadence)
+- Worker service: `VALID_PROCESS_TYPE=worker`
 
 Optional tuning:
 
@@ -174,4 +175,5 @@ do update set plan = excluded.plan;
 - Free + Standard are the launch tiers; Pro/LDP is deferred.
 - Scheduler behavior:
   - Dev: `ENABLE_DEV_SCHEDULER=1` runs reducer every 60 seconds.
-  - Prod: `ENABLE_PROD_SCHEDULER=true` runs reducer every `PROD_REDUCER_INTERVAL_MINUTES` (default 60) + daily forecast training at `PROD_SCHEDULER_HOUR_UTC`.
+  - Prod API-only mode: `ENABLE_PROD_SCHEDULER=true` runs reducer every `PROD_REDUCER_INTERVAL_MINUTES` (default 60) + daily forecast training at `PROD_SCHEDULER_HOUR_UTC`.
+  - Preferred prod split: API runs with `ENABLE_PROD_SCHEDULER=false`; a separate worker service runs the same image with `VALID_PROCESS_TYPE=worker`.
