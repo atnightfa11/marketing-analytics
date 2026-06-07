@@ -8,8 +8,11 @@ flowchart LR
     Raw --> Reduce["Reducer"]
     Ldp --> Reduce
     Reduce --> Windows["dp_windows"]
+    Reduce --> Rollups["breakdown_rollups"]
+    Reduce --> Watermarks["reducer_watermarks"]
     Windows --> Forecast["Forecast training"]
     Windows --> API["Metrics API + Dashboard"]
+    Rollups --> API
 ```
 
 Valid uses plan-aware ingest and reduction:
@@ -46,6 +49,11 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
 - Reducer writes aggregates to `dp_windows`.
   - Free publishes short reducer windows for live/low-latency dashboard views.
   - Standard publishes daily central-DP aggregate windows for better utility and lower storage/write volume.
+- Reducer writes low-dimensional breakdown aggregates to `breakdown_rollups`.
+  - Rollups are keyed by site, plan, day, dimension, hostname scope, day type, label, and metric.
+  - Dashboard breakdowns prefer rollups and fall back to raw only for windows that have not been reduced yet.
+- Reducer writes successful site/day status to `reducer_watermarks`.
+  - Standard raw purge uses these watermarks so rows are deleted only after successful reduction.
 - Forecast job trains and writes forecast rows from `dp_windows`.
 - Production scheduler behavior:
   - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
@@ -62,6 +70,7 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
   - dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
   - supports `hostname=<host>` filter for subdomain tracking
   - time-parting dimensions support `day_type=all|weekday|weekend`
+  - reads from `breakdown_rollups` after reduction
 
 All dashboard metrics endpoints require dashboard auth and site-access authorization.
 

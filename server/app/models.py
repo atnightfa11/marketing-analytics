@@ -112,6 +112,61 @@ class DailyUnique(Base):
     variance: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+class BreakdownRollup(Base):
+    __tablename__ = "breakdown_rollups"
+    __table_args__ = (
+        UniqueConstraint(
+            "site_id",
+            "plan",
+            "day",
+            "dimension",
+            "hostname",
+            "day_type",
+            "label",
+            "metric",
+            name="uq_breakdown_rollup",
+        ),
+        Index("ix_breakdown_rollups_lookup", "site_id", "plan", "dimension", "day"),
+        Index("ix_breakdown_rollups_hostname", "site_id", "plan", "hostname", "day"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False)
+    day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    dimension: Mapped[str] = mapped_column(String, nullable=False)
+    hostname: Mapped[str] = mapped_column(String, nullable=False, default="")
+    day_type: Mapped[str] = mapped_column(String, nullable=False, default="all")
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    metric: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class ReducerWatermark(Base):
+    __tablename__ = "reducer_watermarks"
+    __table_args__ = (
+        UniqueConstraint("site_id", "plan", "day", "reducer_version", name="uq_reducer_watermark"),
+        Index("ix_reducer_watermarks_status", "status", "day"),
+        Index("ix_reducer_watermarks_site_day", "site_id", "day"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False)
+    day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    reducer_version: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    raw_report_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dp_window_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    breakdown_rollup_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reduced_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_purged_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class Forecast(Base):
     __tablename__ = "forecasts"
     __table_args__ = (Index("ix_forecasts_site_metric_day", "site_id", "metric", "day", "plan"),)

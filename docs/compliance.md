@@ -9,7 +9,7 @@
   - Free: raw aggregates computed from non-identifying payloads (no local DP).
   - Standard DP: aggregate-noise DP is applied server-side with daily epsilon tracking.
   - Pro: local DP randomized response is applied client-side; only privatized bits reach the backend.
-- **Storage & Retention**: Reports are stored in Postgres. Raw batches are retained only as needed for reduction; aggregates and forecast outputs are retained per business requirements.
+- **Storage & Retention**: Reports are stored in Postgres. Standard raw batches are processing material and are purged after successful reducer watermarks plus the configured retention window (`RAW_REPORT_RETENTION_HOURS`, default 72). KPI aggregates, breakdown rollups, and forecast outputs are durable analytics output retained per business requirements.
 - **Security Controls**:
   - Short-lived upload tokens (900s default) with Argon2id-hashed revocation records.
   - Replay protection via nonce (`jti`) tracking.
@@ -21,3 +21,11 @@
 ## Privacy Notice Boilerplate
 
 > We collect anonymized marketing analytics without cookies or persistent browser identifiers. By default, the SDK honors browser privacy signals such as Do Not Track (DNT) and Global Privacy Control (GPC), and excludes click-id query parameters from tracked URLs while retaining campaign tags needed for aggregate attribution. Depending on plan, data is either aggregated server-side with differential privacy noise (Standard) or randomized locally in your browser before transmission (Pro). Free sites use raw aggregates derived from coarse, non-identifying payloads and rotating daily/session HMAC keys to avoid persistent tracking. Reports are shuffled, delayed, and aggregated to provide high-level KPIs and anomaly alerts. Tokens expire quickly, and we enforce strict thresholds before publishing any metric. You can disable analytics in your site settings at any time.
+
+## Public Claim Boundary
+
+Recommended Standard language:
+
+> Valid's Standard tier uses data minimization, aggregate reporting, suppression thresholds, and differential privacy controls for selected high-volume KPI metrics where added noise still preserves useful reporting.
+
+Avoid claiming the whole dashboard is differentially private. Breakdown panels currently use aggregate rollups and suppression thresholds, not a dimension-level DP mechanism.

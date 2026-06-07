@@ -28,6 +28,7 @@ Dashboard-derived engagement metrics:
 ## Dimension breakdowns
 
 - Endpoint: `GET /api/breakdown`
+- Serving path: reduced `breakdown_rollups` when available; raw fallback only for unreduced windows.
 - Dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
 - Query params:
   - `site_id` (required)
@@ -53,6 +54,7 @@ Current caveats:
 
 - Existing historical data may show `Unknown` for device/country until new traffic is ingested.
 - Historical import rows are excluded from breakdown dimensions.
+- Breakdown rollups are aggregate reporting tables, not raw event storage. They preserve low-dimensional counts by day and continue to enforce response thresholds before returning rows.
 - Time-parting (`hour_of_day`, `day_of_week`) has server-side privacy gates:
   - minimum selected range: 7 days
   - bucket suppression: rows require at least 10 sessions
@@ -72,6 +74,7 @@ Quality notes:
 - Standard aggregate windows publish daily. Sessions are clamped to not exceed the deduped session baseline after noise to avoid obviously broken output.
 - `conversion_rate` is derived from already published aggregates.
 - Standard session dedupe is replay-resistant and coarse-context based.
+- Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups plus suppression thresholds unless a future dimension-level DP mechanism is added.
 
 ## Privacy/data handling summary
 

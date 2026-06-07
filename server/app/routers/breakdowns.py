@@ -10,11 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import breakdown_logic
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..hostnames import hostname_from_payload, normalize_hostname
-from ..models import DashboardSite, RawReport, get_session
+from ..models import BreakdownRollup, DashboardSite, RawReport, get_session
 from ..schemas import BreakdownResponse, BreakdownRow
 
 router = APIRouter(tags=["metrics"])
@@ -376,6 +377,54 @@ def _empty_breakdown_response(
     )
 
 
+async def _breakdown_from_rollups(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    dimension: BreakdownDimension,
+    limit: int,
+    start_day: dt.date,
+    end_day: dt.date,
+    hostname_filter: str | None,
+    day_type: TimePartingDayType,
+) -> BreakdownResponse | None:
+    metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
+    stmt = (
+        select(BreakdownRollup)
+        .where(
+            BreakdownRollup.site_id == site_id,
+            BreakdownRollup.plan == plan,
+            BreakdownRollup.dimension == dimension,
+            BreakdownRollup.day >= start_day,
+            BreakdownRollup.day <= end_day,
+            BreakdownRollup.hostname == (hostname_filter or ""),
+        )
+        .order_by(BreakdownRollup.day, BreakdownRollup.label, BreakdownRollup.metric)
+    )
+    if dimension in TIME_PARTING_DIMENSIONS and day_type != "all":
+        stmt = stmt.where(BreakdownRollup.day_type == day_type)
+    elif dimension not in TIME_PARTING_DIMENSIONS:
+        stmt = stmt.where(BreakdownRollup.day_type == "all")
+
+    rollups = (await session.execute(stmt)).scalars().all()
+    if not rollups:
+        return None
+
+    buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: _blank_metric_map(metric_keys))
+    for rollup in rollups:
+        if rollup.metric not in metric_keys:
+            continue
+        buckets[rollup.label][rollup.metric] += rollup.value
+
+    return breakdown_logic.build_breakdown_response_from_buckets(
+        site_id=site_id,
+        dimension=dimension,
+        buckets=dict(buckets),
+        limit=limit,
+    )
+
+
 @router.get("/breakdown", response_model=BreakdownResponse)
 async def breakdown(
     site_id: str,
@@ -416,6 +465,20 @@ async def breakdown(
             primary_metric=primary_metric,
             metric_keys=metric_keys,
         )
+
+    rollup_response = await _breakdown_from_rollups(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        dimension=dimension,
+        limit=limit,
+        start_day=start_day,
+        end_day=end_day,
+        hostname_filter=hostname_filter,
+        day_type=day_type,
+    )
+    if rollup_response is not None:
+        return rollup_response
 
     site = await session.get(DashboardSite, site_id)
     site_timezone = site.timezone if site and site.timezone else "UTC"

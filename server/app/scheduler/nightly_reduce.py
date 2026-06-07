@@ -10,11 +10,29 @@ from collections import defaultdict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..breakdown_logic import (
+    BREAKDOWN_DIMENSIONS,
+    BREAKDOWN_REPORT_KINDS,
+    TIME_PARTING_DIMENSIONS,
+    TIME_PARTING_STORAGE_DAY_TYPES,
+    aggregate_reports_for_breakdown,
+)
 from ..config import get_settings
+from ..hostnames import hostname_from_payload
 from ..ldp.rr_decoder import confidence_interval, rr_unbiased_estimate, standard_error
-from ..models import DpWindow, LdpReport, RawReport, SiteEpsilonLog, SitePlan
+from ..models import (
+    BreakdownRollup,
+    DashboardSite,
+    DpWindow,
+    LdpReport,
+    RawReport,
+    ReducerWatermark,
+    SiteEpsilonLog,
+    SitePlan,
+)
 
 settings = get_settings()
+REDUCER_VERSION = "rollups-v1"
 
 
 def _laplace_scale(epsilon: float) -> float:
@@ -143,6 +161,190 @@ async def _upsert_window(
     )
 
 
+async def _replace_breakdown_rollups(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    plan: str,
+    day: dt.date,
+    reports: list[RawReport],
+    site_timezone: str,
+) -> int:
+    await session.execute(
+        delete(BreakdownRollup).where(
+            BreakdownRollup.site_id == site_id,
+            BreakdownRollup.plan == plan,
+            BreakdownRollup.day == day,
+        )
+    )
+
+    hostnames = sorted(
+        {
+            host
+            for report in reports
+            for host in [hostname_from_payload(report.payload if isinstance(report.payload, dict) else {})]
+            if host
+        }
+    )
+    hostname_scopes: list[tuple[str, str | None]] = [("", None)]
+    hostname_scopes.extend((hostname, hostname) for hostname in hostnames)
+
+    inserted = 0
+    now = dt.datetime.now(dt.timezone.utc)
+    for hostname_scope, hostname_filter in hostname_scopes:
+        for dimension in BREAKDOWN_DIMENSIONS:
+            dimension_reports = [report for report in reports if report.kind in BREAKDOWN_REPORT_KINDS[dimension]]
+            storage_day_types = (
+                TIME_PARTING_STORAGE_DAY_TYPES if dimension in TIME_PARTING_DIMENSIONS else ("all",)
+            )
+            for day_type in storage_day_types:
+                buckets = aggregate_reports_for_breakdown(
+                    reports=dimension_reports,
+                    dimension=dimension,
+                    site_timezone=site_timezone,
+                    hostname_filter=hostname_filter,
+                    day_type=day_type,
+                )
+                for label, metrics in buckets.items():
+                    for metric, value in metrics.items():
+                        if value <= 0:
+                            continue
+                        session.add(
+                            BreakdownRollup(
+                                site_id=site_id,
+                                plan=plan,
+                                day=day,
+                                dimension=dimension,
+                                hostname=hostname_scope,
+                                day_type=day_type,
+                                label=label,
+                                metric=metric,
+                                value=value,
+                                updated_at=now,
+                            )
+                        )
+                        inserted += 1
+    return inserted
+
+
+async def _count_dp_windows_for_day(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    plan: str,
+    day: dt.date,
+) -> int:
+    rows = (
+        await session.execute(
+            select(DpWindow).where(
+                DpWindow.site_id == site_id,
+                DpWindow.plan == plan,
+                DpWindow.window_start >= _day_start(day),
+                DpWindow.window_start < _day_start(day + dt.timedelta(days=1)),
+            )
+        )
+    ).scalars().all()
+    return len(rows)
+
+
+async def _mark_reducer_success(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    plan: str,
+    day: dt.date,
+    raw_report_count: int,
+    dp_window_count: int,
+    breakdown_rollup_count: int,
+    reduced_at: dt.datetime,
+) -> None:
+    existing = (
+        await session.execute(
+            select(ReducerWatermark).where(
+                ReducerWatermark.site_id == site_id,
+                ReducerWatermark.plan == plan,
+                ReducerWatermark.day == day,
+                ReducerWatermark.reducer_version == REDUCER_VERSION,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.status = "success"
+        existing.raw_report_count = raw_report_count
+        existing.dp_window_count = dp_window_count
+        existing.breakdown_rollup_count = breakdown_rollup_count
+        existing.reduced_at = reduced_at
+        existing.raw_purged_at = None
+        existing.error = None
+        return
+
+    session.add(
+        ReducerWatermark(
+            site_id=site_id,
+            plan=plan,
+            day=day,
+            reducer_version=REDUCER_VERSION,
+            status="success",
+            raw_report_count=raw_report_count,
+            dp_window_count=dp_window_count,
+            breakdown_rollup_count=breakdown_rollup_count,
+            reduced_at=reduced_at,
+            raw_purged_at=None,
+            error=None,
+        )
+    )
+
+
+async def purge_reduced_raw_reports(
+    session: AsyncSession,
+    *,
+    now: dt.datetime | None = None,
+) -> int:
+    if not settings.RAW_REPORT_PURGE_ENABLED:
+        return 0
+
+    effective_now = now or dt.datetime.now(dt.timezone.utc)
+    retention_hours = max(0, settings.RAW_REPORT_RETENTION_HOURS)
+    cutoff = effective_now - dt.timedelta(hours=retention_hours)
+    watermarks = (
+        await session.execute(
+            select(ReducerWatermark).where(
+                ReducerWatermark.reducer_version == REDUCER_VERSION,
+                ReducerWatermark.status == "success",
+                ReducerWatermark.plan == "standard",
+                ReducerWatermark.raw_purged_at.is_(None),
+                ReducerWatermark.reduced_at <= cutoff,
+            )
+        )
+    ).scalars().all()
+
+    deleted_total = 0
+    for watermark in watermarks:
+        result = await session.execute(
+            delete(RawReport).where(
+                RawReport.site_id == watermark.site_id,
+                RawReport.day == watermark.day,
+                RawReport.server_received_at <= watermark.reduced_at,
+            )
+        )
+        if result.rowcount and result.rowcount > 0:
+            deleted_total += int(result.rowcount)
+
+        remaining = (
+            await session.execute(
+                select(RawReport).where(
+                    RawReport.site_id == watermark.site_id,
+                    RawReport.day == watermark.day,
+                    RawReport.server_received_at <= watermark.reduced_at,
+                )
+            )
+        ).scalars().first()
+        if remaining is None:
+            watermark.raw_purged_at = effective_now
+
+    return deleted_total
+
+
 async def reduce_reports(
     session: AsyncSession,
     days: int = 1,
@@ -155,6 +357,10 @@ async def reduce_reports(
     plan_map = {
         rec.site_id: rec.plan
         for rec in (await session.execute(select(SitePlan))).scalars().all()
+    }
+    site_timezones = {
+        rec.site_id: rec.timezone
+        for rec in (await session.execute(select(DashboardSite))).scalars().all()
     }
     standard_site_ids = [site_id for site_id, plan in plan_map.items() if plan == "standard"]
     if standard_site_ids:
@@ -176,6 +382,8 @@ async def reduce_reports(
         )
     ).scalars().all()
     raw_buckets: dict[tuple[str, str, dt.datetime], list[RawReport]] = defaultdict(list)
+    raw_reports_by_site_day: dict[tuple[str, str, dt.date], list[RawReport]] = defaultdict(list)
+    raw_counts_by_site_day: dict[tuple[str, str, dt.date], int] = defaultdict(int)
     deduped_session_markers: set[tuple[str, dt.datetime, str]] = set()
     deduped_unique_markers: set[tuple[str, dt.date, str]] = set()
     epsilon_totals: dict[tuple[str, dt.date], float] = defaultdict(float)
@@ -184,6 +392,8 @@ async def reduce_reports(
         plan = plan_map.get(report.site_id, "free")
         if plan == "pro":
             continue
+        raw_reports_by_site_day[(report.site_id, plan, report.day)].append(report)
+        raw_counts_by_site_day[(report.site_id, plan, report.day)] += 1
         payload = report.payload if isinstance(report.payload, dict) else {}
         if report.kind == "sessions":
             session_hmac = payload.get("_session_hmac")
@@ -262,6 +472,17 @@ async def reduce_reports(
             variance=variance,
         )
 
+    breakdown_counts_by_site_day: dict[tuple[str, str, dt.date], int] = defaultdict(int)
+    for (site_id, plan, day), reports_for_day in raw_reports_by_site_day.items():
+        breakdown_counts_by_site_day[(site_id, plan, day)] = await _replace_breakdown_rollups(
+            session,
+            site_id=site_id,
+            plan=plan,
+            day=day,
+            reports=reports_for_day,
+            site_timezone=site_timezones.get(site_id, "UTC"),
+        )
+
     # Pro LDP path
     ldp_reports = (
         await session.execute(select(LdpReport).where(LdpReport.day >= start, LdpReport.day <= end))
@@ -315,4 +536,18 @@ async def reduce_reports(
         else:
             session.add(SiteEpsilonLog(site_id=site_id, day=day, plan="standard", epsilon_total=epsilon_total))
 
+    reduced_at = dt.datetime.now(dt.timezone.utc)
+    for (site_id, plan, day), raw_report_count in raw_counts_by_site_day.items():
+        await _mark_reducer_success(
+            session,
+            site_id=site_id,
+            plan=plan,
+            day=day,
+            raw_report_count=raw_report_count,
+            dp_window_count=await _count_dp_windows_for_day(session, site_id=site_id, plan=plan, day=day),
+            breakdown_rollup_count=breakdown_counts_by_site_day.get((site_id, plan, day), 0),
+            reduced_at=reduced_at,
+        )
+
+    await purge_reduced_raw_reports(session)
     await session.commit()
