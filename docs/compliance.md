@@ -11,7 +11,7 @@
   - Pro: local DP randomized response is applied client-side; only privatized bits reach the backend.
 - **Storage & Retention**: Reports are stored in Postgres. Standard raw batches are processing material and are purged after successful reducer watermarks plus the configured retention window (`RAW_REPORT_RETENTION_HOURS`, default 72). KPI aggregates, breakdown rollups, and forecast outputs are durable analytics output retained per business requirements.
 - **Security Controls**:
-  - Short-lived upload tokens (900s default) with Argon2id-hashed revocation records.
+  - Short-lived HMAC-signed upload tokens (900s default) with registered `jti` revocation records.
   - Replay protection via nonce (`jti`) tracking.
   - Unified token bucket rate limiting per site and IP.
   - HSTS and CSP enforced on API and dashboard.

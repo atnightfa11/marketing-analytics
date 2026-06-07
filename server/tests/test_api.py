@@ -36,6 +36,7 @@ from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
+from app.routers.upload_token import sign_claims  # noqa: E402
 
 
 async def _prepare_database() -> None:
@@ -200,6 +201,58 @@ async def test_token_issue_and_revoke(client):
         headers={"Origin": "https://example.com"},
     )
     assert shuffle.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_shuffle_rejects_tampered_upload_token(client):
+    token_resp = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": "site-token-tamper",
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert token_resp.status_code == 200
+    token = token_resp.json()["token"]
+    serialized, signature = token.split(".", 1)
+    replacement = "A" if signature[-1] != "A" else "B"
+    tampered = f"{serialized}.{signature[:-1]}{replacement}"
+
+    shuffle = client.post(
+        "/api/shuffle",
+        json={"token": tampered, "nonce": "nonce-tampered-token", "batch": []},
+        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+    )
+    assert shuffle.status_code == 401
+    assert shuffle.json()["detail"] == "Invalid token"
+
+
+@pytest.mark.asyncio
+async def test_shuffle_rejects_signed_but_unregistered_upload_token(client):
+    now = datetime.now(timezone.utc)
+    token = sign_claims(
+        {
+            "site_id": "site-token-unregistered",
+            "plan": "free",
+            "allowed_origin": "https://example.com",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=15)).timestamp()),
+            "jti": "unregistered-jti",
+            "sampling_rate": 1.0,
+            "epsilon_budget": 1.0,
+        }
+    )
+
+    shuffle = client.post(
+        "/api/shuffle",
+        json={"token": token, "nonce": "nonce-unregistered-token", "batch": []},
+        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+    )
+    assert shuffle.status_code == 401
+    assert shuffle.json()["detail"] == "Token not registered"
 
 
 @pytest.mark.asyncio

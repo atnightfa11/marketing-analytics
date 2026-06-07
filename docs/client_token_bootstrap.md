@@ -17,6 +17,12 @@ Site keys are publishable and must be origin-restricted; rotate on suspicion of 
    - sdk config metadata
 4. SDK refreshes token before expiry and retries once on `401`.
 
+## Security model
+
+- Upload tokens are short-lived and HMAC-signed.
+- `/api/shuffle` verifies the token signature, expiry, origin, registered `jti`, revocation status, and replay nonce.
+- Argon2 remains appropriate for dashboard passwords and long-lived site keys, but upload-token ingest avoids per-request Argon2 verification for throughput.
+
 ## API request
 
 ```http
