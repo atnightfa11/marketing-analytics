@@ -1,6 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL ??
+  (typeof window !== "undefined" && window.location.hostname.endsWith("validanalytics.io")
+    ? "https://api.validanalytics.io"
+    : "http://localhost:8000");
 const TOKEN_STORAGE_KEY = "ma_token";
 
 interface AuthContextValue {
@@ -105,4 +109,3 @@ export const useAuth = (): AuthContextValue => {
   }
   return value;
 };
-

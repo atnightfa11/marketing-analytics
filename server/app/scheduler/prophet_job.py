@@ -23,9 +23,15 @@ logger = logging.getLogger("marketing-analytics")
 
 
 async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: str = "free"):
+    today_start = dt.datetime.combine(dt.datetime.now(dt.timezone.utc).date(), dt.time.min, tzinfo=dt.timezone.utc)
     stmt = (
         select(DpWindow)
-        .where(DpWindow.site_id == site_id, DpWindow.metric == metric, DpWindow.plan == plan)
+        .where(
+            DpWindow.site_id == site_id,
+            DpWindow.metric == metric,
+            DpWindow.plan == plan,
+            DpWindow.window_start < today_start,
+        )
         .order_by(DpWindow.window_start.asc())
     )
     rows = (await session.execute(stmt)).scalars().all()

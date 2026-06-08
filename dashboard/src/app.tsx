@@ -431,6 +431,7 @@ interface TrendChartPoint {
   day: string;
   actual: number | null;
   todaySoFar: number | null;
+  todayBridge: number | null;
   compare: number | null;
   compareDay: string | null;
   forecast: number | null;
@@ -1976,7 +1977,6 @@ const Overview: React.FC = () => {
   const forecastLabel = forecastWindow.label;
   const forecastHorizon = useMemo(() => {
     const entries = forecastWindow.entries;
-    if (!hasTodayActual) return entries;
     if (entries.some((entry) => entry.day === todayKey)) return entries;
     const firstFutureEntry = entries.find((entry) => entry.day > todayKey) ?? forecast.find((entry) => entry.day > todayKey);
     if (!firstFutureEntry) return entries;
@@ -1984,7 +1984,7 @@ const Overview: React.FC = () => {
     const nextEntries = [todayEntry, ...entries.filter((entry) => entry.day > todayKey)];
     if (selectedForecast.kind === "days") return nextEntries.slice(0, selectedForecast.days);
     return nextEntries;
-  }, [forecastWindow.entries, hasTodayActual, todayKey, forecast, selectedForecast]);
+  }, [forecastWindow.entries, todayKey, forecast, selectedForecast]);
 
   const previousBounds = useMemo(() => {
     if (!availableBounds || !primaryRangeBounds) return null;
@@ -2174,6 +2174,16 @@ const Overview: React.FC = () => {
         const actualValue = isTodayPoint && hasTodayActual ? null : rawActualValue;
         const todaySoFarValue =
           hasTodayActual && (isTodayPoint || day === priorActualDayForToday) ? rawActualValue : null;
+        const shouldBridgeToday =
+          !hasTodayActual &&
+          Boolean(priorActualDayForToday) &&
+          Boolean(forecastByDay.get(todayKey));
+        const todayBridgeValue =
+          shouldBridgeToday && (day === priorActualDayForToday || isTodayPoint)
+            ? day === priorActualDayForToday
+              ? rawActualValue
+              : forecastByDay.get(todayKey)?.yhat ?? null
+            : null;
         const compareValue = comparisonEntry?.value ?? null;
         const hasDelta =
           Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(compareValue ?? Number.NaN);
@@ -2187,6 +2197,7 @@ const Overview: React.FC = () => {
           day,
           actual: actualValue,
           todaySoFar: todaySoFarValue,
+          todayBridge: todayBridgeValue,
           compare: compareValue,
           compareDay: comparisonEntry?.day ?? null,
           forecast: forecastEntry?.yhat ?? null,
@@ -2198,7 +2209,15 @@ const Overview: React.FC = () => {
           deltaNegativeRange,
         } satisfies TrendChartPoint;
       }),
-    [chartDomainDays, forecastByDay, actualByDay, comparisonAligned, todayKey, hasTodayActual, priorActualDayForToday]
+    [
+      chartDomainDays,
+      forecastByDay,
+      actualByDay,
+      comparisonAligned,
+      todayKey,
+      hasTodayActual,
+      priorActualDayForToday,
+    ]
   );
 
   const scaledKpiComparisonValues = useMemo(() => {
@@ -2237,6 +2256,7 @@ const Overview: React.FC = () => {
       {
         actual: number | null;
         todaySoFar: number | null;
+        todayBridge: number | null;
         compare: number | null;
         forecast: number | null;
         forecastLine: number | null;
@@ -2253,6 +2273,7 @@ const Overview: React.FC = () => {
       const current = buckets.get(key) ?? {
         actual: null,
         todaySoFar: null,
+        todayBridge: null,
         compare: null,
         forecast: null,
         forecastLine: null,
@@ -2262,6 +2283,7 @@ const Overview: React.FC = () => {
       buckets.set(key, {
         actual: addTo(current.actual, point.actual),
         todaySoFar: addTo(current.todaySoFar, point.todaySoFar),
+        todayBridge: null,
         compare: addTo(current.compare, point.compare),
         forecast: addTo(current.forecast, point.forecast),
         forecastLine: addTo(current.forecastLine, point.forecastLine),
@@ -2287,6 +2309,7 @@ const Overview: React.FC = () => {
           day: key,
           actual: acc.actual,
           todaySoFar: acc.todaySoFar,
+          todayBridge: null,
           compare: acc.compare,
           compareDay: null,
           forecast: acc.forecast,
@@ -2314,6 +2337,9 @@ const Overview: React.FC = () => {
           todaySoFar: Number.isFinite(point.todaySoFar ?? Number.NaN)
             ? (point.todaySoFar ?? 0) * trendScale
             : point.todaySoFar,
+          todayBridge: Number.isFinite(point.todayBridge ?? Number.NaN)
+            ? (point.todayBridge ?? 0) * trendScale
+            : point.todayBridge,
           compare: Number.isFinite(point.compare ?? Number.NaN) ? (point.compare ?? 0) * trendScale : point.compare,
           forecast: Number.isFinite(point.forecast ?? Number.NaN) ? (point.forecast ?? 0) * trendScale : point.forecast,
           forecastLine: Number.isFinite(point.forecastLine ?? Number.NaN)
@@ -2337,6 +2363,7 @@ const Overview: React.FC = () => {
 
   const hasActual = chartData.some((point) => point.actual !== null);
   const hasTodaySoFar = chartData.some((point) => point.todaySoFar !== null);
+  const hasTodayBridge = chartData.some((point) => point.todayBridge !== null);
   const hasCompare = chartData.some((point) => point.compare !== null);
   const hasForecast = chartData.some((point) => point.forecast !== null);
   const hasForecastBand = chartData.some((point) => point.forecastBandSpan !== null);
@@ -3598,6 +3625,17 @@ const Overview: React.FC = () => {
                       stroke="#9b8cf6"
                       strokeWidth={2}
                       dot={{ r: 3, fill: "#9b8cf6", stroke: "#ffffff", strokeWidth: 1.5 }}
+                      isAnimationActive={false}
+                    />
+                  )}
+                  {hasTodayBridge && (
+                    <Line
+                      type="linear"
+                      dataKey="todayBridge"
+                      stroke="#4f46e5"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={false}
                       isAnimationActive={false}
                     />
                   )}
