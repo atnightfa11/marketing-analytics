@@ -15,7 +15,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
   - Free: sum of reduced `sessions` events.
   - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, rolled into daily aggregate buckets, then central-DP Laplace noise is added at aggregate publish time.
   - Pro: reduced LDP estimate from `sessions` randomized-response reports.
-- `uniques`: reduced estimate from `uniques` events (presence signal).
+- `uniques`: reduced estimate from `uniques` events (presence signal). Standard uses a daily coarse-context HMAC for dedupe; this is privacy-preserving but can undercount relative to GA4 users on high-traffic sites where many visitors share coarse IP/User-Agent context.
 - `conversions`: sum of reduced `conversions` events.
 - `conversion_rate`: `conversions / pageviews` (derived after aggregation; no extra DP noise term).
 - `revenue`: sum of reduced `revenue` events.
@@ -72,6 +72,7 @@ Quality notes:
 
 - Metrics publish only after minimum volume and SNR checks in reducers/routes.
 - Standard aggregate windows publish daily. Sessions are clamped to not exceed the deduped session baseline after noise to avoid obviously broken output.
+- Dashboard date labels preserve the date stamped on full-day aggregate windows. Shorter free/live windows are grouped into days using the site's reporting timezone.
 - `conversion_rate` is derived from already published aggregates.
 - Standard session dedupe is replay-resistant and coarse-context based.
 - Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups plus suppression thresholds unless a future dimension-level DP mechanism is added.

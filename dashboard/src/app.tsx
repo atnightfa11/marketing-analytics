@@ -575,6 +575,15 @@ const isoDayForDateInTimeZone = (value: Date, timeZone: string): string => {
 const isoDayInTimeZone = (isoTimestamp: string, timeZone: string) =>
   isoDayForDateInTimeZone(new Date(isoTimestamp), timeZone);
 
+const dayForAggregateWindow = (window: AggregateWindow, timeZone: string): string => {
+  const startMs = new Date(window.window_start).getTime();
+  const endMs = new Date(window.window_end).getTime();
+  const durationMs = endMs - startMs;
+  const isDailyBucket = Number.isFinite(durationMs) && durationMs >= 20 * 60 * 60 * 1000;
+  if (isDailyBucket) return window.window_start.slice(0, 10);
+  return isoDayInTimeZone(window.window_start, timeZone);
+};
+
 const resolveRangeBounds = (
   rangeKey: RangeOption,
   custom: DateRange,
@@ -1565,7 +1574,7 @@ const Overview: React.FC = () => {
   const toDaily = (windows: AggregateWindow[]) => {
     const bucket: Record<string, number> = {};
     windows.forEach((window) => {
-      const day = isoDayInTimeZone(window.window_start, siteTimezone);
+      const day = dayForAggregateWindow(window, siteTimezone);
       bucket[day] = (bucket[day] ?? 0) + window.value;
     });
     const entries = Object.entries(bucket)
