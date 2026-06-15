@@ -1232,6 +1232,107 @@ async def test_historical_csv_import_requires_dashboard_auth_and_standard_plan(c
 
 
 @pytest.mark.asyncio
+async def test_historical_csv_import_is_idempotent_and_rejects_live_overlap(client):
+    site_id = "site-import-safety"
+    await _set_site_plan(site_id, "standard")
+    import_day_date = (datetime.now(timezone.utc) - timedelta(days=220)).date()
+    import_day = import_day_date.isoformat()
+    overlap_day_date = import_day_date - timedelta(days=1)
+    overlap_day = overlap_day_date.isoformat()
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "import-safety-owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-import-safety-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "import-safety-owner", "password": "secret-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        csv_text = f"day,metric,value\n{import_day},pageviews,10\n"
+        first = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": site_id, "csv_text": csv_text},
+            headers=headers,
+        )
+        assert first.status_code == 200
+        assert first.json()["imported_rows"] == 1
+
+        second = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": site_id, "csv_text": csv_text},
+            headers=headers,
+        )
+        assert second.status_code == 200
+        assert second.json()["imported_rows"] == 1
+
+        async with async_session_factory() as session:
+            imported_rows = (
+                await session.execute(
+                    select(RawReport).where(
+                        RawReport.site_id == site_id,
+                        RawReport.day == import_day_date,
+                        RawReport.kind == "pageviews",
+                    )
+                )
+            ).scalars().all()
+        historical_rows = [
+            row for row in imported_rows if isinstance(row.payload, dict) and row.payload.get("historical_import")
+        ]
+        assert len(historical_rows) == 1
+        assert historical_rows[0].payload["value"] == 10.0
+
+        duplicate = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": site_id, "csv_text": f"day,metric,value\n{import_day},sessions,1\n{import_day},sessions,2\n"},
+            headers=headers,
+        )
+        assert duplicate.status_code == 400
+        assert "Duplicate import row" in duplicate.json()["detail"]
+
+        await _insert_raw_report(site_id=site_id, kind="pageviews", day=overlap_day_date, payload={})
+        overlap = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": site_id, "csv_text": f"day,metric,value\n{overlap_day},pageviews,25\n"},
+            headers=headers,
+        )
+        assert overlap.status_code == 409
+        assert "overlaps existing Valid-collected data" in overlap.json()["detail"]
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
 async def test_sdk_bootstrap_success_and_origin_failure(client):
     await _set_site_plan("site-bootstrap", "standard")
     site_key = "vsk_bootstrapid_secretvalue"

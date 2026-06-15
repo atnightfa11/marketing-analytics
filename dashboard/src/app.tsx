@@ -1188,7 +1188,7 @@ const GoalsProgressCard: React.FC<{
         Goals
       </div>
       <a
-        href={`/settings?site_id=${encodeURIComponent(siteId)}`}
+        href={`/site/${encodeURIComponent(siteId)}/settings`}
         className="text-[11px] font-semibold text-[#5b55ff] hover:text-[#4338ca]"
         style={fontBody}
       >
@@ -3365,7 +3365,7 @@ const Overview: React.FC = () => {
               Export
             </button>
             <a
-              href={`/settings?site_id=${encodeURIComponent(siteId)}`}
+              href={`/site/${encodeURIComponent(siteId)}/settings`}
               className={dashboardActionClass}
               style={fontBody}
             >
@@ -3429,7 +3429,7 @@ const Overview: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => navigate("/alerts")}
+                onClick={() => navigate(`/site/${encodeURIComponent(siteId)}/alerts`)}
                 className="shrink-0 border border-[#8B2635] bg-white px-2 py-1 text-[11px] font-medium text-[#8B2635] hover:bg-[#8B2635] hover:text-white"
                 style={fontBody}
               >
@@ -4086,8 +4086,9 @@ const Settings: React.FC = () => {
   const { token, authEnabled } = useAuth();
   const canQuery = !authEnabled || Boolean(token);
   const [searchParams] = useSearchParams();
+  const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
   const querySiteId = searchParams.get("site_id") ?? undefined;
-  const siteId = useMemo(() => resolveActiveSiteId(querySiteId), [querySiteId]);
+  const siteId = useMemo(() => resolveActiveSiteId(pathSiteId ?? querySiteId), [pathSiteId, querySiteId]);
   const [timezone, setTimezone] = useState<string>("UTC");
   const [timezoneDraft, setTimezoneDraft] = useState<string>("UTC");
   const [timezoneStatus, setTimezoneStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
@@ -4192,7 +4193,7 @@ const Settings: React.FC = () => {
     try {
       const origin = typeof window !== "undefined" ? window.location.origin : "https://app.validanalytics.io";
       const successUrl = `${origin}/billing/success?site_id=${encodeURIComponent(siteId)}`;
-      const cancelUrl = `${origin}/settings?site_id=${encodeURIComponent(siteId)}`;
+      const cancelUrl = `${origin}/site/${encodeURIComponent(siteId)}/settings`;
       const checkoutPlan = billingPlan === "pro" ? "pro" : "standard";
       const checkout = await createCheckoutSession(checkoutPlan, token ?? undefined, siteId, successUrl, cancelUrl);
       window.location.assign(checkout.checkout_url);
@@ -4310,7 +4311,7 @@ const Settings: React.FC = () => {
     <div className="min-h-screen bg-[#F9FAFB] print-bg">
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <a href={`/?site_id=${encodeURIComponent(siteId)}`} className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
+          <a href={`/site/${encodeURIComponent(siteId)}`} className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
             Valid
           </a>
           <div className="flex items-center gap-2">
@@ -4331,7 +4332,7 @@ const Settings: React.FC = () => {
               </div>
             </div>
             <a
-              href={`/?site_id=${encodeURIComponent(siteId)}`}
+              href={`/site/${encodeURIComponent(siteId)}`}
               className="border border-gray-300 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-gray-600 hover:border-gray-400 hover:text-[#1F2937]"
               style={fontBody}
             >
@@ -4822,6 +4823,9 @@ export const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<HomeRoute />} />
           <Route path="/site/:siteId" element={<Overview />} />
+          <Route path="/site/:siteId/charts" element={<Charts />} />
+          <Route path="/site/:siteId/alerts" element={<Alerts />} />
+          <Route path="/site/:siteId/settings" element={<Settings />} />
           <Route path="/charts" element={<Charts />} />
           <Route path="/alerts" element={<Alerts />} />
           <Route path="/settings" element={<Settings />} />

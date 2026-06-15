@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-import math
 import statistics
 import tempfile
 from pathlib import Path
@@ -11,11 +10,11 @@ from typing import Iterable
 
 from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..models import DpWindow, Forecast, ModelStore, SitePlan
+from ..models import DpWindow, Forecast, ModelStore
 from .ewma import ewma
 
 settings = get_settings()
@@ -102,6 +101,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
     session.add(model_record)
     await session.flush()
 
+    await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
     forecasts = []
     horizon = max(1, settings.FORECAST_HORIZON_DAYS)
     for _, row in forecast_df.tail(horizon).iterrows():
@@ -120,8 +120,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
                 model_id=model_record.id,
             )
         )
-    for forecast in forecasts:
-        await session.merge(forecast)
+    session.add_all(forecasts)
     await session.commit()
     return forecasts
 
@@ -222,6 +221,7 @@ async def _train_ewma_fallback(
     session.add(model_record)
     await session.flush()
 
+    await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
     forecasts: list[Forecast] = []
     for i in range(horizon):
         day = last_day + dt.timedelta(days=i + 1)
@@ -243,7 +243,22 @@ async def _train_ewma_fallback(
                 model_id=model_record.id,
             )
         )
-    for forecast in forecasts:
-        await session.merge(forecast)
+    session.add_all(forecasts)
     await session.commit()
     return forecasts
+
+
+async def _replace_metric_forecasts(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    metric: str,
+    plan: str,
+) -> None:
+    await session.execute(
+        delete(Forecast).where(
+            Forecast.site_id == site_id,
+            Forecast.plan == plan,
+            Forecast.metric == metric,
+        )
+    )

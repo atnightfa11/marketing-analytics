@@ -164,6 +164,7 @@ class HistoricalImportRow(BaseModel):
 class HistoricalImportRequest(BaseModel):
     site_id: str
     rows: list[HistoricalImportRow]
+    allow_live_overlap: bool = False
 
 
 class HistoricalImportResponse(BaseModel):
@@ -175,6 +176,7 @@ class HistoricalImportResponse(BaseModel):
 class HistoricalCsvImportRequest(BaseModel):
     site_id: str
     csv_text: str
+    allow_live_overlap: bool = False
 
 
 class ConfidenceInterval(BaseModel):

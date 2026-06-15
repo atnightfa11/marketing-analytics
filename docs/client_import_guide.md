@@ -44,3 +44,10 @@ Body:
 ## After import
 
 The API triggers reducer reprocessing across affected days and retrains forecast metrics.
+
+## Safety behavior
+
+- CSV rows must be unique by `day + metric`; duplicate rows are rejected instead of summed silently.
+- Re-uploading the same `day + metric` replaces the prior imported aggregate row, so repeat uploads do not double-count.
+- Imports are rejected when the same `day + metric` already has Valid-collected live data. Remove overlapping dates from the CSV before importing historical data.
+- Imported rows are aggregate-only and do not create dimension breakdown rows.

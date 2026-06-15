@@ -169,7 +169,10 @@ class ReducerWatermark(Base):
 
 class Forecast(Base):
     __tablename__ = "forecasts"
-    __table_args__ = (Index("ix_forecasts_site_metric_day", "site_id", "metric", "day", "plan"),)
+    __table_args__ = (
+        UniqueConstraint("site_id", "plan", "metric", "day", name="uq_forecast_site_plan_metric_day"),
+        Index("ix_forecasts_site_metric_day", "site_id", "metric", "day", "plan"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)

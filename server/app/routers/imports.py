@@ -5,6 +5,7 @@ import datetime as dt
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import RawReport, SitePlan, get_session
@@ -40,10 +41,62 @@ async def _import_rows(
     if target_plan == "pro":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pro imports are not supported")
 
-    inserted = 0
-    touched_days: set[dt.date] = set()
+    rows_by_key = {}
     for row in payload.rows:
-        touched_days.add(row.day)
+        key = (row.day, row.metric)
+        if key in rows_by_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate import row for {row.day.isoformat()} {row.metric}",
+            )
+        rows_by_key[key] = row
+
+    inserted = 0
+    touched_days = {day for day, _metric in rows_by_key}
+    touched_metrics = {metric for _day, metric in rows_by_key}
+    if touched_days:
+        existing_reports = (
+            await session.execute(
+                select(RawReport)
+                .where(
+                    RawReport.site_id == payload.site_id,
+                    RawReport.day >= min(touched_days),
+                    RawReport.day <= max(touched_days),
+                    RawReport.kind.in_(touched_metrics),
+                )
+                .order_by(RawReport.day, RawReport.kind, RawReport.id)
+            )
+        ).scalars().all()
+
+        live_overlap: set[tuple[dt.date, str]] = set()
+        historical_reports_to_replace: list[RawReport] = []
+        for report in existing_reports:
+            key = (report.day, report.kind)
+            if key not in rows_by_key:
+                continue
+            report_payload = report.payload if isinstance(report.payload, dict) else {}
+            if report_payload.get("historical_import"):
+                historical_reports_to_replace.append(report)
+            else:
+                live_overlap.add(key)
+
+        if live_overlap and not payload.allow_live_overlap:
+            overlap_preview = ", ".join(
+                f"{day.isoformat()} {metric}" for day, metric in sorted(live_overlap)[:8]
+            )
+            suffix = "" if len(live_overlap) <= 8 else f", and {len(live_overlap) - 8} more"
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Import overlaps existing Valid-collected data. "
+                    f"Remove those dates from the CSV or re-run with overlap explicitly allowed. Overlap: {overlap_preview}{suffix}"
+                ),
+            )
+
+        for report in historical_reports_to_replace:
+            await session.delete(report)
+
+    for row in rows_by_key.values():
         session.add(
             RawReport(
                 site_id=payload.site_id,
@@ -103,6 +156,10 @@ async def import_historical_csv(
                 detail=f"Invalid CSV row {idx}: {exc}",
             ) from exc
 
-    parsed_payload = HistoricalImportRequest(site_id=payload.site_id, rows=rows)
+    parsed_payload = HistoricalImportRequest(
+        site_id=payload.site_id,
+        rows=rows,
+        allow_live_overlap=payload.allow_live_overlap,
+    )
     target_plan = await _require_standard_import_access(payload.site_id, auth_claims, session)
     return await _import_rows(parsed_payload, session, target_plan=target_plan)
