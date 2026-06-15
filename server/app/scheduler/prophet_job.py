@@ -105,15 +105,20 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
     forecasts = []
     horizon = max(1, settings.FORECAST_HORIZON_DAYS)
     for _, row in forecast_df.tail(horizon).iterrows():
+        yhat, yhat_lower, yhat_upper = _non_negative_forecast_interval(
+            row["yhat"],
+            row["yhat_lower"],
+            row["yhat_upper"],
+        )
         forecasts.append(
             Forecast(
                 site_id=site_id,
                 plan=plan,
                 metric=metric,
                 day=row["ds"].date(),
-                yhat=row["yhat"],
-                yhat_lower=row["yhat_lower"],
-                yhat_upper=row["yhat_upper"],
+                yhat=yhat,
+                yhat_lower=yhat_lower,
+                yhat_upper=yhat_upper,
                 mape=mape,
                 has_anomaly=False,
                 z_score=0.0,
@@ -226,8 +231,13 @@ async def _train_ewma_fallback(
     for i in range(horizon):
         day = last_day + dt.timedelta(days=i + 1)
         base = weekday_mean.get(day.weekday(), last_level)
-        yhat = max(0.0, base + trend * (i + 1))
+        yhat = base + trend * (i + 1)
         band = 1.2816 * sigma
+        yhat, yhat_lower, yhat_upper = _non_negative_forecast_interval(
+            yhat,
+            yhat - band,
+            yhat + band,
+        )
         forecasts.append(
             Forecast(
                 site_id=site_id,
@@ -235,8 +245,8 @@ async def _train_ewma_fallback(
                 metric=metric,
                 day=day,
                 yhat=float(yhat),
-                yhat_lower=float(max(0.0, yhat - band)),
-                yhat_upper=float(max(0.0, yhat + band)),
+                yhat_lower=float(yhat_lower),
+                yhat_upper=float(yhat_upper),
                 mape=float(mape),
                 has_anomaly=False,
                 z_score=0.0,
@@ -262,3 +272,19 @@ async def _replace_metric_forecasts(
             Forecast.metric == metric,
         )
     )
+
+
+def _non_negative_forecast_interval(
+    yhat: float,
+    yhat_lower: float,
+    yhat_upper: float,
+) -> tuple[float, float, float]:
+    """Forecasted analytics counts are constrained to the non-negative domain."""
+    bounded_yhat = max(0.0, float(yhat))
+    bounded_lower = max(0.0, float(yhat_lower))
+    bounded_upper = max(0.0, float(yhat_upper))
+    if bounded_lower > bounded_yhat:
+        bounded_lower = bounded_yhat
+    if bounded_upper < bounded_yhat:
+        bounded_upper = bounded_yhat
+    return bounded_yhat, bounded_lower, bounded_upper

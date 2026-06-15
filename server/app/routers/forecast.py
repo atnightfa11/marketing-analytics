@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import datetime as dt
-
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_site_plan, require_site_access
 from ..dashboard_auth import require_dashboard_auth
-from ..models import Forecast, ModelStore, get_session
+from ..models import Forecast, get_session
 from ..schemas import ForecastResponse, ForecastPoint
 
 router = APIRouter(tags=["forecast"])
@@ -43,11 +41,19 @@ async def forecast(
     return ForecastResponse(
         site_id=site_id,
         metric=metric,
-        forecast=[
-            ForecastPoint(day=row.day, yhat=row.yhat, yhat_lower=row.yhat_lower, yhat_upper=row.yhat_upper)
-            for row in rows
-        ],
+        forecast=[_forecast_point_from_row(row) for row in rows],
         mape=latest.mape,
         has_anomaly=latest.has_anomaly,
         z_score=latest.z_score,
     )
+
+
+def _forecast_point_from_row(row: Forecast) -> ForecastPoint:
+    yhat = max(0.0, float(row.yhat))
+    yhat_lower = max(0.0, float(row.yhat_lower))
+    yhat_upper = max(0.0, float(row.yhat_upper))
+    if yhat_lower > yhat:
+        yhat_lower = yhat
+    if yhat_upper < yhat:
+        yhat_upper = yhat
+    return ForecastPoint(day=row.day, yhat=yhat, yhat_lower=yhat_lower, yhat_upper=yhat_upper)

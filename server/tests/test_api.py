@@ -27,7 +27,7 @@ from sqlalchemy import select  # noqa: E402
 
 from argon2 import PasswordHasher  # noqa: E402
 
-from app.models import Base, BreakdownRollup, DashboardSite, DashboardUser, DpWindow, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardSite, DashboardUser, DpWindow, Forecast, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
@@ -36,6 +36,7 @@ from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
+from app.scheduler.prophet_job import _non_negative_forecast_interval  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
 
@@ -421,6 +422,42 @@ async def test_stale_payload_rejected(client):
 async def test_forecast_requires_history(client):
     response = client.get("/api/forecast/pageviews", params={"site_id": "missing"})
     assert response.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_forecast_response_clamps_stored_negative_values(client):
+    site_id = "site-negative-forecast"
+    await _set_site_plan(site_id, "standard")
+
+    async with async_session_factory() as session:
+        session.add(
+            Forecast(
+                site_id=site_id,
+                plan="standard",
+                metric="pageviews",
+                day=date(2026, 6, 15),
+                yhat=12.0,
+                yhat_lower=-8.0,
+                yhat_upper=20.0,
+                mape=0.1,
+                has_anomaly=False,
+                z_score=0.0,
+            )
+        )
+        await session.commit()
+
+    response = client.get("/api/forecast/pageviews", params={"site_id": site_id})
+
+    assert response.status_code == 200
+    assert response.json()["forecast"] == [
+        {"day": "2026-06-15", "yhat": 12.0, "yhat_lower": 0.0, "yhat_upper": 20.0}
+    ]
+
+
+def test_non_negative_forecast_interval_preserves_valid_bounds():
+    assert _non_negative_forecast_interval(12.0, -8.0, 20.0) == (12.0, 0.0, 20.0)
+    assert _non_negative_forecast_interval(-5.0, -10.0, -1.0) == (0.0, 0.0, 0.0)
+    assert _non_negative_forecast_interval(5.0, 8.0, 3.0) == (5.0, 5.0, 5.0)
 
 
 @pytest.mark.asyncio
