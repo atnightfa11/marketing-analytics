@@ -30,6 +30,7 @@ from .routers import (
     ingest,
     job_status,
     metrics as metrics_router,
+    notes,
     public_signup,
     site_settings,
     sdk_bootstrap,
@@ -237,6 +238,7 @@ app.include_router(aggregates.router, prefix="/api")
 app.include_router(breakdowns.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
+app.include_router(notes.router, prefix="/api")
 app.include_router(stripe_billing.router, prefix="/api")
 app.include_router(public_signup.router, prefix="/api")
 app.include_router(site_settings.router, prefix="/api")

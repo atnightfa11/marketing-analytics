@@ -76,6 +76,10 @@ Quality notes:
 - `conversion_rate` is derived from already published aggregates.
 - Standard session dedupe is replay-resistant and coarse-context based.
 - Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups plus suppression thresholds unless a future dimension-level DP mechanism is added.
+- Forecast training uses completed daily aggregate windows only; the current partial day is excluded from training and backtest scoring.
+- Forecast fitting detects large completed-day spikes/drops and excludes those anomaly days from normal seasonality fitting. If the latest completed day is anomalous, `/api/forecast/{metric}` returns `has_anomaly=true`.
+- Forecast accuracy is based on count-domain backtesting after any model transform. The dashboard should display an accuracy percentage only when recent backtests are within a useful range; otherwise it should show a building/unstable state.
+- Dashboard notes are customer-authored annotations for business context. They do not change aggregate metrics, forecasts, or reducer output.
 
 ## Privacy/data handling summary
 

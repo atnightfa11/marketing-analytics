@@ -27,7 +27,7 @@ from sqlalchemy import select  # noqa: E402
 
 from argon2 import PasswordHasher  # noqa: E402
 
-from app.models import Base, BreakdownRollup, DashboardSite, DashboardUser, DpWindow, Forecast, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardUser, DpWindow, Forecast, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
@@ -36,7 +36,7 @@ from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
-from app.scheduler.prophet_job import _non_negative_forecast_interval  # noqa: E402
+from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
 
@@ -458,6 +458,84 @@ def test_non_negative_forecast_interval_preserves_valid_bounds():
     assert _non_negative_forecast_interval(12.0, -8.0, 20.0) == (12.0, 0.0, 20.0)
     assert _non_negative_forecast_interval(-5.0, -10.0, -1.0) == (0.0, 0.0, 0.0)
     assert _non_negative_forecast_interval(5.0, 8.0, 3.0) == (5.0, 5.0, 5.0)
+
+
+def test_forecast_anomaly_detection_excludes_spike_from_fit():
+    import pandas as pd
+
+    start = date(2026, 1, 1)
+    rows = [{"ds": start + timedelta(days=offset), "y": 100.0} for offset in range(35)]
+    rows.append({"ds": start + timedelta(days=35), "y": 1200.0})
+
+    scored = _with_anomaly_flags(pd.DataFrame(rows))
+    fit = _forecast_fit_frame(scored)
+
+    assert bool(scored.iloc[-1]["is_anomaly"]) is True
+    assert scored.iloc[-1]["anomaly_z"] > 0
+    assert len(fit) == len(scored) - 1
+    assert fit["y"].max() == 100.0
+
+
+def test_forecast_horizon_starts_after_latest_observed_day_when_latest_is_anomaly():
+    import pandas as pd
+
+    start = date(2026, 1, 1)
+    rows = [{"ds": start + timedelta(days=offset), "y": 100.0} for offset in range(35)]
+    rows.append({"ds": start + timedelta(days=35), "y": 1200.0})
+    scored = _with_anomaly_flags(pd.DataFrame(rows))
+
+    horizon = _forecast_horizon_frame(scored, 3)
+
+    assert bool(scored.iloc[-1]["is_anomaly"]) is True
+    assert horizon["ds"].tolist() == [
+        date(2026, 2, 6),
+        date(2026, 2, 7),
+        date(2026, 2, 8),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_notes_create_list_and_delete(client):
+    site_id = "site-dashboard-notes"
+    original_auth_enabled = dashboard_auth_settings.DASHBOARD_AUTH_ENABLED
+    original_allow_unclaimed = dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = False
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = True
+    try:
+        create_resp = client.post(
+            "/api/notes",
+            json={
+                "site_id": site_id,
+                "day": "2026-06-15",
+                "metric": "pageviews",
+                "body": "Heavy rain increased lake-level checks.",
+            },
+        )
+        assert create_resp.status_code == 201
+        note = create_resp.json()
+        assert note["site_id"] == site_id
+        assert note["day"] == "2026-06-15"
+        assert note["metric"] == "pageviews"
+        assert note["body"] == "Heavy rain increased lake-level checks."
+
+        list_resp = client.get(
+            "/api/notes",
+            params={"site_id": site_id, "start": "2026-06-01", "end": "2026-06-30"},
+        )
+        assert list_resp.status_code == 200
+        assert [row["id"] for row in list_resp.json()["notes"]] == [note["id"]]
+
+        delete_resp = client.delete(f"/api/notes/{note['id']}", params={"site_id": site_id})
+        assert delete_resp.status_code == 204
+
+        async with async_session_factory() as session:
+            remaining = (
+                await session.execute(select(DashboardNote).where(DashboardNote.site_id == site_id))
+            ).scalars().all()
+        assert remaining == []
+    finally:
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = original_auth_enabled
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = original_allow_unclaimed
 
 
 @pytest.mark.asyncio

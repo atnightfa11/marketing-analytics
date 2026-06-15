@@ -17,11 +17,15 @@ import {
   BreakdownMetricKey,
   BreakdownRow,
   createCheckoutSession,
+  createDashboardNote,
   DashboardSiteSummary,
+  DashboardNote,
+  deleteDashboardNote,
   fetchAggregate,
   fetchBillingStatus,
   fetchBreakdown,
   fetchDashboardSites,
+  fetchDashboardNotes,
   fetchForecast,
   fetchSiteSettings,
   ForecastEntry,
@@ -255,6 +259,8 @@ const formatDailyPace = (metric: string, value: number) => {
   if (Math.abs(value) < 10 && !Number.isInteger(value)) return `${value.toFixed(1)}/day`;
   return `${formatNumber(value)}/day`;
 };
+
+const MAX_PUBLISHED_FORECAST_ACCURACY_MAPE = 0.5;
 
 const metricSupportsGoals = (metric: string): metric is GoalMetric =>
   (goalEligibleMetrics as readonly string[]).includes(metric);
@@ -1417,6 +1423,12 @@ const Overview: React.FC = () => {
   const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "mape" | "has_anomaly"> | null>(
     null
   );
+  const [dashboardNotes, setDashboardNotes] = useState<DashboardNote[]>([]);
+  const [noteDate, setNoteDate] = useState<string>("");
+  const [noteBody, setNoteBody] = useState<string>("");
+  const [noteMetric, setNoteMetric] = useState<string>("period");
+  const [noteStatus, setNoteStatus] = useState<string | null>(null);
+  const [isSavingNote, setIsSavingNote] = useState(false);
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
   const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>({
     sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
@@ -2073,6 +2085,27 @@ const Overview: React.FC = () => {
     return { start: dailySelected[0].day, end: dailySelected[dailySelected.length - 1].day };
   }, [selectedRangeBounds, dailySelected]);
 
+  useEffect(() => {
+    if (!canQuery || showSeededBreakdowns || !primaryRangeBounds) {
+      setDashboardNotes([]);
+      return;
+    }
+    let cancelled = false;
+    fetchDashboardNotes(token ?? undefined, siteId, primaryRangeBounds.start, primaryRangeBounds.end)
+      .then((notes) => {
+        if (!cancelled) setDashboardNotes(notes);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setDashboardNotes([]);
+          console.error(error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, showSeededBreakdowns, token, siteId, primaryRangeBounds?.start, primaryRangeBounds?.end]);
+
   const selectedForecast =
     (forecastOptions.find((option) => option.key === forecastKey) as ForecastOption) ??
     (forecastOptions.find((option) => option.key === "30d") as ForecastOption);
@@ -2092,6 +2125,19 @@ const Overview: React.FC = () => {
     if (selectedForecast.kind === "days") return nextEntries.slice(0, selectedForecast.days);
     return nextEntries;
   }, [forecastWindow.entries, todayKey, forecast, selectedForecast]);
+
+  useEffect(() => {
+    const preferredDate = primaryRangeBounds
+      ? todayKey < primaryRangeBounds.start
+        ? primaryRangeBounds.start
+        : todayKey > primaryRangeBounds.end
+          ? primaryRangeBounds.end
+          : todayKey
+      : todayKey;
+    if (!noteDate || noteDate < (primaryRangeBounds?.start ?? "") || noteDate > (primaryRangeBounds?.end ?? "9999-12-31")) {
+      setNoteDate(preferredDate);
+    }
+  }, [noteDate, primaryRangeBounds?.start, primaryRangeBounds?.end, todayKey, siteId]);
 
   const previousBounds = useMemo(() => {
     if (!availableBounds || !primaryRangeBounds) return null;
@@ -2467,6 +2513,16 @@ const Overview: React.FC = () => {
       }),
     [bucketedChartData, trendScale]
   );
+  const noteMarkerDays = useMemo(() => {
+    if (dashboardNotes.length === 0 || chartData.length === 0) return [];
+    const chartDays = new Set(chartData.map((point) => point.day));
+    const markerDays = new Set<string>();
+    dashboardNotes.forEach((note) => {
+      const markerDay = bucketKeyFor(note.day, chartGranularity);
+      if (chartDays.has(markerDay)) markerDays.add(markerDay);
+    });
+    return Array.from(markerDays).sort((a, b) => a.localeCompare(b));
+  }, [dashboardNotes, chartData, chartGranularity]);
 
   const hasActual = chartData.some((point) => point.actual !== null);
   const hasTodaySoFar = chartData.some((point) => point.todaySoFar !== null);
@@ -2903,10 +2959,12 @@ const Overview: React.FC = () => {
   ]);
 
   const mapeValue = forecastMeta?.mape ?? Number.NaN;
-  const forecastAccuracy = Number.isFinite(mapeValue)
+  const canPublishForecastAccuracy =
+    Number.isFinite(mapeValue) && mapeValue >= 0 && mapeValue <= MAX_PUBLISHED_FORECAST_ACCURACY_MAPE;
+  const forecastAccuracy = canPublishForecastAccuracy
     ? `${clamp((1 - mapeValue) * 100, 0, 100).toFixed(0)}%`
     : "Building";
-  const forecastAccuracyClass = Number.isFinite(mapeValue)
+  const forecastAccuracyClass = canPublishForecastAccuracy
     ? mapeValue <= 0.1
       ? "text-emerald-600"
       : "text-amber-600"
@@ -3057,6 +3115,46 @@ const Overview: React.FC = () => {
     "h-8 rounded-md border border-[#DDE4EC] bg-white px-3 text-xs font-medium text-[#424A57] shadow-sm outline-none transition-colors hover:border-[#C7D0DC] focus:border-[#5b55ff]";
   const dashboardActionClass =
     "inline-flex h-8 items-center rounded-md border border-[#DDE4EC] bg-white px-3 text-[11px] font-semibold text-[#5F6673] shadow-sm transition-colors hover:border-[#C7D0DC] hover:text-[#1F2937]";
+  const formatNoteMetric = (metric?: string | null) => {
+    if (!metric) return "Period";
+    return metricLabels[metric] ?? metric;
+  };
+  const handleCreateNote = async () => {
+    const body = noteBody.trim();
+    if (!body || !noteDate || !canQuery || showSeededBreakdowns) return;
+    setIsSavingNote(true);
+    setNoteStatus(null);
+    try {
+      const created = await createDashboardNote(
+        {
+          day: noteDate,
+          body,
+          metric: noteMetric === "period" ? null : noteMetric,
+        },
+        token ?? undefined,
+        siteId
+      );
+      setDashboardNotes((prev) => [created, ...prev].sort((a, b) => b.day.localeCompare(a.day)));
+      setNoteBody("");
+      setNoteStatus("Note saved");
+    } catch (error) {
+      setNoteStatus(extractApiErrorMessage(error) ?? "Unable to save note.");
+      console.error(error);
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+  const handleDeleteNote = async (note: DashboardNote) => {
+    if (!canQuery || showSeededBreakdowns) return;
+    setNoteStatus(null);
+    try {
+      await deleteDashboardNote(note.id, token ?? undefined, siteId);
+      setDashboardNotes((prev) => prev.filter((item) => item.id !== note.id));
+    } catch (error) {
+      setNoteStatus(extractApiErrorMessage(error) ?? "Unable to delete note.");
+      console.error(error);
+    }
+  };
 
   const slugify = (value: string) => value.toLowerCase().replace(/\s+/g, "-");
   const downloadCsv = (lines: string[], filename: string) => {
@@ -3670,6 +3768,22 @@ const Overview: React.FC = () => {
                       }}
                     />
                   )}
+                  {noteMarkerDays.map((day) => (
+                    <ReferenceLine
+                      key={`note-${day}`}
+                      x={day}
+                      stroke="#9CA3AF"
+                      strokeDasharray="2 5"
+                      strokeOpacity={0.75}
+                      label={{
+                        value: "Note",
+                        position: "insideTop",
+                        fill: "#6B7280",
+                        fontSize: 10,
+                        fontFamily: "var(--font-sans)",
+                      }}
+                    />
+                  ))}
                   {hasForecastBand && (
                     <>
                       <Area
@@ -3815,6 +3929,12 @@ const Overview: React.FC = () => {
                 Forecast interval
               </span>
             )}
+            {noteMarkerDays.length > 0 && (
+              <span className="flex items-center gap-2">
+                <span className="h-3 w-0 border-l border-dashed border-[#9CA3AF]" />
+                Notes
+              </span>
+            )}
             {trendFooterNote && <span className="text-xs text-[#6B7280]">{trendFooterNote}</span>}
             {chartGranularity !== "day" && (
               <span className="ml-auto text-[11px] italic text-[#6B7280]" style={fontBody}>
@@ -3892,6 +4012,109 @@ const Overview: React.FC = () => {
             </div>
           </div>
         </section>
+
+        {!showSeededBreakdowns && (
+          <section>
+            <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+              Notes
+            </div>
+            <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <div className="grid gap-3 lg:grid-cols-[160px_180px_minmax(0,1fr)_auto]">
+                <label className="block">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
+                    Date
+                  </span>
+                  <input
+                    type="date"
+                    value={noteDate}
+                    min={primaryRangeBounds?.start}
+                    max={primaryRangeBounds?.end}
+                    onChange={(event) => setNoteDate(event.target.value)}
+                    className={`${dashboardControlClass} mt-1 w-full`}
+                    style={fontBody}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
+                    Applies to
+                  </span>
+                  <select
+                    value={noteMetric}
+                    onChange={(event) => setNoteMetric(event.target.value)}
+                    className={`${dashboardControlClass} mt-1 w-full`}
+                    style={fontBody}
+                  >
+                    <option value="period">Period</option>
+                    {aggregateMetricKeys.map((metric) => (
+                      <option key={metric} value={metric}>
+                        {metricLabels[metric] ?? metric}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
+                    Note
+                  </span>
+                  <textarea
+                    value={noteBody}
+                    onChange={(event) => setNoteBody(event.target.value)}
+                    maxLength={1200}
+                    rows={2}
+                    placeholder="Rain drove lake-level checks, campaign launch, outage, press mention..."
+                    className="mt-1 block min-h-[40px] w-full rounded-md border border-[#DDE4EC] bg-white px-3 py-2 text-xs text-[#424A57] shadow-sm outline-none transition-colors placeholder:text-[#9CA3AF] hover:border-[#C7D0DC] focus:border-[#5b55ff]"
+                    style={fontBody}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={handleCreateNote}
+                  disabled={isSavingNote || !noteBody.trim() || !noteDate}
+                  className="self-end rounded-md border border-[#6B63FF] bg-[#6B63FF] px-3 py-2 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-[#554DF2] disabled:cursor-not-allowed disabled:opacity-50"
+                  style={fontBody}
+                >
+                  {isSavingNote ? "Saving" : "Add note"}
+                </button>
+              </div>
+              {noteStatus && (
+                <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
+                  {noteStatus}
+                </div>
+              )}
+              <div className="mt-4 space-y-3">
+                {dashboardNotes.length === 0 ? (
+                  <div className="text-[12px] text-[#7B8190]" style={fontBody}>
+                    No notes for this date range.
+                  </div>
+                ) : (
+                  dashboardNotes.map((note) => (
+                    <div key={note.id} className="flex gap-3 border-l-2 border-[#9CA3AF] pl-3">
+                      <div className="min-w-[92px] text-[11px] font-semibold text-[#6B7280]" style={fontBody}>
+                        {formatShortDate(note.day)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
+                          {formatNoteMetric(note.metric)}
+                        </div>
+                        <div className="mt-1 text-[13px] leading-relaxed text-[#374151]" style={fontBody}>
+                          {note.body}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteNote(note)}
+                        className="self-start p-1 text-[#9CA3AF] transition-colors hover:text-[#8B2635]"
+                        aria-label={`Delete note from ${note.day}`}
+                      >
+                        <CloseIcon />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         <section>
           <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>

@@ -248,6 +248,36 @@ class ForecastResponse(BaseModel):
     z_score: float
 
 
+class DashboardNoteBase(BaseModel):
+    site_id: str
+    day: dt.date
+    body: str = Field(min_length=1, max_length=1200)
+    metric: str | None = Field(default=None, max_length=64)
+
+
+class DashboardNoteCreateRequest(DashboardNoteBase):
+    pass
+
+
+class DashboardNoteUpdateRequest(BaseModel):
+    site_id: str
+    day: dt.date | None = None
+    body: str | None = Field(default=None, min_length=1, max_length=1200)
+    metric: str | None = Field(default=None, max_length=64)
+
+
+class DashboardNoteResponse(DashboardNoteBase):
+    id: int
+    created_by: str | None = None
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class DashboardNotesResponse(BaseModel):
+    site_id: str
+    notes: list[DashboardNoteResponse]
+
+
 class AlertWebhookPayload(BaseModel):
     source: str
     severity: Literal["info", "warning", "critical"]

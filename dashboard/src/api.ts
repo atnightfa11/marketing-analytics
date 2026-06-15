@@ -92,6 +92,17 @@ export interface DashboardSiteSummary {
   plan: "free" | "standard" | "pro";
 }
 
+export interface DashboardNote {
+  id: number;
+  site_id: string;
+  day: string;
+  body: string;
+  metric?: string | null;
+  created_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 const fallbackApiBase =
   typeof window !== "undefined" && window.location.hostname.endsWith("validanalytics.io")
     ? "https://api.validanalytics.io"
@@ -190,6 +201,47 @@ export async function fetchDashboardSites(token?: string): Promise<DashboardSite
     headers: authHeaders(token),
   });
   return response.data.sites ?? [];
+}
+
+export async function fetchDashboardNotes(
+  token: string | undefined,
+  siteId?: string,
+  start?: string,
+  end?: string
+): Promise<DashboardNote[]> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/notes", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId, start, end },
+  });
+  return response.data.notes ?? [];
+}
+
+export async function createDashboardNote(
+  payload: { day: string; body: string; metric?: string | null },
+  token?: string,
+  siteId?: string
+): Promise<DashboardNote> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/notes",
+    {
+      site_id: resolvedSiteId,
+      day: payload.day,
+      body: payload.body,
+      metric: payload.metric ?? null,
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function deleteDashboardNote(noteId: number, token?: string, siteId?: string): Promise<void> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  await api.delete(`/api/notes/${noteId}`, {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
 }
 
 export async function updateSiteTimezone(timezone: string, token?: string, siteId?: string): Promise<SiteSettings> {

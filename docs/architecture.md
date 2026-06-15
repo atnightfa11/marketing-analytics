@@ -55,6 +55,10 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
 - Reducer writes successful site/day status to `reducer_watermarks`.
   - Standard raw purge uses these watermarks so rows are deleted only after successful reduction.
 - Forecast job trains and writes forecast rows from `dp_windows`.
+  - It uses completed daily windows only; partial current-day values are excluded.
+  - It detects large completed-day anomalies and excludes those days from normal seasonality fitting.
+  - Prophet runs on a count-safe `log1p` target and is gated against a recent baseline before publishing.
+- Dashboard notes are stored separately in `dashboard_notes` and shown as chart annotations; they do not modify analytics aggregates.
 - Production scheduler behavior:
   - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
   - forecast training: daily at `PROD_SCHEDULER_HOUR_UTC` (+15 minute offset)
@@ -66,6 +70,10 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
   - `GET /api/metrics`
   - `GET /api/aggregate`
   - `GET /api/forecast/{metric}`
+- Annotations:
+  - `GET /api/notes`
+  - `POST /api/notes`
+  - `DELETE /api/notes/{note_id}`
 - Breakdowns:
   - `GET /api/breakdown`
   - dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`

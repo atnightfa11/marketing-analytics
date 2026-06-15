@@ -317,6 +317,28 @@ class DashboardSite(Base):
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
 
+
+class DashboardNote(Base):
+    __tablename__ = "dashboard_notes"
+    __table_args__ = (
+        Index("ix_dashboard_notes_site_day", "site_id", "day"),
+        Index("ix_dashboard_notes_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    body: Mapped[str] = mapped_column(String(1200), nullable=False)
+    metric: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class ModelStore(Base):
     __tablename__ = "model_store"
     __table_args__ = (Index("ix_model_store_site_metric", "site_id", "engine", "metric", "plan"),)
