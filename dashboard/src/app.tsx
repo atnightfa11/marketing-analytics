@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Area,
@@ -27,11 +27,20 @@ import {
   fetchDashboardSites,
   fetchDashboardNotes,
   fetchForecast,
+  fetchImportHistory,
+  fetchSiteAccess,
+  fetchSiteHealth,
   fetchSiteSettings,
   ForecastEntry,
   ForecastResponse,
+  grantSiteAccess,
+  HistoricalImportBatch,
   importHistoricalCsv,
+  removeSiteAccess,
   resolveActiveSiteId,
+  rollbackImportBatch,
+  SiteAccessMember,
+  SiteHealthResponse,
   TimePartingDayType,
   updateSiteTimezone,
 } from "./api";
@@ -163,16 +172,28 @@ const extractApiErrorMessage = (error: unknown): string | null => {
   const maybeError = error as { response?: { status?: number; data?: { detail?: string } } };
   const status = maybeError.response?.status;
   const detail = maybeError.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) {
+    return detail.trim();
+  }
   if (status === 403) {
     return "This account does not have access to this site. Log out and sign in with the correct account.";
   }
   if (status === 401) {
     return "Your session is not valid for this site. Log out and sign in again.";
   }
-  if (typeof detail === "string" && detail.trim()) {
-    return detail.trim();
-  }
   return null;
+};
+
+const statusToneClass = (status: "ok" | "warning" | "error" | string): string => {
+  if (status === "ok" || status === "completed") return "bg-emerald-50 text-emerald-700";
+  if (status === "error" || status === "failed") return "bg-[#FFF1F2] text-[#8B2635]";
+  if (status === "rolled_back") return "bg-gray-100 text-gray-700";
+  return "bg-[#EEF2FF] text-[#4f46e5]";
+};
+
+const formatDateTime = (value?: string | null): string => {
+  if (!value) return "—";
+  return new Date(value).toLocaleString();
 };
 
 const writeGoalStore = (store: GoalStore) => {
@@ -4303,6 +4324,17 @@ const Settings: React.FC = () => {
   const [importCsvText, setImportCsvText] = useState<string>("");
   const [importStatus, setImportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [importBatches, setImportBatches] = useState<HistoricalImportBatch[]>([]);
+  const [importHistoryStatus, setImportHistoryStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [importHistoryMessage, setImportHistoryMessage] = useState<string | null>(null);
+  const [rollbackBatchId, setRollbackBatchId] = useState<number | null>(null);
+  const [health, setHealth] = useState<SiteHealthResponse | null>(null);
+  const [healthStatus, setHealthStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [healthMessage, setHealthMessage] = useState<string | null>(null);
+  const [accessMembers, setAccessMembers] = useState<SiteAccessMember[]>([]);
+  const [accessUsername, setAccessUsername] = useState<string>("");
+  const [accessStatus, setAccessStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
+  const [accessMessage, setAccessMessage] = useState<string | null>(null);
   const [goals, setGoals] = useState<SiteGoalsMap>({});
   const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
@@ -4358,6 +4390,70 @@ const Settings: React.FC = () => {
       cancelled = true;
     };
   }, [canQuery, token, siteId]);
+
+  useEffect(() => {
+    if (!canQuery) return;
+    let cancelled = false;
+    setHealthStatus("loading");
+    setHealthMessage(null);
+    fetchSiteHealth(token ?? undefined, siteId)
+      .then((result) => {
+        if (cancelled) return;
+        setHealth(result);
+        setHealthStatus("idle");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setHealth(null);
+        setHealthStatus("error");
+        setHealthMessage(extractApiErrorMessage(error) ?? "Unable to load tracking health right now.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, token, siteId]);
+
+  const refreshImportHistory = useCallback(async () => {
+    if (!canQuery || billingPlan !== "standard") {
+      setImportBatches([]);
+      setImportHistoryStatus("idle");
+      setImportHistoryMessage(null);
+      return;
+    }
+    setImportHistoryStatus("loading");
+    setImportHistoryMessage(null);
+    try {
+      const result = await fetchImportHistory(token ?? undefined, siteId);
+      setImportBatches(result.batches ?? []);
+      setImportHistoryStatus("idle");
+    } catch (error) {
+      setImportHistoryStatus("error");
+      setImportHistoryMessage(extractApiErrorMessage(error) ?? "Unable to load import history right now.");
+    }
+  }, [billingPlan, canQuery, siteId, token]);
+
+  useEffect(() => {
+    void refreshImportHistory();
+  }, [refreshImportHistory]);
+
+  const refreshSiteAccess = useCallback(async () => {
+    if (!canQuery) return;
+    setAccessStatus("loading");
+    setAccessMessage(null);
+    try {
+      const result = await fetchSiteAccess(token ?? undefined, siteId);
+      setAccessMembers(result.members ?? []);
+      setAccessStatus("idle");
+    } catch (error) {
+      setAccessMembers([]);
+      setAccessStatus("error");
+      setAccessMessage(extractApiErrorMessage(error) ?? "Unable to load site access right now.");
+    }
+  }, [canQuery, siteId, token]);
+
+  useEffect(() => {
+    void refreshSiteAccess();
+  }, [refreshSiteAccess]);
 
   const existingGoal = goals[goalMetric];
   useEffect(() => {
@@ -4431,10 +4527,71 @@ const Settings: React.FC = () => {
     try {
       const result = await importHistoricalCsv(csvText, token ?? undefined, siteId);
       setImportStatus("success");
-      setImportMessage(`Imported ${formatNumber(result.imported_rows)} rows across ${formatNumber(result.reduced_days)} days.`);
+      setImportMessage(
+        `Imported ${formatNumber(result.imported_rows)} rows across ${formatNumber(result.reduced_days)} days${
+          result.batch_id ? ` in batch ${result.batch_id}` : ""
+        }.`
+      );
+      await refreshImportHistory();
     } catch (error) {
       setImportStatus("error");
       setImportMessage(extractApiErrorMessage(error) ?? "Unable to import historical data right now.");
+    }
+  };
+
+  const rollbackImport = async (batchId: number) => {
+    setRollbackBatchId(batchId);
+    setImportHistoryMessage(null);
+    try {
+      const result = await rollbackImportBatch(batchId, token ?? undefined, siteId);
+      setImportMessage(
+        `Rolled back batch ${result.batch_id}. Removed ${formatNumber(result.deleted_rows)} rows and rebuilt ${formatNumber(
+          result.reduced_days
+        )} days.`
+      );
+      setImportStatus("success");
+      await refreshImportHistory();
+    } catch (error) {
+      setImportStatus("error");
+      setImportMessage(extractApiErrorMessage(error) ?? "Unable to roll back that import right now.");
+    } finally {
+      setRollbackBatchId(null);
+    }
+  };
+
+  const addSiteMember = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const username = accessUsername.trim().toLowerCase();
+    if (!username) {
+      setAccessStatus("error");
+      setAccessMessage("Enter a dashboard username to add.");
+      return;
+    }
+    setAccessStatus("saving");
+    setAccessMessage(null);
+    try {
+      const result = await grantSiteAccess(username, token ?? undefined, siteId);
+      setAccessMembers(result.members ?? []);
+      setAccessUsername("");
+      setAccessStatus("idle");
+      setAccessMessage(`${username} can now access this site.`);
+    } catch (error) {
+      setAccessStatus("error");
+      setAccessMessage(extractApiErrorMessage(error) ?? "Unable to add that user right now.");
+    }
+  };
+
+  const removeSiteMember = async (username: string) => {
+    setAccessStatus("saving");
+    setAccessMessage(null);
+    try {
+      const result = await removeSiteAccess(username, token ?? undefined, siteId);
+      setAccessMembers(result.members ?? []);
+      setAccessStatus("idle");
+      setAccessMessage(`${username} was removed from this site.`);
+    } catch (error) {
+      setAccessStatus("error");
+      setAccessMessage(extractApiErrorMessage(error) ?? "Unable to remove that user right now.");
     }
   };
 
@@ -4613,6 +4770,103 @@ const Settings: React.FC = () => {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                Tracking Health
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                Recent tracking, reduction, and forecast signals for this site.
+              </div>
+            </div>
+            {health ? (
+              <span
+                className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
+                  health.overall_status
+                )}`}
+                style={fontBody}
+              >
+                {health.overall_status}
+              </span>
+            ) : null}
+          </div>
+          {healthStatus === "loading" ? (
+            <div className="mt-4 text-[12px] text-gray-500" style={fontBody}>
+              Loading tracking health...
+            </div>
+          ) : healthStatus === "error" ? (
+            <div className="mt-4 text-[12px] text-[#8B2635]" style={fontBody}>
+              {healthMessage ?? "Unable to load tracking health."}
+            </div>
+          ) : health ? (
+            <div className="mt-4 grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+              <div className="grid gap-2">
+                {health.checks.map((check) => (
+                  <div key={check.key} className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                        {check.label}
+                      </div>
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
+                          check.status
+                        )}`}
+                        style={fontBody}
+                      >
+                        {check.status}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-600" style={fontBody}>
+                      {check.detail}
+                    </div>
+                    {check.action ? (
+                      <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                        {check.action}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                  Last {health.lookback_minutes} minutes
+                </div>
+                <div className="mt-2 text-2xl metric-number text-[#1F2937]" style={fontMetric}>
+                  {formatNumber(health.recent_reports)}
+                </div>
+                <div className="text-[11px] text-gray-500" style={fontBody}>
+                  reports received
+                </div>
+                <div className="mt-3 space-y-1 text-[11px] text-gray-600" style={fontBody}>
+                  <div>Last report: {formatDateTime(health.last_report_at)}</div>
+                  <div>Active site keys: {formatNumber(health.active_site_keys)}</div>
+                  <div>Latest reducer day: {health.latest_reducer_day ?? "—"}</div>
+                  <div>Latest aggregate: {formatDateTime(health.latest_standard_published_at)}</div>
+                </div>
+                {Object.keys(health.counts_by_kind).length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-1">
+                    {Object.entries(health.counts_by_kind).map(([kind, count]) => (
+                      <span
+                        key={kind}
+                        className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-700"
+                        style={fontBody}
+                      >
+                        {kind}: {formatNumber(count)}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {health.detected_hostnames.length > 0 ? (
+                  <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                    Hostnames: {health.detected_hostnames.join(", ")}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="border border-gray-200 bg-white p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
                 Historical Import
               </div>
               <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
@@ -4686,6 +4940,107 @@ const Settings: React.FC = () => {
                   {importMessage}
                 </div>
               ) : null}
+              <div className="mt-3 border-t border-gray-100 pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Import history
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                      Rollback is available only while the batch's raw import rows are still retained.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void refreshImportHistory()}
+                    disabled={importHistoryStatus === "loading"}
+                    className="border border-gray-300 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {importHistoryStatus === "loading" ? (
+                  <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                    Loading import history...
+                  </div>
+                ) : importHistoryStatus === "error" ? (
+                  <div className="mt-3 text-[11px] text-[#8B2635]" style={fontBody}>
+                    {importHistoryMessage ?? "Unable to load import history."}
+                  </div>
+                ) : importBatches.length > 0 ? (
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="w-full min-w-[720px] border-collapse text-left text-[12px]" style={fontBody}>
+                      <thead className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                        <tr className="border-b border-gray-100">
+                          <th className="py-2 pr-3 font-semibold">Batch</th>
+                          <th className="py-2 pr-3 font-semibold">Dates</th>
+                          <th className="py-2 pr-3 font-semibold">Metrics</th>
+                          <th className="py-2 pr-3 font-semibold">Rows</th>
+                          <th className="py-2 pr-3 font-semibold">Status</th>
+                          <th className="py-2 pr-3 font-semibold">Created</th>
+                          <th className="py-2 pr-0 text-right font-semibold">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importBatches.map((batch) => (
+                          <tr key={batch.id} className="border-b border-gray-100 last:border-b-0">
+                            <td className="py-2 pr-3 metric-number text-[#1F2937]" style={fontMetric}>
+                              #{batch.id}
+                            </td>
+                            <td className="py-2 pr-3 text-gray-700">
+                              {batch.start_day && batch.end_day
+                                ? `${formatShortDate(batch.start_day)} – ${formatShortDate(batch.end_day)}`
+                                : "—"}
+                            </td>
+                            <td className="py-2 pr-3 text-gray-700">{batch.metrics.join(", ") || "—"}</td>
+                            <td className="py-2 pr-3 metric-number text-gray-700" style={fontMetric}>
+                              {formatNumber(batch.imported_rows)}
+                            </td>
+                            <td className="py-2 pr-3">
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
+                                  batch.status
+                                )}`}
+                                style={fontBody}
+                              >
+                                {batch.status.replace("_", " ")}
+                              </span>
+                              {batch.error ? (
+                                <div className="mt-1 max-w-[220px] truncate text-[10px] text-[#8B2635]" style={fontBody}>
+                                  {batch.error}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="py-2 pr-3 text-gray-600">{formatDateTime(batch.created_at)}</td>
+                            <td className="py-2 pr-0 text-right">
+                              {batch.rollback_available ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void rollbackImport(batch.id)}
+                                  disabled={rollbackBatchId === batch.id}
+                                  className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                                  style={fontBody}
+                                >
+                                  {rollbackBatchId === batch.id ? "Rolling back..." : "Rollback"}
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-gray-400" style={fontBody}>
+                                  Unavailable
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                    No historical imports recorded yet.
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
@@ -4712,6 +5067,97 @@ const Settings: React.FC = () => {
               ) : null}
             </div>
           )}
+        </section>
+
+        <section className="border border-gray-200 bg-white p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                Site Access
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                Share this dashboard with existing Valid dashboard users.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void refreshSiteAccess()}
+              disabled={accessStatus === "loading" || accessStatus === "saving"}
+              className="border border-gray-300 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+              style={fontBody}
+            >
+              Refresh
+            </button>
+          </div>
+          <form className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]" onSubmit={addSiteMember}>
+            <div>
+              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                Dashboard username
+              </label>
+              <input
+                className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                style={fontBody}
+                value={accessUsername}
+                onChange={(event) => setAccessUsername(event.target.value)}
+                placeholder="username"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={accessStatus === "saving" || !accessUsername.trim()}
+              className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+              style={fontBody}
+            >
+              {accessStatus === "saving" ? "Saving..." : "Add user"}
+            </button>
+          </form>
+          {accessMessage ? (
+            <div className={`mt-2 text-[11px] ${accessStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`} style={fontBody}>
+              {accessMessage}
+            </div>
+          ) : null}
+          <div className="mt-4">
+            {accessStatus === "loading" ? (
+              <div className="text-[12px] text-gray-500" style={fontBody}>
+                Loading site access...
+              </div>
+            ) : accessMembers.length > 0 ? (
+              <div className="divide-y divide-gray-100 border border-[var(--color-border-subtle)] bg-[#FCFEFE]">
+                {accessMembers.map((member) => (
+                  <div key={`${member.role}-${member.username}`} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+                    <div>
+                      <div className="text-sm text-[#1F2937]" style={fontBody}>
+                        {member.username}
+                      </div>
+                      <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                        {member.role}
+                        {member.created_at ? ` · added ${formatDateTime(member.created_at)}` : ""}
+                      </div>
+                    </div>
+                    {member.role === "member" ? (
+                      <button
+                        type="button"
+                        onClick={() => void removeSiteMember(member.username)}
+                        disabled={accessStatus === "saving"}
+                        className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                        style={fontBody}
+                      >
+                        Remove
+                      </button>
+                    ) : (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600" style={fontBody}>
+                        Owner
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-[12px] text-gray-500" style={fontBody}>
+                No access records loaded for this site.
+              </div>
+            )}
+          </div>
         </section>
 
         <section className="border border-gray-200 bg-white p-4">

@@ -83,6 +83,78 @@ export interface HistoricalImportResponse {
   site_id: string;
   imported_rows: number;
   reduced_days: number;
+  batch_id?: number | null;
+}
+
+export interface HistoricalImportBatch {
+  id: number;
+  site_id: string;
+  source: string;
+  status: string;
+  imported_rows: number;
+  reduced_days: number;
+  start_day?: string | null;
+  end_day?: string | null;
+  metrics: string[];
+  created_by?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+  rolled_back_at?: string | null;
+  error?: string | null;
+  rollback_available: boolean;
+}
+
+export interface HistoricalImportHistoryResponse {
+  site_id: string;
+  batches: HistoricalImportBatch[];
+}
+
+export interface HistoricalImportRollbackResponse {
+  site_id: string;
+  batch_id: number;
+  status: string;
+  deleted_rows: number;
+  reduced_days: number;
+}
+
+export interface SiteAccessMember {
+  username: string;
+  role: "owner" | "member";
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface SiteAccessListResponse {
+  site_id: string;
+  members: SiteAccessMember[];
+}
+
+export interface SiteHealthCheck {
+  key: string;
+  label: string;
+  status: "ok" | "warning" | "error";
+  detail: string;
+  action?: string | null;
+}
+
+export interface SiteHealthResponse {
+  site_id: string;
+  plan: "free" | "standard" | "pro";
+  overall_status: "ok" | "warning" | "error";
+  lookback_minutes: number;
+  recent_reports: number;
+  counts_by_kind: Record<string, number>;
+  last_report_at?: string | null;
+  active_site_keys: number;
+  detected_hostnames: string[];
+  latest_reducer_status?: string | null;
+  latest_reducer_day?: string | null;
+  latest_reduced_at?: string | null;
+  latest_standard_window_start?: string | null;
+  latest_standard_published_at?: string | null;
+  forecast_metrics_ready: string[];
+  forecast_metrics_building: string[];
+  checks: SiteHealthCheck[];
 }
 
 export interface DashboardSiteSummary {
@@ -301,6 +373,81 @@ export async function importHistoricalCsv(
     },
     { headers: authHeaders(token) }
   );
+  return response.data;
+}
+
+export async function fetchImportHistory(token?: string, siteId?: string): Promise<HistoricalImportHistoryResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/import/history", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function rollbackImportBatch(
+  batchId: number,
+  token?: string,
+  siteId?: string
+): Promise<HistoricalImportRollbackResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    `/api/import/batches/${batchId}/rollback`,
+    null,
+    {
+      headers: authHeaders(token),
+      params: { site_id: resolvedSiteId },
+    }
+  );
+  return response.data;
+}
+
+export async function fetchSiteAccess(token?: string, siteId?: string): Promise<SiteAccessListResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/site-access", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function grantSiteAccess(
+  username: string,
+  token?: string,
+  siteId?: string
+): Promise<SiteAccessListResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/site-access",
+    {
+      site_id: resolvedSiteId,
+      username,
+      role: "member",
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function removeSiteAccess(
+  username: string,
+  token?: string,
+  siteId?: string
+): Promise<SiteAccessListResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.delete(`/api/site-access/${encodeURIComponent(username)}`, {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function fetchSiteHealth(token?: string, siteId?: string): Promise<SiteHealthResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/site-health", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
   return response.data;
 }
 

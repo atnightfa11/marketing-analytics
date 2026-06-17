@@ -47,11 +47,23 @@
 ## No data in dashboard
 
 1. Confirm `POST /api/shuffle` returns `202`.
-2. Run reducer for near-real-time checks:
+2. Open **Settings -> Tracking Health** for the site and check:
+   - active site key count
+   - recent reports in the last hour
+   - latest reducer day/status
+   - latest aggregate publish time
+   - forecast ready/building state
+3. Run reducer for near-real-time checks:
    ```bash
    python server/run_scheduler.py --days 1
    ```
-3. Confirm dashboard `VITE_SITE_ID` matches your `site_id`.
+4. Confirm dashboard `VITE_SITE_ID` matches your `site_id`.
+
+## User cannot see a shared site
+
+- Confirm the user exists in `dashboard_users`.
+- The site owner can add the username in **Settings -> Site Access**.
+- Shared users can view the dashboard and settings, but only the owner can grant or revoke site access.
 
 ## Breakdown tables show `Unknown`
 

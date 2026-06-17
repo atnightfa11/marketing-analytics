@@ -27,7 +27,7 @@ from sqlalchemy import select  # noqa: E402
 
 from argon2 import PasswordHasher  # noqa: E402
 
-from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardUser, DpWindow, Forecast, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
@@ -1431,6 +1431,350 @@ async def test_historical_csv_import_is_idempotent_and_rejects_live_overlap(clie
         )
         assert overlap.status_code == 409
         assert "overlaps existing Valid-collected data" in overlap.json()["detail"]
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_historical_import_history_and_rollback(client):
+    site_id = "site-import-rollback"
+    await _set_site_plan(site_id, "standard")
+    import_day_date = (datetime.now(timezone.utc) - timedelta(days=250)).date()
+    import_day = import_day_date.isoformat()
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "rollback-owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-import-rollback-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "rollback-owner", "password": "secret-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        imported = client.post(
+            "/api/import/historical-csv",
+            json={"site_id": site_id, "csv_text": f"day,metric,value\n{import_day},pageviews,100\n"},
+            headers=headers,
+        )
+        assert imported.status_code == 200
+        batch_id = imported.json()["batch_id"]
+        assert isinstance(batch_id, int)
+
+        history = client.get("/api/import/history", params={"site_id": site_id}, headers=headers)
+        assert history.status_code == 200
+        batches = history.json()["batches"]
+        assert batches[0]["id"] == batch_id
+        assert batches[0]["status"] == "completed"
+        assert batches[0]["rollback_available"] is True
+
+        async with async_session_factory() as session:
+            batch = await session.get(HistoricalImportBatch, batch_id)
+            assert batch is not None
+            tagged_rows = (
+                await session.execute(
+                    select(RawReport).where(
+                        RawReport.site_id == site_id,
+                        RawReport.import_batch_id == batch_id,
+                    )
+                )
+            ).scalars().all()
+            assert len(tagged_rows) == 1
+
+        rollback = client.post(
+            f"/api/import/batches/{batch_id}/rollback",
+            params={"site_id": site_id},
+            headers=headers,
+        )
+        assert rollback.status_code == 200
+        assert rollback.json()["deleted_rows"] == 1
+        assert rollback.json()["status"] == "rolled_back"
+
+        async with async_session_factory() as session:
+            remaining_rows = (
+                await session.execute(
+                    select(RawReport).where(
+                        RawReport.site_id == site_id,
+                        RawReport.import_batch_id == batch_id,
+                    )
+                )
+            ).scalars().all()
+            assert remaining_rows == []
+            day_start = datetime.combine(import_day_date, datetime.min.time(), tzinfo=timezone.utc)
+            windows = (
+                await session.execute(
+                    select(DpWindow).where(
+                        DpWindow.site_id == site_id,
+                        DpWindow.plan == "standard",
+                        DpWindow.metric == "pageviews",
+                        DpWindow.window_start == day_start,
+                    )
+                )
+            ).scalars().all()
+            assert windows == []
+
+        rolled_back_history = client.get("/api/import/history", params={"site_id": site_id}, headers=headers)
+        assert rolled_back_history.status_code == 200
+        rolled_back_batch = rolled_back_history.json()["batches"][0]
+        assert rolled_back_batch["status"] == "rolled_back"
+        assert rolled_back_batch["rollback_available"] is False
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_site_access_membership_grants_dashboard_access(client):
+    site_id = "site-shared-access"
+    password_hasher = PasswordHasher()
+    async with async_session_factory() as session:
+        session.add_all(
+            [
+                DashboardUser(
+                    username="owner-user",
+                    email="owner-access@example.com",
+                    password_hash=password_hasher.hash("owner-pass"),
+                ),
+                DashboardUser(
+                    username="member-user",
+                    email="member-access@example.com",
+                    password_hash=password_hasher.hash("member-pass"),
+                ),
+            ]
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username="owner-user",
+                site_name="Shared Site",
+                allowed_origin="https://shared.example.com",
+                timezone="UTC",
+            )
+        )
+        await session.commit()
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-site-access-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        owner_login = client.post("/api/auth/login", json={"username": "owner-user", "password": "owner-pass"})
+        member_login = client.post("/api/auth/login", json={"username": "member-user", "password": "member-pass"})
+        assert owner_login.status_code == 200
+        assert member_login.status_code == 200
+        owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
+        member_headers = {"Authorization": f"Bearer {member_login.json()['access_token']}"}
+
+        blocked = client.get("/api/site-settings", params={"site_id": site_id}, headers=member_headers)
+        assert blocked.status_code == 403
+
+        grant = client.post(
+            "/api/site-access",
+            json={"site_id": site_id, "username": "member-user"},
+            headers=owner_headers,
+        )
+        assert grant.status_code == 200
+        assert {member["username"] for member in grant.json()["members"]} == {"owner-user", "member-user"}
+
+        allowed = client.get("/api/site-settings", params={"site_id": site_id}, headers=member_headers)
+        assert allowed.status_code == 200
+
+        listed = client.get("/api/sites", headers=member_headers)
+        assert listed.status_code == 200
+        assert site_id in {site["site_id"] for site in listed.json()["sites"]}
+
+        member_cannot_grant = client.post(
+            "/api/site-access",
+            json={"site_id": site_id, "username": "owner-user"},
+            headers=member_headers,
+        )
+        assert member_cannot_grant.status_code == 403
+
+        revoke = client.delete(
+            "/api/site-access/member-user",
+            params={"site_id": site_id},
+            headers=owner_headers,
+        )
+        assert revoke.status_code == 200
+        assert {member["username"] for member in revoke.json()["members"]} == {"owner-user"}
+
+        blocked_again = client.get("/api/site-settings", params={"site_id": site_id}, headers=member_headers)
+        assert blocked_again.status_code == 403
+        async with async_session_factory() as session:
+            access_rows = (
+                await session.execute(select(DashboardSiteAccess).where(DashboardSiteAccess.site_id == site_id))
+            ).scalars().all()
+            assert access_rows == []
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_site_health_reports_tracking_reducer_and_forecast_status(client):
+    site_id = "site-health-ok"
+    await _set_site_plan(site_id, "standard")
+    await _create_site_api_key(site_id, "healthkey", "vsk_healthkey_secretvalue", "https://health.example.com")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    today = now.date()
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        day=today,
+        payload={"_hostname": "health.example.com"},
+        server_received_at=now,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="pageviews",
+        value=12,
+        window_start=datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc),
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ReducerWatermark(
+                site_id=site_id,
+                plan="standard",
+                day=today,
+                reducer_version="rollups-v1",
+                status="success",
+                raw_report_count=1,
+                dp_window_count=1,
+                breakdown_rollup_count=0,
+                reduced_at=now,
+                raw_purged_at=None,
+                error=None,
+            )
+        )
+        for metric in ["pageviews", "sessions", "uniques"]:
+            session.add(
+                Forecast(
+                    site_id=site_id,
+                    plan="standard",
+                    metric=metric,
+                    day=today + timedelta(days=1),
+                    yhat=10,
+                    yhat_lower=8,
+                    yhat_upper=12,
+                    mape=0.2,
+                    has_anomaly=False,
+                    z_score=0,
+                    model_id=None,
+                )
+            )
+        await session.commit()
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "health-owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "secret-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-health-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "health-owner", "password": "secret-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        health = client.get("/api/site-health", params={"site_id": site_id}, headers=headers)
+        assert health.status_code == 200
+        body = health.json()
+        assert body["overall_status"] == "ok"
+        assert body["recent_reports"] == 1
+        assert body["active_site_keys"] == 1
+        assert body["detected_hostnames"] == ["health.example.com"]
+        assert set(body["forecast_metrics_ready"]) == {"pageviews", "sessions", "uniques"}
+        assert {check["key"]: check["status"] for check in body["checks"]} == {
+            "api_key": "ok",
+            "tracking": "ok",
+            "reducer": "ok",
+            "windows": "ok",
+            "forecast": "ok",
+        }
     finally:
         dashboard_auth_module._parse_auth_users.cache_clear()
         dashboard_auth_module._parse_site_access_map.cache_clear()

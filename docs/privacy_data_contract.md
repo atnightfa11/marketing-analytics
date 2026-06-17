@@ -18,8 +18,10 @@ This contract defines what each analytics table is allowed to contain and how it
 | `dp_windows` | Durable analytics output | Daily/windowed KPI aggregates, variance, confidence intervals, plan, metric | Business reporting retention. |
 | `breakdown_rollups` | Durable analytics output | Low-dimensional aggregate rows by site, plan, day, dimension, hostname scope, day type, label, metric, value | Business reporting retention. This table must not contain raw payloads, IPs, User-Agent strings, visitor IDs, session IDs, upload token IDs, full referrer URLs, or full query strings. |
 | `reducer_watermarks` | Operational accountability | Site/day/plan reducer status, reducer version, raw count, output counts, reduction time, purge time | Operational retention. |
+| `historical_import_batches` | Operational accountability | Import batch ID, site, source, status, aggregate row count, date range, metric names, dashboard username, timestamps, error text | Operational retention. This table must not contain imported raw payloads, visitor data, IPs, User-Agent strings, or customer analytics values. |
 | `forecasts` / `model_store` | Durable analytics output | Forecast outputs and model metadata derived from aggregate windows | Business reporting retention. |
 | `dashboard_notes` | Customer-authored context | Site, date, optional metric, note body, dashboard username, timestamps | Customer-controlled business context retention. Notes must not store raw visitor identifiers, raw payloads, IPs, User-Agent strings, or upload token IDs. |
+| `dashboard_site_access` | Security/operational data | Site ID, dashboard username, role, creator username, creation timestamp | Retain while access is active; delete when access is revoked. |
 | `upload_tokens` / `token_nonce` | Security/operational data | Token revocation records and replay nonces | Tokens purge after expiry grace; nonces purge after short replay window. Never copy token IDs into analytics rollups. |
 
 ## Dashboard Output Rules
@@ -28,6 +30,7 @@ This contract defines what each analytics table is allowed to contain and how it
 - Breakdown endpoints should read from `breakdown_rollups` once reducer output exists, falling back to `raw_reports` only for unreduced windows.
 - Sparse breakdown output remains threshold-gated before response.
 - Historical import rows are aggregate-only and excluded from dimension rollups.
+- Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
 - Dashboard notes are displayed as annotations only. They must not alter KPI aggregates, breakdown rollups, forecasts, or anomaly scoring.
 
 ## Differential Privacy Claim Boundary

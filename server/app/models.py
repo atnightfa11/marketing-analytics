@@ -58,7 +58,10 @@ class LdpReport(Base):
 
 class RawReport(Base):
     __tablename__ = "raw_reports"
-    __table_args__ = (Index("ix_raw_reports_site_kind_day", "site_id", "kind", "day"),)
+    __table_args__ = (
+        Index("ix_raw_reports_site_kind_day", "site_id", "kind", "day"),
+        Index("ix_raw_reports_import_batch", "import_batch_id"),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -70,6 +73,7 @@ class RawReport(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     day: Mapped[dt.date] = mapped_column(Date, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    import_batch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     epsilon_used: Mapped[float] = mapped_column(Float, nullable=False)
     sampling_rate: Mapped[float] = mapped_column(Float, nullable=False)
     server_received_at: Mapped[dt.datetime] = mapped_column(
@@ -318,6 +322,24 @@ class DashboardSite(Base):
     )
 
 
+class DashboardSiteAccess(Base):
+    __tablename__ = "dashboard_site_access"
+    __table_args__ = (
+        UniqueConstraint("site_id", "username", name="uq_dashboard_site_access_member"),
+        Index("ix_dashboard_site_access_site", "site_id"),
+        Index("ix_dashboard_site_access_username", "username"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    username: Mapped[str] = mapped_column(String(64), ForeignKey("dashboard_users.username"), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class DashboardNote(Base):
     __tablename__ = "dashboard_notes"
     __table_args__ = (
@@ -337,6 +359,31 @@ class DashboardNote(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+
+
+class HistoricalImportBatch(Base):
+    __tablename__ = "historical_import_batches"
+    __table_args__ = (
+        Index("ix_historical_import_batches_site_created", "site_id", "created_at"),
+        Index("ix_historical_import_batches_site_status", "site_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="csv")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    imported_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reduced_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_day: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    end_day: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    metrics: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rolled_back_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
 
 class ModelStore(Base):

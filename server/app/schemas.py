@@ -171,12 +171,90 @@ class HistoricalImportResponse(BaseModel):
     site_id: str
     imported_rows: int
     reduced_days: int
+    batch_id: int | None = None
 
 
 class HistoricalCsvImportRequest(BaseModel):
     site_id: str
     csv_text: str
     allow_live_overlap: bool = False
+
+
+class HistoricalImportBatchResponse(BaseModel):
+    id: int
+    site_id: str
+    source: str
+    status: str
+    imported_rows: int
+    reduced_days: int
+    start_day: dt.date | None = None
+    end_day: dt.date | None = None
+    metrics: list[str] = Field(default_factory=list)
+    created_by: str | None = None
+    created_at: dt.datetime
+    completed_at: dt.datetime | None = None
+    rolled_back_at: dt.datetime | None = None
+    error: str | None = None
+    rollback_available: bool = False
+
+
+class HistoricalImportHistoryResponse(BaseModel):
+    site_id: str
+    batches: list[HistoricalImportBatchResponse]
+
+
+class HistoricalImportRollbackResponse(BaseModel):
+    site_id: str
+    batch_id: int
+    status: str
+    deleted_rows: int
+    reduced_days: int
+
+
+class SiteAccessGrantRequest(BaseModel):
+    site_id: str
+    username: str = Field(min_length=1, max_length=64)
+    role: Literal["member"] = "member"
+
+
+class SiteAccessMemberResponse(BaseModel):
+    username: str
+    role: Literal["owner", "member"]
+    created_by: str | None = None
+    created_at: dt.datetime | None = None
+
+
+class SiteAccessListResponse(BaseModel):
+    site_id: str
+    members: list[SiteAccessMemberResponse]
+
+
+class SiteHealthCheck(BaseModel):
+    key: str
+    label: str
+    status: Literal["ok", "warning", "error"]
+    detail: str
+    action: str | None = None
+
+
+class SiteHealthResponse(BaseModel):
+    site_id: str
+    plan: Literal["free", "standard", "pro"] = "free"
+    overall_status: Literal["ok", "warning", "error"]
+    lookback_minutes: int
+    recent_reports: int
+    counts_by_kind: dict[str, int] = Field(default_factory=dict)
+    last_report_at: dt.datetime | None = None
+    active_site_keys: int
+    detected_hostnames: list[str] = Field(default_factory=list)
+    latest_reducer_status: str | None = None
+    latest_reducer_day: dt.date | None = None
+    latest_reduced_at: dt.datetime | None = None
+    latest_standard_window_start: dt.datetime | None = None
+    latest_standard_published_at: dt.datetime | None = None
+    forecast_metrics_ready: list[str] = Field(default_factory=list)
+    forecast_metrics_building: list[str] = Field(default_factory=list)
+    checks: list[SiteHealthCheck]
 
 
 class ConfidenceInterval(BaseModel):

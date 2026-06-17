@@ -11,10 +11,11 @@ from typing import Any
 
 from argon2 import PasswordHasher, exceptions as argon_exceptions
 from fastapi import Header, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import Settings, get_settings
-from .models import DashboardSite, DashboardUser
+from .models import DashboardSite, DashboardSiteAccess, DashboardUser
 
 settings: Settings = get_settings()
 password_hasher = PasswordHasher()
@@ -242,5 +243,42 @@ async def enforce_site_access_with_db(
             return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
     site_owner = _normalize_username(site.owner_username)
-    if site_owner != username:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
+    if site_owner == username:
+        return
+
+    access = (
+        await session.execute(
+            select(DashboardSiteAccess).where(
+                DashboardSiteAccess.site_id == site_id,
+                DashboardSiteAccess.username == username,
+            )
+        )
+    ).scalar_one_or_none()
+    if access:
+        return
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have access to this site")
+
+
+async def require_site_owner_with_db(
+    *,
+    site_id: str,
+    claims: dict[str, Any] | None,
+    session: AsyncSession,
+) -> DashboardSite:
+    if not settings.DASHBOARD_AUTH_ENABLED:
+        site = await session.get(DashboardSite, site_id)
+        if site:
+            return site
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Site not found")
+
+    username = _normalize_username(claims.get("sub") if isinstance(claims, dict) else None)
+    if not username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the site owner can manage this setting")
+
+    site = await session.get(DashboardSite, site_id)
+    if not site:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Site not found")
+    if _normalize_username(site.owner_username) != username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the site owner can manage this setting")
+    return site

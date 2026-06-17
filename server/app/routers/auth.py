@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import create_access_token, require_dashboard_auth, settings, validate_credentials_async
-from ..models import DashboardSite, SitePlan, get_session
+from ..models import DashboardSite, DashboardSiteAccess, SitePlan, get_session
 from ..schemas import AuthLoginRequest, AuthLoginResponse, AuthMeResponse, AuthStatusResponse, DashboardSiteSummary, DashboardSitesResponse
 
 router = APIRouter(tags=["auth"])
@@ -85,7 +85,18 @@ async def list_dashboard_sites(
         elif settings.DASHBOARD_SITE_ACCESS_JSON:
             if not normalized_username:
                 return DashboardSitesResponse(sites=[])
-            stmt = stmt.where(DashboardSite.owner_username == normalized_username)
+            stmt = stmt.outerjoin(
+                DashboardSiteAccess,
+                and_(
+                    DashboardSiteAccess.site_id == DashboardSite.site_id,
+                    DashboardSiteAccess.username == normalized_username,
+                ),
+            ).where(
+                or_(
+                    DashboardSite.owner_username == normalized_username,
+                    DashboardSiteAccess.username == normalized_username,
+                )
+            )
         elif settings.DASHBOARD_ALLOWED_SITE_IDS:
             configured_ids = {item.strip() for item in settings.DASHBOARD_ALLOWED_SITE_IDS.split(",") if item.strip()}
             if "*" in configured_ids:
@@ -93,7 +104,18 @@ async def list_dashboard_sites(
             else:
                 allowed_site_ids = configured_ids
         elif normalized_username:
-            stmt = stmt.where(DashboardSite.owner_username == normalized_username)
+            stmt = stmt.outerjoin(
+                DashboardSiteAccess,
+                and_(
+                    DashboardSiteAccess.site_id == DashboardSite.site_id,
+                    DashboardSiteAccess.username == normalized_username,
+                ),
+            ).where(
+                or_(
+                    DashboardSite.owner_username == normalized_username,
+                    DashboardSiteAccess.username == normalized_username,
+                )
+            )
         else:
             return DashboardSitesResponse(sites=[])
 

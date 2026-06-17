@@ -43,7 +43,27 @@ Body:
 
 ## After import
 
-The API triggers reducer reprocessing across affected days and retrains forecast metrics.
+The API creates an import batch record, triggers reducer reprocessing across affected days, and retrains forecast metrics. If there is not enough history to produce a fresh forecast after an import or rollback, stale forecast rows are cleared so the dashboard falls back to a building state.
+
+## Import history
+
+`GET /api/import/history?site_id=<site_id>`
+
+Headers:
+
+- `Authorization: Bearer <dashboard_token>`
+
+Returns the most recent import batches with date range, metrics, status, row count, creator, and whether rollback is currently available.
+
+## Rollback
+
+`POST /api/import/batches/<batch_id>/rollback?site_id=<site_id>`
+
+Headers:
+
+- `Authorization: Bearer <dashboard_token>`
+
+Rollback deletes the retained raw import rows for that batch, re-runs the reducer for the affected days, and refreshes forecasts. Rollback is available for completed or failed batches only while the batch's raw import rows are still retained. After raw processing rows are purged, the batch remains in history as an audit record but cannot be rolled back automatically.
 
 ## Safety behavior
 
@@ -51,3 +71,4 @@ The API triggers reducer reprocessing across affected days and retrains forecast
 - Re-uploading the same `day + metric` replaces the prior imported aggregate row, so repeat uploads do not double-count.
 - Imports are rejected when the same `day + metric` already has Valid-collected live data. Remove overlapping dates from the CSV before importing historical data.
 - Imported rows are aggregate-only and do not create dimension breakdown rows.
+- Each new import is tagged with a batch ID for audit and rollback while retained processing rows are still available.
