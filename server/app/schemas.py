@@ -344,6 +344,7 @@ class ForecastResponse(BaseModel):
     mape: float
     has_anomaly: bool
     z_score: float
+    trained_at: dt.datetime | None = None
 
 
 class DashboardNoteBase(BaseModel):

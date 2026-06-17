@@ -453,10 +453,11 @@ async def reduce_reports(
             if metric == "sessions":
                 # Keep standard sessions bounded by deduped session keys for replay resistance.
                 value = min(value, base_value)
+            # Privacy for standard windows comes from the Laplace noise added above.
+            # We intentionally do not apply an additional SNR suppression gate here:
+            # truncating small daily values one-sidedly biased sparse metrics
+            # (notably conversions/revenue) downward and created gaps in the series.
             variance = _laplace_variance(scale)
-            se = standard_error(variance)
-            if se > 0 and (value / se) < 1.5:
-                continue
         else:
             value = base_value
             variance = max(1.0, base_value)

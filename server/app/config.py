@@ -48,6 +48,10 @@ class Settings(BaseSettings):
   FREE_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=60)
   STANDARD_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=240)
   FORECAST_HORIZON_DAYS: int = Field(default=90)
+  # In production the schema is owned by Alembic migrations. Leave this False so the
+  # service never silently diverges from migrations via create_all; enable only for
+  # local/dev/test bootstrapping.
+  AUTO_CREATE_DB_SCHEMA: bool = Field(default=False)
   ENABLE_PROD_SCHEDULER: bool = Field(default=False)
   PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
   PROD_REDUCER_INTERVAL_MINUTES: int = Field(default=60)

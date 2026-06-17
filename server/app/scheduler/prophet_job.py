@@ -25,6 +25,10 @@ ANOMALY_LOOKBACK_DAYS = 28
 ANOMALY_MIN_HISTORY = 14
 ANOMALY_Z_THRESHOLD = 3.5
 ANOMALY_RATIO_THRESHOLD = 2.5
+# For sparse metrics (e.g. conversions/revenue) whose trailing baseline is ~0, ratio
+# gates can never fire. Require an absolute upward move above this floor instead, so a
+# real spike from a zero baseline is still caught without flagging 0->1 jitter.
+ANOMALY_SPARSE_MIN_COUNT = 5.0
 RECENT_SCORE_DAYS = 60
 
 
@@ -116,6 +120,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
     await session.flush()
 
     await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
+    trained_at = dt.datetime.now(dt.timezone.utc)
     forecasts = []
     for _, row in forecast_df.iterrows():
         raw_yhat = math.expm1(float(row["yhat"]))
@@ -138,6 +143,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
                 mape=mape,
                 has_anomaly=latest_has_anomaly,
                 z_score=latest_z_score,
+                trained_at=trained_at,
                 model_id=model_record.id,
             )
         )
@@ -153,7 +159,20 @@ def _daily_dataframe(rows: Iterable[dict]):
         totals[day] = totals.get(day, 0.0) + max(0.0, float(row["y"]))
     import pandas as pd
 
-    data = [{"ds": day, "y": value} for day, value in sorted(totals.items())]
+    if not totals:
+        return pd.DataFrame([], columns=["ds", "y"])
+
+    # Zero-fill missing calendar days so the model and anomaly detector see a
+    # continuous daily series. Absent days previously vanished entirely, which
+    # distorted seasonality/trend and let genuine zero-traffic days be confused
+    # with missing data (notably for sparse metrics like conversions/revenue).
+    start_day = min(totals)
+    end_day = max(totals)
+    data = []
+    current = start_day
+    while current <= end_day:
+        data.append({"ds": current, "y": totals.get(current, 0.0)})
+        current += dt.timedelta(days=1)
     return pd.DataFrame(data)
 
 
@@ -177,14 +196,23 @@ def _with_anomaly_flags(df):
             anomaly_z.append(0.0)
             continue
         median = statistics.median(history)
+        mean_hist = statistics.fmean(history)
         deviations = [abs(sample - median) for sample in history]
         mad = statistics.median(deviations)
         if mad <= 0:
             mad = statistics.pstdev(history) or 1.0
         robust_z = 0.6745 * (value - median) / mad
-        high_ratio = median > 0 and value >= median * ANOMALY_RATIO_THRESHOLD
-        low_ratio = median > 0 and value <= median / ANOMALY_RATIO_THRESHOLD
-        flagged = abs(robust_z) >= ANOMALY_Z_THRESHOLD and (high_ratio or low_ratio)
+        # Use the median as the baseline level, but fall back to the mean when the
+        # median is 0 so sparse metrics still have a non-zero reference where possible.
+        level = median if median > 0 else mean_hist
+        if level >= ANOMALY_SPARSE_MIN_COUNT:
+            high_ratio = value >= level * ANOMALY_RATIO_THRESHOLD
+            low_ratio = value <= level / ANOMALY_RATIO_THRESHOLD
+            flagged = abs(robust_z) >= ANOMALY_Z_THRESHOLD and (high_ratio or low_ratio)
+        else:
+            # Near-zero trailing baseline: only a clear upward spike above an absolute
+            # floor is meaningful (a drop toward zero is not an anomaly here).
+            flagged = value >= ANOMALY_SPARSE_MIN_COUNT and abs(robust_z) >= ANOMALY_Z_THRESHOLD
         is_anomaly.append(flagged)
         anomaly_z.append(float(robust_z))
     df["is_anomaly"] = is_anomaly
@@ -360,6 +388,7 @@ async def _train_ewma_fallback(
     await session.flush()
 
     await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
+    trained_at = dt.datetime.now(dt.timezone.utc)
     forecasts: list[Forecast] = []
     for i in range(horizon):
         day = last_observed_day + dt.timedelta(days=i + 1)
@@ -383,11 +412,33 @@ async def _train_ewma_fallback(
                 mape=float(mape),
                 has_anomaly=latest_has_anomaly,
                 z_score=latest_z_score,
+                trained_at=trained_at,
                 model_id=model_record.id,
             )
         )
     session.add_all(forecasts)
     await session.commit()
+    return forecasts
+
+
+async def refresh_site_metric_forecast(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    metric: str,
+    plan: str = "free",
+):
+    """Train and persist a forecast, or clear stale rows when training is skipped.
+
+    ``train_prophet`` returns ``None`` whenever a site no longer qualifies for a
+    forecast (insufficient history, failed gates, model unavailable). In that case we
+    must remove any previously published rows so the dashboard never serves a forecast
+    that silently stopped updating. Use this wrapper from every scheduled/refresh caller.
+    """
+    forecasts = await train_prophet(session, site_id=site_id, metric=metric, plan=plan)
+    if forecasts is None:
+        await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
+        await session.commit()
     return forecasts
 
 

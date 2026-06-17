@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import require_site_access
+from ..forecast_freshness import forecast_is_fresh
 from ..models import DpWindow, Forecast, RawReport, ReducerWatermark, SiteApiKey, SitePlan, get_session
 from ..schemas import SiteHealthCheck, SiteHealthResponse
 
@@ -113,7 +114,7 @@ async def get_site_health(
     forecast_metrics_ready = sorted(
         metric
         for metric, forecast in latest_forecasts.items()
-        if metric in FORECAST_HEALTH_METRICS and forecast.mape <= 0.5
+        if metric in FORECAST_HEALTH_METRICS and forecast.mape <= 0.5 and forecast_is_fresh(forecast, now)
     )
     forecast_metrics_building = sorted(set(FORECAST_HEALTH_METRICS) - set(forecast_metrics_ready))
 

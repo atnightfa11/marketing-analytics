@@ -13,7 +13,7 @@ from .geoip_db import ensure_geoip_database
 from .maintenance import purge_expired_upload_tokens
 from .models import Base, DpWindow, async_engine, async_session_factory, init_db
 from .scheduler.nightly_reduce import reduce_reports
-from .scheduler.prophet_job import train_prophet
+from .scheduler.prophet_job import refresh_site_metric_forecast
 
 logger = logging.getLogger("marketing-analytics-worker")
 settings: Settings = get_settings()
@@ -21,8 +21,12 @@ settings: Settings = get_settings()
 
 async def initialize_worker() -> None:
     ensure_geoip_database(settings)
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if settings.AUTO_CREATE_DB_SCHEMA:
+        logger.info("AUTO_CREATE_DB_SCHEMA enabled; creating database metadata if missing")
+        async with async_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    else:
+        logger.info("Skipping create_all; database schema is managed by Alembic migrations")
     await init_db()
 
 
@@ -44,7 +48,7 @@ async def run_forecast_training_once() -> None:
         for site_id, plan in site_plan_rows:
             for metric in metrics:
                 try:
-                    await train_prophet(session, site_id=site_id, metric=metric, plan=plan)
+                    await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)
                 except Exception as exc:
                     had_error = True
                     logger.exception(

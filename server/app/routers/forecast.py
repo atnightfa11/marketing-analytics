@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_site_plan, require_site_access
 from ..dashboard_auth import require_dashboard_auth
+from ..forecast_freshness import forecast_is_fresh
 from ..models import Forecast, get_session
 from ..schemas import ForecastResponse, ForecastPoint
 
@@ -32,6 +33,9 @@ async def forecast(
         return Response(status_code=status.HTTP_204_NO_CONTENT)  # type: ignore
 
     latest = rows[-1]
+    if not forecast_is_fresh(latest):
+        return Response(status_code=status.HTTP_204_NO_CONTENT)  # type: ignore
+
     request.app.state.prometheus_gauges["forecast_mape_gauge"].labels(site_id=site_id, metric=metric).set(latest.mape)
     if latest.has_anomaly:
         request.app.state.prometheus_counters["anomaly_flagged_total"].labels(
@@ -45,6 +49,7 @@ async def forecast(
         mape=latest.mape,
         has_anomaly=latest.has_anomaly,
         z_score=latest.z_score,
+        trained_at=latest.trained_at,
     )
 
 

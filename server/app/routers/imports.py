@@ -5,13 +5,13 @@ import datetime as dt
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth
-from ..models import Forecast, HistoricalImportBatch, RawReport, SitePlan, get_session
+from ..models import HistoricalImportBatch, RawReport, SitePlan, get_session
 from ..scheduler.nightly_reduce import reduce_reports
-from ..scheduler.prophet_job import train_prophet
+from ..scheduler.prophet_job import refresh_site_metric_forecast
 from ..schemas import (
     HistoricalCsvImportRequest,
     HistoricalImportBatchResponse,
@@ -319,13 +319,4 @@ async def _batch_response(session: AsyncSession, batch: HistoricalImportBatch) -
 
 async def _refresh_forecasts(session: AsyncSession, *, site_id: str, plan: str) -> None:
     for metric in ["pageviews", "sessions", "uniques", "conversions", "revenue"]:
-        forecasts = await train_prophet(session, site_id=site_id, metric=metric, plan=plan)
-        if forecasts is None:
-            await session.execute(
-                delete(Forecast).where(
-                    Forecast.site_id == site_id,
-                    Forecast.metric == metric,
-                    Forecast.plan == plan,
-                )
-            )
-            await session.commit()
+        await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)

@@ -22,6 +22,15 @@ os.environ["DASHBOARD_AUTH_ENABLED"] = "false"
 os.environ["DASHBOARD_AUTH_SECRET"] = "test-dashboard-auth-secret"
 os.environ["DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV"] = "true"
 os.environ["SHUFFLE_MAX_DELAY_SECONDS"] = "0"
+os.environ["AUTO_CREATE_DB_SCHEMA"] = "true"
+# Keep the suite hermetic: never inherit real Stripe/billing config from a local .env,
+# otherwise billing-gated tests pass or fail depending on the working directory. Tests
+# that exercise billing set their own Stripe config (and restore it) per-test.
+os.environ["BILLING_ENABLED"] = "false"
+os.environ["STRIPE_SECRET_KEY"] = ""
+os.environ["STRIPE_WEBHOOK_SECRET"] = ""
+os.environ["STRIPE_STANDARD_PRICE_ID"] = ""
+os.environ["STRIPE_PRO_PRICE_ID"] = ""
 
 ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
 COLLECT_HEADERS = {"X-Collect-Token": os.environ["COLLECT_ENDPOINT_TOKEN"]}
@@ -477,6 +486,7 @@ async def test_forecast_response_clamps_stored_negative_values(client):
                 mape=0.1,
                 has_anomaly=False,
                 z_score=0.0,
+                trained_at=datetime.now(timezone.utc),
             )
         )
         await session.commit()
@@ -487,6 +497,52 @@ async def test_forecast_response_clamps_stored_negative_values(client):
     assert response.json()["forecast"] == [
         {"day": "2026-06-15", "yhat": 12.0, "yhat_lower": 0.0, "yhat_upper": 20.0}
     ]
+
+
+@pytest.mark.asyncio
+async def test_forecast_response_hides_stale_or_untrained_forecasts(client):
+    site_id = "site-stale-forecast"
+    await _set_site_plan(site_id, "standard")
+    old_trained_at = datetime.now(timezone.utc) - timedelta(days=3)
+
+    async with async_session_factory() as session:
+        session.add_all(
+            [
+                Forecast(
+                    site_id=site_id,
+                    plan="standard",
+                    metric="pageviews",
+                    day=date(2026, 6, 15),
+                    yhat=12.0,
+                    yhat_lower=10.0,
+                    yhat_upper=14.0,
+                    mape=0.1,
+                    has_anomaly=False,
+                    z_score=0.0,
+                    trained_at=None,
+                ),
+                Forecast(
+                    site_id=site_id,
+                    plan="standard",
+                    metric="sessions",
+                    day=date(2026, 6, 15),
+                    yhat=8.0,
+                    yhat_lower=6.0,
+                    yhat_upper=10.0,
+                    mape=0.1,
+                    has_anomaly=False,
+                    z_score=0.0,
+                    trained_at=old_trained_at,
+                ),
+            ]
+        )
+        await session.commit()
+
+    untrained = client.get("/api/forecast/pageviews", params={"site_id": site_id})
+    stale = client.get("/api/forecast/sessions", params={"site_id": site_id})
+
+    assert untrained.status_code == 204
+    assert stale.status_code == 204
 
 
 def test_non_negative_forecast_interval_preserves_valid_bounds():
@@ -509,6 +565,27 @@ def test_forecast_anomaly_detection_excludes_spike_from_fit():
     assert scored.iloc[-1]["anomaly_z"] > 0
     assert len(fit) == len(scored) - 1
     assert fit["y"].max() == 100.0
+
+
+def test_sparse_anomaly_detection_suppresses_single_count_jitter():
+    import pandas as pd
+
+    start = date(2026, 1, 1)
+    sparse_history = [0.0] * 27 + [1.0]
+    jitter_rows = [
+        {"ds": start + timedelta(days=offset), "y": value}
+        for offset, value in enumerate([*sparse_history, 1.0])
+    ]
+    spike_rows = [
+        {"ds": start + timedelta(days=offset), "y": value}
+        for offset, value in enumerate([*sparse_history, 5.0])
+    ]
+
+    jitter_scored = _with_anomaly_flags(pd.DataFrame(jitter_rows))
+    spike_scored = _with_anomaly_flags(pd.DataFrame(spike_rows))
+
+    assert bool(jitter_scored.iloc[-1]["is_anomaly"]) is False
+    assert bool(spike_scored.iloc[-1]["is_anomaly"]) is True
 
 
 def test_forecast_horizon_starts_after_latest_observed_day_when_latest_is_anomaly():
@@ -1916,6 +1993,7 @@ async def test_site_health_reports_tracking_reducer_and_forecast_status(client):
                     mape=0.2,
                     has_anomaly=False,
                     z_score=0,
+                    trained_at=now,
                     model_id=None,
                 )
             )
