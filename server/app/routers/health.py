@@ -5,15 +5,17 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..models import get_session
 from ..schemas import HealthResponse
 
 router = APIRouter(tags=["health"])
+settings = get_settings()
 
 
 @router.get("/health/liveness", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 async def liveness():
-    return HealthResponse(status="ok")
+    return HealthResponse(status="ok", checks={"app": True})
 
 
 @router.get("/health/readiness", response_model=HealthResponse, status_code=status.HTTP_200_OK)
@@ -22,4 +24,15 @@ async def readiness(session: AsyncSession = Depends(get_session)):
         await session.execute(text("SELECT 1"))
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database not ready") from exc
-    return HealthResponse(status="ok")
+    checks = {
+        "database": True,
+        "dashboard_auth_configured": settings.auth_configured(),
+        "billing_configured": (not settings.BILLING_ENABLED) or settings.billing_configured(),
+    }
+    details = {
+        "dashboard_auth_enabled": settings.DASHBOARD_AUTH_ENABLED,
+        "billing_enabled": settings.BILLING_ENABLED,
+    }
+    if not all(checks.values()):
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"checks": checks, "details": details})
+    return HealthResponse(status="ok", checks=checks, details=details)

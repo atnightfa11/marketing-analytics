@@ -19,7 +19,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_STORAGE_KEY));
-  const [authEnabled, setAuthEnabled] = useState(false);
+  const [authEnabled, setAuthEnabled] = useState(true);
   const [ready, setReady] = useState(false);
 
   const logout = useCallback(() => {
@@ -59,9 +59,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setToken(existingToken);
         }
       } catch {
-        // Fail open for local/dev environments when auth endpoints are not reachable.
         if (!mounted) return;
-        setAuthEnabled(false);
+        setAuthEnabled(true);
       } finally {
         if (mounted) setReady(true);
       }

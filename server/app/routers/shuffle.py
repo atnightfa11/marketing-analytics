@@ -488,8 +488,8 @@ async def shuffle_ingest(
     )
     await session.commit()
 
-    delay = secrets.randbelow(121)
-    if not request.headers.get("X-Bypass-Delay"):
+    delay = secrets.randbelow(settings.SHUFFLE_MAX_DELAY_SECONDS + 1) if settings.SHUFFLE_MAX_DELAY_SECONDS > 0 else 0
+    if delay > 0:
         await asyncio.sleep(delay)
 
     server_received_at = dt.datetime.now(dt.timezone.utc)

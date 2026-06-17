@@ -40,7 +40,7 @@ def _require_auth_config() -> None:
     if not settings.DASHBOARD_AUTH_SECRET:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Dashboard auth is enabled but credentials are not configured",
+            detail="Dashboard auth is enabled but DASHBOARD_AUTH_SECRET is not configured",
         )
 
 
@@ -100,7 +100,7 @@ def validate_credentials(username: str, password: str) -> bool:
 
 
 async def validate_credentials_async(username: str, password: str, session: AsyncSession) -> bool:
-    if validate_credentials(username, password):
+    if settings.DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV and validate_credentials(username, password):
         return True
     user = await session.get(DashboardUser, username)
     if not user:

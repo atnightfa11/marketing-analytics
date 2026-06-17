@@ -11,8 +11,9 @@ describe("Marketing Analytics Dashboard", () => {
     cy.contains("Forecast").should("exist");
   });
 
-  it("acknowledges alerts", () => {
-    cy.contains("Recent Alerts").should("exist");
+  it("does not expose the old static alerts page", () => {
+    cy.visit("http://localhost:5173/alerts");
+    cy.location("pathname").should("eq", "/");
   });
 
   it("shows privacy controls", () => {

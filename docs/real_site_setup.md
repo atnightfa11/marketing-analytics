@@ -48,6 +48,7 @@ Set these environment variables on the backend service:
 
 - `DATABASE_URL=postgresql+asyncpg://...`
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
+- `APP_ENV=production`
 - `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
 - `GEOIP_COUNTRY_DB_PATH=/tmp/geoip-country.mmdb` (optional; path where API reads/writes GeoIP MMDB)
 - `GEOIP_COUNTRY_DB_URL=https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz` (optional; startup auto-download)
@@ -61,10 +62,8 @@ Set these environment variables on the backend service:
 - `BOT_FILTER_MIN_CF_SCORE=30` (if `CF-Bot-Score`/`X-Bot-Score` header is present and below this value, request is filtered)
 - `BOT_FILTER_UA_PATTERNS_CSV=` (optional comma-separated extra User-Agent substrings to filter)
 - `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
-- `DASHBOARD_AUTH_USERNAME=<dashboard-admin-username>`
-- `DASHBOARD_AUTH_PASSWORD=<dashboard-admin-password>`
-- `DASHBOARD_AUTH_USERS_JSON={"alice":"pw1","bob":"pw2"}` (optional, recommended for friend beta; when set, this overrides single-user username/password)
 - `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
+- Dashboard users should live in `dashboard_users` with Argon2 password hashes. Do not configure production dashboard passwords in env vars.
 - `DASHBOARD_ALLOWED_SITE_IDS=<comma-separated-site-ids>` (optional, recommended for ownership auth on `site_id` endpoints)
 - `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; explicit user mappings take precedence over `DASHBOARD_ALLOWED_SITE_IDS`, and unmapped users fall back to DB ownership checks)
 - `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended for public launch; set `true` only as a temporary fallback while migrating legacy demo sites)
@@ -88,6 +87,7 @@ Privileged endpoint headers:
 
 Stripe billing env vars:
 
+- `BILLING_ENABLED=true` for commercial production. When enabled, startup requires Stripe secret, webhook secret, and Standard price ID.
 - `STRIPE_SECRET_KEY=sk_live_...` (production; use `sk_test_...` only in non-prod environments)
 - `STRIPE_WEBHOOK_SECRET=whsec_...` (from the Dashboard webhook endpoint, not Stripe CLI `listen`)
 - `STRIPE_STANDARD_PRICE_ID=price_...`
@@ -150,10 +150,9 @@ Generate a secret locally with:
 openssl rand -hex 32
 ```
 
-Example per-user beta config:
+Example per-user beta access config:
 
 ```text
-DASHBOARD_AUTH_USERS_JSON={"heather":"strongpass1","friend1":"strongpass2","friend2":"strongpass3"}
 DASHBOARD_SITE_ACCESS_JSON={"heather":["*"],"friend1":["site-friend1"],"friend2":["site-friend2"]}
 ```
 

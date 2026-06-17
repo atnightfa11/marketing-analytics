@@ -20,9 +20,12 @@ async def auth_status() -> AuthStatusResponse:
 async def auth_login(payload: AuthLoginRequest, session: AsyncSession = Depends(get_session)) -> AuthLoginResponse:
     if not settings.DASHBOARD_AUTH_ENABLED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dashboard auth is disabled")
-    if not await validate_credentials_async(payload.username, payload.password, session):
+    username = payload.username.strip().lower()
+    if not username:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token, expires_at = create_access_token(payload.username)
+    if not await validate_credentials_async(username, payload.password, session):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    token, expires_at = create_access_token(username)
     return AuthLoginResponse(access_token=token, expires_at=expires_at)
 
 

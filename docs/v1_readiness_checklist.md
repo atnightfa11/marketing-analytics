@@ -9,8 +9,8 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Public signup endpoint (`POST /api/public/signup`) for Free + Standard.
 - [x] Stripe live checkout session creation for Standard (`/api/checkout/session` and signup checkout URL flow).
 - [x] Stripe webhook endpoint live and signature-validated (`/api/stripe/webhook`).
-- [x] Dashboard auth enabled and site-access authorization hooks present.
-- [x] Readiness endpoint checks database (`/health/readiness`).
+- [x] Dashboard auth defaults to enabled and site-access authorization hooks present.
+- [x] Readiness endpoint checks database and surfaces auth/billing configuration state (`/health/readiness`).
 - [x] Site-level tracking health panel/API for recent reports, active key, reducer, aggregate windows, and forecast state.
 - [x] Standard import history and rollback for newly tagged import batches while raw import rows are retained.
 - [x] Owner-managed dashboard site access for existing dashboard users.
@@ -41,6 +41,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] `STRIPE_SECRET_KEY` (live)
 - [x] `STRIPE_WEBHOOK_SECRET`
 - [x] `STRIPE_STANDARD_PRICE_ID`
+- [x] `BILLING_ENABLED=true` for commercial production
 - [x] `STRIPE_SIGNUP_SUCCESS_URL`
 - [x] `STRIPE_SIGNUP_CANCEL_URL`
 - [x] `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended)

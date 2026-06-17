@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
   DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./marketing.db")
   UPLOAD_TOKEN_SECRET: str = Field(default="change-me")
+  APP_ENV: str = Field(default="development")
+  BILLING_ENABLED: bool = Field(default=False)
   STRIPE_SECRET_KEY: str | None = None
   STRIPE_WEBHOOK_SECRET: str | None = None
   STRIPE_STANDARD_PRICE_ID: str | None = None
@@ -52,10 +54,12 @@ class Settings(BaseSettings):
   RAW_REPORT_PURGE_ENABLED: bool = Field(default=True)
   RAW_REPORT_RETENTION_HOURS: int = Field(default=72)
   MODEL_ARTIFACT_BUCKET: str | None = None
-  DASHBOARD_AUTH_ENABLED: bool = Field(default=False)
+  SHUFFLE_MAX_DELAY_SECONDS: int = Field(default=120)
+  DASHBOARD_AUTH_ENABLED: bool = Field(default=True)
   DASHBOARD_AUTH_USERNAME: str = Field(default="admin")
   DASHBOARD_AUTH_PASSWORD: str | None = None
   DASHBOARD_AUTH_USERS_JSON: str | None = None
+  DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV: bool = Field(default=False)
   DASHBOARD_AUTH_SECRET: str | None = None
   DASHBOARD_AUTH_TTL_SECONDS: int = Field(default=8 * 60 * 60)
   DASHBOARD_ALLOWED_SITE_IDS: str | None = None
@@ -89,6 +93,29 @@ class Settings(BaseSettings):
   def ensure_required_cors_origins(self):
     if self.UPLOAD_TOKEN_SECRET == "change-me":
       raise ValueError("UPLOAD_TOKEN_SECRET must be overridden from the insecure default")
+    if self.DASHBOARD_AUTH_ENABLED and not self.DASHBOARD_AUTH_SECRET:
+      raise ValueError("DASHBOARD_AUTH_SECRET must be configured when dashboard auth is enabled")
+    if self.BILLING_ENABLED:
+      missing_billing = [
+          name
+          for name, value in (
+              ("STRIPE_SECRET_KEY", self.STRIPE_SECRET_KEY),
+              ("STRIPE_WEBHOOK_SECRET", self.STRIPE_WEBHOOK_SECRET),
+              ("STRIPE_STANDARD_PRICE_ID", self.STRIPE_STANDARD_PRICE_ID),
+          )
+          if not value
+      ]
+      if missing_billing:
+        raise ValueError(
+            "Billing is enabled but required Stripe config is missing: " + ", ".join(missing_billing)
+        )
+    production_like = self.APP_ENV.strip().lower() in {"prod", "production"}
+    if production_like and not self.DASHBOARD_AUTH_ENABLED:
+      raise ValueError("DASHBOARD_AUTH_ENABLED cannot be disabled in production")
+    if production_like and self.DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV:
+      raise ValueError("DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV cannot be enabled in production")
+    if self.SHUFFLE_MAX_DELAY_SECONDS < 0:
+      raise ValueError("SHUFFLE_MAX_DELAY_SECONDS cannot be negative")
 
     if self.cors_origins_csv:
       extras = [item.strip() for item in self.cors_origins_csv.split(",") if item.strip()]
@@ -103,6 +130,12 @@ class Settings(BaseSettings):
         seen.add(origin)
     self.cors_origins = normalized
     return self
+
+  def billing_configured(self) -> bool:
+    return bool(self.STRIPE_SECRET_KEY and self.STRIPE_WEBHOOK_SECRET and self.STRIPE_STANDARD_PRICE_ID)
+
+  def auth_configured(self) -> bool:
+    return (not self.DASHBOARD_AUTH_ENABLED) or bool(self.DASHBOARD_AUTH_SECRET)
 
 
 @lru_cache(1)

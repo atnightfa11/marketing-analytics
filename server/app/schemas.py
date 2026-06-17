@@ -385,3 +385,5 @@ class AlertWebhookPayload(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok"]
+    checks: dict[str, bool] = Field(default_factory=dict)
+    details: dict[str, Any] = Field(default_factory=dict)

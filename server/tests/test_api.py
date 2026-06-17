@@ -18,6 +18,10 @@ os.environ["UPLOAD_TOKEN_SECRET"] = "test-upload-token-secret"
 os.environ["SESSION_HMAC_SECRET"] = "test-session-hmac-secret"
 os.environ["ADMIN_API_TOKEN"] = "test-admin-api-token"
 os.environ["COLLECT_ENDPOINT_TOKEN"] = "test-collect-token"
+os.environ["DASHBOARD_AUTH_ENABLED"] = "false"
+os.environ["DASHBOARD_AUTH_SECRET"] = "test-dashboard-auth-secret"
+os.environ["DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV"] = "true"
+os.environ["SHUFFLE_MAX_DELAY_SECONDS"] = "0"
 
 ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
 COLLECT_HEADERS = {"X-Collect-Token": os.environ["COLLECT_ENDPOINT_TOKEN"]}
@@ -27,6 +31,7 @@ from sqlalchemy import select  # noqa: E402
 
 from argon2 import PasswordHasher  # noqa: E402
 
+from app.config import Settings  # noqa: E402
 from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
@@ -173,6 +178,37 @@ def client():
         yield test_client
 
 
+def test_production_settings_fail_closed():
+    with pytest.raises(ValueError, match="DASHBOARD_AUTH_ENABLED"):
+        Settings(
+            _env_file=None,
+            UPLOAD_TOKEN_SECRET="test-upload-token-secret",
+            APP_ENV="production",
+            DASHBOARD_AUTH_ENABLED=False,
+            DASHBOARD_AUTH_SECRET="test-dashboard-auth-secret",
+        )
+
+    with pytest.raises(ValueError, match="DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV"):
+        Settings(
+            _env_file=None,
+            UPLOAD_TOKEN_SECRET="test-upload-token-secret",
+            APP_ENV="production",
+            DASHBOARD_AUTH_ENABLED=True,
+            DASHBOARD_AUTH_SECRET="test-dashboard-auth-secret",
+            DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV=True,
+        )
+
+    with pytest.raises(ValueError, match="required Stripe config"):
+        Settings(
+            _env_file=None,
+            UPLOAD_TOKEN_SECRET="test-upload-token-secret",
+            APP_ENV="production",
+            DASHBOARD_AUTH_ENABLED=True,
+            DASHBOARD_AUTH_SECRET="test-dashboard-auth-secret",
+            BILLING_ENABLED=True,
+        )
+
+
 @pytest.mark.asyncio
 async def test_token_issue_and_revoke(client):
     response = client.post(
@@ -225,7 +261,7 @@ async def test_shuffle_rejects_tampered_upload_token(client):
     shuffle = client.post(
         "/api/shuffle",
         json={"token": tampered, "nonce": "nonce-tampered-token", "batch": []},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert shuffle.status_code == 401
     assert shuffle.json()["detail"] == "Invalid token"
@@ -250,7 +286,7 @@ async def test_shuffle_rejects_signed_but_unregistered_upload_token(client):
     shuffle = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "nonce-unregistered-token", "batch": []},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert shuffle.status_code == 401
     assert shuffle.json()["detail"] == "Token not registered"
@@ -343,13 +379,13 @@ async def test_nonce_replay_rejected(client):
     first = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "same-nonce", "batch": batch},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert first.status_code == 202
     second = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "same-nonce", "batch": batch},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert second.status_code in (401, 409)
 
@@ -381,7 +417,6 @@ async def test_shuffle_requires_origin_header(client):
     resp = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "nonce-origin-required", "batch": batch},
-        headers={"X-Bypass-Delay": "true"},
     )
     assert resp.status_code == 401
 
@@ -413,7 +448,7 @@ async def test_stale_payload_rejected(client):
     resp = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "fresh-nonce", "batch": batch},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert resp.status_code == 202  # accepted but dropped internally
 
@@ -576,7 +611,7 @@ async def test_plan_aware_ingest_paths(client):
         resp = client.post(
             "/api/shuffle",
             json={"token": token, "nonce": f"nonce-{site_id}", "batch": batch},
-            headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+            headers={"Origin": "https://example.com"},
         )
         if plan == "pro":
             assert resp.status_code == 403
@@ -999,14 +1034,14 @@ async def test_standard_session_dedup_replay_resistance(client):
     first = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "session-dedupe-nonce", "batch": batch},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert first.status_code == 202
 
     replay = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "session-dedupe-nonce", "batch": batch},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert replay.status_code in (401, 409)
 
@@ -1225,7 +1260,7 @@ async def test_free_session_and_unique_dedupe_without_client_storage(client):
     ingest_resp = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "free-dedupe-nonce", "batch": batch},
-        headers={"Origin": "https://example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://example.com"},
     )
     assert ingest_resp.status_code == 202
 
@@ -1821,7 +1856,6 @@ async def test_site_ip_block_drops_matching_ingest(client):
         },
         headers={
             "Origin": "https://example.com",
-            "X-Bypass-Delay": "true",
             "X-Forwarded-For": "203.0.113.25",
             "User-Agent": "Mozilla/5.0",
         },
@@ -2045,7 +2079,7 @@ async def test_shuffle_allows_subdomain_origin_for_apex_token(client):
     resp = client.post(
         "/api/shuffle",
         json={"token": token, "nonce": "nonce-shuffle-domain-scope", "batch": batch},
-        headers={"Origin": "https://www.example.com", "X-Bypass-Delay": "true"},
+        headers={"Origin": "https://www.example.com"},
     )
     assert resp.status_code == 202, resp.text
 

@@ -48,11 +48,7 @@ import {
   TimePartingDayType,
   updateSiteTimezone,
 } from "./api";
-import { AlertsPanel } from "./components/AlertsPanel";
-import { DeviceBreakdown } from "./components/DeviceBreakdown";
 import { KPIGrid } from "./components/KPIGrid";
-import { TopCountries } from "./components/TopCountries";
-import { TopSources } from "./components/TopSources";
 import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
 import { formatNumber, formatPercent, formatShortDate } from "./utils/format";
@@ -77,6 +73,7 @@ const fontMeta: React.CSSProperties = {
 };
 
 const LAST_SITE_ID_STORAGE_KEY = "valid_last_site_id";
+const ENABLE_DEMO_MODE = import.meta.env.VITE_ENABLE_DEMO_MODE === "true";
 
 const metricLabels: Record<string, string> = {
   uniques: "Unique Visitors",
@@ -1410,7 +1407,7 @@ const Overview: React.FC = () => {
   const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
   const querySiteId = searchParams.get("site_id") ?? undefined;
   const hasExplicitSiteSelection = Boolean((querySiteId && querySiteId.trim()) || (pathSiteId && pathSiteId.trim()));
-  const showSeededBreakdowns = !hasExplicitSiteSelection;
+  const showSeededBreakdowns = ENABLE_DEMO_MODE && !hasExplicitSiteSelection;
   const siteId = useMemo(() => resolveActiveSiteId(querySiteId ?? pathSiteId), [querySiteId, pathSiteId]);
 
   useEffect(() => {
@@ -3113,7 +3110,7 @@ const Overview: React.FC = () => {
     if (forecastMeta?.has_anomaly) {
       items.push({
         label: "Anomaly",
-        text: `${selectedMetricLabel} moved outside the forecast interval recently. Review alerts before making campaign changes.`,
+        text: `${selectedMetricLabel} was unusually different from the site's recent pattern. Forecasts may be wider while the trend stabilizes.`,
       });
     }
     if (topChannelLabel && Number.isFinite(topChannelSharePct ?? Number.NaN)) {
@@ -3610,17 +3607,9 @@ const Overview: React.FC = () => {
                   Anomaly detected in {metricLabels[selectedMetric] ?? selectedMetric}
                 </div>
                 <div className="mt-0.5 text-[12px] text-[#4B5563]">
-                  Recent values deviated from the forecast band. The forecast interval may be temporarily wider until the trend stabilizes.
+                  Recent traffic was unusually different from the site's recent pattern. Forecasts may be wider while the trend stabilizes.
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => navigate(`/site/${encodeURIComponent(siteId)}/alerts`)}
-                className="shrink-0 border border-[#8B2635] bg-white px-2 py-1 text-[11px] font-medium text-[#8B2635] hover:bg-[#8B2635] hover:text-white"
-                style={fontBody}
-              >
-                View alerts
-              </button>
               <button
                 type="button"
                 aria-label="Dismiss anomaly notice"
@@ -4382,49 +4371,10 @@ const Overview: React.FC = () => {
   );
 };
 
-const Charts: React.FC = () => (
-  <div className="min-h-screen bg-[#F9FAFB] print-bg">
-    <header className="border-b border-gray-200 bg-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
-          Valid
-        </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-          <LogoutButton />
-        </div>
-      </div>
-    </header>
-    <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
-      <div className="grid gap-6 md:grid-cols-2">
-        <TopSources />
-        <TopCountries />
-        <DeviceBreakdown />
-      </div>
-    </main>
-  </div>
-);
-
-const Alerts: React.FC = () => (
-  <div className="min-h-screen bg-[#F9FAFB] print-bg">
-    <header className="border-b border-gray-200 bg-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
-          Valid
-        </div>
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
-          <LogoutButton />
-        </div>
-      </div>
-    </header>
-    <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
-      <div className="border border-gray-200 bg-white p-4">
-        <AlertsPanel />
-      </div>
-    </main>
-  </div>
-);
+const SiteDashboardRedirect: React.FC = () => {
+  const { siteId } = useParams<{ siteId?: string }>();
+  return <Navigate to={siteId ? `/site/${encodeURIComponent(siteId)}` : "/"} replace />;
+};
 
 const Settings: React.FC = () => {
   const { token, authEnabled } = useAuth();
@@ -5811,11 +5761,11 @@ export const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<HomeRoute />} />
           <Route path="/site/:siteId" element={<Overview />} />
-          <Route path="/site/:siteId/charts" element={<Charts />} />
-          <Route path="/site/:siteId/alerts" element={<Alerts />} />
+          <Route path="/site/:siteId/charts" element={<SiteDashboardRedirect />} />
+          <Route path="/site/:siteId/alerts" element={<SiteDashboardRedirect />} />
           <Route path="/site/:siteId/settings" element={<Settings />} />
-          <Route path="/charts" element={<Charts />} />
-          <Route path="/alerts" element={<Alerts />} />
+          <Route path="/charts" element={<Navigate to="/" replace />} />
+          <Route path="/alerts" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/billing/success" element={<BillingSuccess />} />
           <Route path="/billing/cancel" element={<BillingCancel />} />
