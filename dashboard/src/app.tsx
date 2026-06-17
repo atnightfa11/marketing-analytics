@@ -1450,6 +1450,8 @@ const Overview: React.FC = () => {
   const [noteStatus, setNoteStatus] = useState<string | null>(null);
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [isNoteComposerOpen, setIsNoteComposerOpen] = useState(false);
+  const [hoveredNoteMarkerDay, setHoveredNoteMarkerDay] = useState<string | null>(null);
+  const [selectedNoteMarkerDay, setSelectedNoteMarkerDay] = useState<string | null>(null);
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
   const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>({
     sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
@@ -2534,16 +2536,37 @@ const Overview: React.FC = () => {
       }),
     [bucketedChartData, trendScale]
   );
-  const noteMarkerDays = useMemo(() => {
-    if (dashboardNotes.length === 0 || chartData.length === 0) return [];
+  const notesByMarkerDay = useMemo(() => {
+    const notesByDay = new Map<string, DashboardNote[]>();
+    if (dashboardNotes.length === 0 || chartData.length === 0) return notesByDay;
     const chartDays = new Set(chartData.map((point) => point.day));
-    const markerDays = new Set<string>();
     dashboardNotes.forEach((note) => {
       const markerDay = bucketKeyFor(note.day, chartGranularity);
-      if (chartDays.has(markerDay)) markerDays.add(markerDay);
+      if (!chartDays.has(markerDay)) return;
+      const existing = notesByDay.get(markerDay) ?? [];
+      existing.push(note);
+      notesByDay.set(
+        markerDay,
+        existing.sort((a, b) => a.day.localeCompare(b.day) || a.id - b.id)
+      );
     });
-    return Array.from(markerDays).sort((a, b) => a.localeCompare(b));
+    return notesByDay;
   }, [dashboardNotes, chartData, chartGranularity]);
+  const noteMarkerDays = useMemo(
+    () => Array.from(notesByMarkerDay.keys()).sort((a, b) => a.localeCompare(b)),
+    [notesByMarkerDay]
+  );
+  const activeNoteMarkerDay = selectedNoteMarkerDay ?? hoveredNoteMarkerDay;
+  const activeMarkerNotes = activeNoteMarkerDay ? notesByMarkerDay.get(activeNoteMarkerDay) ?? [] : [];
+
+  useEffect(() => {
+    if (selectedNoteMarkerDay && !notesByMarkerDay.has(selectedNoteMarkerDay)) {
+      setSelectedNoteMarkerDay(null);
+    }
+    if (hoveredNoteMarkerDay && !notesByMarkerDay.has(hoveredNoteMarkerDay)) {
+      setHoveredNoteMarkerDay(null);
+    }
+  }, [hoveredNoteMarkerDay, notesByMarkerDay, selectedNoteMarkerDay]);
 
   const hasActual = chartData.some((point) => point.actual !== null);
   const hasTodaySoFar = chartData.some((point) => point.todaySoFar !== null);
@@ -3158,6 +3181,8 @@ const Overview: React.FC = () => {
         siteId
       );
       setDashboardNotes((prev) => [created, ...prev].sort((a, b) => b.day.localeCompare(a.day)));
+      setSelectedNoteMarkerDay(bucketKeyFor(created.day, chartGranularity));
+      setHoveredNoteMarkerDay(null);
       setNoteBody("");
       setIsNoteComposerOpen(false);
       setNoteStatus("Saved");
@@ -3310,6 +3335,41 @@ const Overview: React.FC = () => {
       };
     });
   }, [dailySelected, forecastHorizon]);
+  const renderNoteMarkerLabel = (day: string) => (props: { viewBox?: { x?: number; y?: number; height?: number } }) => {
+    const viewBox = props.viewBox ?? {};
+    const x = Number(viewBox.x ?? 0);
+    const y = Number(viewBox.y ?? 0) + Number(viewBox.height ?? 0) - 3;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const isActive = activeNoteMarkerDay === day;
+    const toggleMarker = () => {
+      setSelectedNoteMarkerDay((current) => (current === day ? null : day));
+      setHoveredNoteMarkerDay(null);
+    };
+    return (
+      <g
+        transform={`translate(${x},${y})`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Notes for ${formatShortDate(day)}`}
+        onMouseEnter={() => setHoveredNoteMarkerDay(day)}
+        onClick={toggleMarker}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            toggleMarker();
+          }
+        }}
+        className="cursor-pointer outline-none"
+      >
+        <path
+          d="M -5 0 L 5 0 L 0 -8 Z"
+          fill={isActive ? "#4F46E5" : "#7C83FF"}
+          stroke="#FFFFFF"
+          strokeWidth={1.5}
+        />
+      </g>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#F5F6F8] print-bg">
@@ -3638,7 +3698,12 @@ const Overview: React.FC = () => {
               </select>
             </div>
           </div>
-          <div className="mt-6">
+          <div
+            className="relative mt-6"
+            onMouseLeave={() => {
+              if (!selectedNoteMarkerDay) setHoveredNoteMarkerDay(null);
+            }}
+          >
             {!hasActual && !hasForecast ? (
               <div className="py-10 text-sm text-gray-400" style={fontBody}>
                 No chart data yet. Seed events, run the reducer, and reload.
@@ -3796,9 +3861,10 @@ const Overview: React.FC = () => {
                     <ReferenceLine
                       key={`note-${day}`}
                       x={day}
-                      stroke="#CBD5E1"
-                      strokeDasharray="2 6"
-                      strokeOpacity={0.7}
+                      stroke="transparent"
+                      strokeOpacity={0}
+                      ifOverflow="extendDomain"
+                      label={renderNoteMarkerLabel(day)}
                     />
                   ))}
                   {hasForecastBand && (
@@ -3904,6 +3970,64 @@ const Overview: React.FC = () => {
                 </ComposedChart>
               </ResponsiveContainer>
             )}
+            {activeNoteMarkerDay && activeMarkerNotes.length > 0 && (
+              <div
+                className="absolute bottom-3 left-3 z-20 w-[min(340px,calc(100%-24px))] rounded-md border border-[#DDE4EC] bg-white px-3 py-2 text-left shadow-lg"
+                onMouseEnter={() => setHoveredNoteMarkerDay(activeNoteMarkerDay)}
+                onMouseLeave={() => {
+                  if (!selectedNoteMarkerDay) setHoveredNoteMarkerDay(null);
+                }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
+                      Notes
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-[#6B7280]" style={fontBody}>
+                      {formatShortDate(activeNoteMarkerDay)}
+                    </div>
+                  </div>
+                  {selectedNoteMarkerDay && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedNoteMarkerDay(null);
+                        setHoveredNoteMarkerDay(null);
+                      }}
+                      className="-mr-1 rounded-full p-0.5 text-[#9CA3AF] transition-colors hover:bg-[#EEF2F7] hover:text-[#4B5563]"
+                      aria-label="Close notes"
+                    >
+                      <CloseIcon />
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 space-y-2">
+                  {activeMarkerNotes.map((note) => (
+                    <div key={note.id} className="border-t border-[#EEF2F7] pt-2 first:border-t-0 first:pt-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]" style={fontMeta}>
+                            {formatShortDate(note.day)}
+                            {note.metric ? ` · ${formatNoteMetric(note.metric)}` : ""}
+                          </div>
+                          <div className="mt-1 text-[12px] leading-5 text-[#374151]" style={fontBody}>
+                            {note.body}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteNote(note)}
+                          className="shrink-0 rounded-full p-0.5 text-[#B7C0CC] transition-colors hover:bg-[#EEF2F7] hover:text-[#8B2635]"
+                          aria-label={`Delete note from ${note.day}`}
+                        >
+                          <CloseIcon />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-[#4B5563]" style={fontBody}>
             {hasActual && (
@@ -3946,12 +4070,6 @@ const Overview: React.FC = () => {
                 Forecast interval
               </span>
             )}
-            {noteMarkerDays.length > 0 && (
-              <span className="flex items-center gap-2">
-                <span className="h-3 w-0 border-l border-dashed border-[#9CA3AF]" />
-                Notes
-              </span>
-            )}
             {trendFooterNote && <span className="text-xs text-[#6B7280]">{trendFooterNote}</span>}
             {chartGranularity !== "day" && (
               <span className="ml-auto text-[11px] italic text-[#6B7280]" style={fontBody}>
@@ -3987,31 +4105,8 @@ const Overview: React.FC = () => {
             )}
           </div>
           {!showSeededBreakdowns && (
-            <div className="mt-3 border-t border-[var(--color-border-subtle)] pt-3">
-              <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#6B7280]" style={fontBody}>
-                <span className="font-semibold uppercase tracking-[0.18em] text-[#7B8190]">Notes</span>
-                {dashboardNotes.length === 0 ? (
-                  <span className="text-[#9CA3AF]">None for this range</span>
-                ) : (
-                  dashboardNotes.map((note) => (
-                    <span
-                      key={note.id}
-                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#DDE4EC] bg-[#FBFCFE] px-2.5 py-1 text-[#4B5563]"
-                    >
-                      <span className="shrink-0 font-semibold text-[#6B7280]">{formatShortDate(note.day)}</span>
-                      {note.metric && <span className="shrink-0 text-[#9CA3AF]">{formatNoteMetric(note.metric)}</span>}
-                      <span className="max-w-[280px] truncate">{note.body}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteNote(note)}
-                        className="-mr-1 rounded-full p-0.5 text-[#9CA3AF] transition-colors hover:bg-[#EEF2F7] hover:text-[#8B2635]"
-                        aria-label={`Delete note from ${note.day}`}
-                      >
-                        <CloseIcon />
-                      </button>
-                    </span>
-                  ))
-                )}
+            <div className="mt-2">
+              <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] text-[#6B7280]" style={fontBody}>
                 <button
                   type="button"
                   onClick={() => {
