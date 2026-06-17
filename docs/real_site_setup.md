@@ -68,6 +68,12 @@ Set these environment variables on the backend service:
 - `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; explicit user mappings take precedence over `DASHBOARD_ALLOWED_SITE_IDS`, and unmapped users fall back to DB ownership checks)
 - `DASHBOARD_ALLOW_UNCLAIMED_SITES=false` (recommended for public launch; set `true` only as a temporary fallback while migrating legacy demo sites)
 - `FORECAST_HORIZON_DAYS=90` (UI can still default to 30-day view)
+- `ALERT_EMAIL_SMTP_HOST=` (optional; required for outbound email anomaly alerts)
+- `ALERT_EMAIL_SMTP_PORT=587`
+- `ALERT_EMAIL_SMTP_USERNAME=` (optional, depending on provider)
+- `ALERT_EMAIL_SMTP_PASSWORD=` (optional, depending on provider)
+- `ALERT_EMAIL_FROM=alerts@validanalytics.io` (required with `ALERT_EMAIL_SMTP_HOST`)
+- `ALERT_EMAIL_USE_TLS=true`
 - `ENABLE_PROD_SCHEDULER=false` on the API service when a separate worker is deployed
 - `PROD_SCHEDULER_HOUR_UTC=2`
 - `PROD_REDUCER_INTERVAL_MINUTES=60` (hourly reducer cadence)
@@ -149,6 +155,15 @@ Generate a secret locally with:
 ```bash
 openssl rand -hex 32
 ```
+
+## Anomaly alerts
+
+Site owners can configure anomaly alert destinations in Dashboard Settings -> Anomaly alerts.
+
+- Slack alerts use a site-level Slack incoming webhook URL. The URL is write-only in the API: the dashboard can show that a webhook is saved, but it never receives the saved secret back.
+- Email alerts store recipient addresses per site. Outbound email sends only when SMTP env vars are configured on the backend service.
+- Alert delivery runs from the forecast refresh path. A site/metric/channel is notified at most once per training day for the same anomaly key.
+- Alerts use the same anomaly detector as the forecast chart; they do not add a separate anomaly scoring path.
 
 Example per-user beta access config:
 

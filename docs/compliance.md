@@ -16,6 +16,7 @@
   - Unified token bucket rate limiting per site and IP.
   - HSTS and CSP enforced on API and dashboard.
   - Structured audit logs for authentication failures.
+  - Site alert settings keep Slack webhook URLs write-only in dashboard APIs. Email alert recipients are stored per site and used only for anomaly notifications.
 - **Risk Mitigations**: Publishing guards require minimum report counts and SNR > 1.5 to suppress noisy metrics. Forecasts require ≥60 days of data, and model promotion needs ≥5% MAPE improvement.
 
 ## Privacy Notice Boilerplate

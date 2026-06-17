@@ -22,6 +22,7 @@ export interface ForecastResponse {
   mape: number;
   has_anomaly: boolean;
   z_score: number;
+  trained_at?: string | null;
 }
 
 export interface AggregateWindow {
@@ -143,6 +144,25 @@ export interface SiteIpBlockListResponse {
   blocks: SiteIpBlock[];
 }
 
+export interface SiteAlertSettings {
+  site_id: string;
+  anomaly_alerts_enabled: boolean;
+  slack_enabled: boolean;
+  slack_webhook_url_set: boolean;
+  email_enabled: boolean;
+  email_recipients: string[];
+  email_delivery_configured: boolean;
+  updated_at?: string | null;
+}
+
+export interface SiteAlertSettingsUpdate {
+  anomaly_alerts_enabled: boolean;
+  slack_enabled: boolean;
+  slack_webhook_url?: string | null;
+  email_enabled: boolean;
+  email_recipients: string[];
+}
+
 export interface SiteHealthCheck {
   key: string;
   label: string;
@@ -253,7 +273,7 @@ export async function fetchForecast(token: string | undefined, metric: string, s
     params: { site_id: resolvedSiteId },
   });
   if (response.status === 204) {
-    return { forecast: [], mape: Number.NaN, has_anomaly: false, z_score: 0 };
+    return { forecast: [], mape: Number.NaN, has_anomaly: false, z_score: 0, trained_at: null };
   }
   return response.data;
 }
@@ -494,6 +514,32 @@ export async function deleteSiteIpBlock(
     headers: authHeaders(token),
     params: { site_id: resolvedSiteId },
   });
+  return response.data;
+}
+
+export async function fetchSiteAlertSettings(token?: string, siteId?: string): Promise<SiteAlertSettings> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/site-alerts", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function updateSiteAlertSettings(
+  payload: SiteAlertSettingsUpdate,
+  token?: string,
+  siteId?: string
+): Promise<SiteAlertSettings> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.put(
+    "/api/site-alerts",
+    {
+      site_id: resolvedSiteId,
+      ...payload,
+    },
+    { headers: authHeaders(token) }
+  );
   return response.data;
 }
 

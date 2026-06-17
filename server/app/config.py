@@ -48,6 +48,15 @@ class Settings(BaseSettings):
   FREE_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=60)
   STANDARD_RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=240)
   FORECAST_HORIZON_DAYS: int = Field(default=90)
+  ALERT_EMAIL_SMTP_HOST: str | None = None
+  ALERT_EMAIL_SMTP_PORT: int = Field(default=587)
+  ALERT_EMAIL_SMTP_USERNAME: str | None = None
+  ALERT_EMAIL_SMTP_PASSWORD: str | None = None
+  ALERT_EMAIL_FROM: str | None = None
+  ALERT_EMAIL_USE_TLS: bool = Field(default=True)
+  ALERT_WEBHOOK_TOKEN: str | None = None
+  ALERT_SIDECAR_URL: str = Field(default="http://alerts:8080/notify")
+  LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=10)
   # In production the schema is owned by Alembic migrations. Leave this False so the
   # service never silently diverges from migrations via create_all; enable only for
   # local/dev/test bootstrapping.
@@ -140,6 +149,9 @@ class Settings(BaseSettings):
 
   def auth_configured(self) -> bool:
     return (not self.DASHBOARD_AUTH_ENABLED) or bool(self.DASHBOARD_AUTH_SECRET)
+
+  def alert_email_configured(self) -> bool:
+    return bool(self.ALERT_EMAIL_SMTP_HOST and self.ALERT_EMAIL_FROM)
 
 
 @lru_cache(1)

@@ -23,6 +23,10 @@ os.environ["DASHBOARD_AUTH_SECRET"] = "test-dashboard-auth-secret"
 os.environ["DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV"] = "true"
 os.environ["SHUFFLE_MAX_DELAY_SECONDS"] = "0"
 os.environ["AUTO_CREATE_DB_SCHEMA"] = "true"
+os.environ["ALERT_WEBHOOK_TOKEN"] = "test-alert-token"
+# Effectively disable login throttling for the suite (many tests log in repeatedly
+# from the same TestClient IP). A dedicated test lowers this to verify the limiter.
+os.environ["LOGIN_RATE_LIMIT_PER_MINUTE"] = "100000"
 # Keep the suite hermetic: never inherit real Stripe/billing config from a local .env,
 # otherwise billing-gated tests pass or fail depending on the working directory. Tests
 # that exercise billing set their own Stripe config (and restore it) per-test.
@@ -41,7 +45,7 @@ from sqlalchemy import select  # noqa: E402
 from argon2 import PasswordHasher  # noqa: E402
 
 from app.config import Settings  # noqa: E402
-from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteAlertSettings, SiteApiKey, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
@@ -648,6 +652,77 @@ async def test_dashboard_notes_create_list_and_delete(client):
     finally:
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = original_auth_enabled
         dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = original_allow_unclaimed
+
+
+@pytest.mark.asyncio
+async def test_site_alert_settings_store_destinations_without_echoing_slack_secret(client):
+    site_id = "site-alert-settings"
+    owner = "alert-owner"
+    original_auth_enabled = dashboard_auth_settings.DASHBOARD_AUTH_ENABLED
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = False
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="alert-owner@example.com",
+                password_hash="hash",
+            )
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username=owner,
+                site_name="Alert Settings",
+                allowed_origin="https://alerts.example.com",
+            )
+        )
+        await session.commit()
+
+    try:
+        default = client.get("/api/site-alerts", params={"site_id": site_id})
+        assert default.status_code == 200
+        assert default.json()["anomaly_alerts_enabled"] is False
+        assert default.json()["slack_webhook_url_set"] is False
+
+        missing_webhook = client.put(
+            "/api/site-alerts",
+            json={
+                "site_id": site_id,
+                "anomaly_alerts_enabled": True,
+                "slack_enabled": True,
+                "email_enabled": False,
+                "email_recipients": [],
+            },
+        )
+        assert missing_webhook.status_code == 400
+
+        saved = client.put(
+            "/api/site-alerts",
+            json={
+                "site_id": site_id,
+                "anomaly_alerts_enabled": True,
+                "slack_enabled": True,
+                "slack_webhook_url": "https://hooks.slack.com/services/T000/B000/secret",
+                "email_enabled": True,
+                "email_recipients": ["Ops@example.com", "alerts@example.com"],
+            },
+        )
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body["anomaly_alerts_enabled"] is True
+        assert body["slack_enabled"] is True
+        assert body["slack_webhook_url_set"] is True
+        assert "slack_webhook_url" not in body
+        assert body["email_enabled"] is True
+        assert body["email_recipients"] == ["ops@example.com", "alerts@example.com"]
+
+        async with async_session_factory() as session:
+            row = (
+                await session.execute(select(SiteAlertSettings).where(SiteAlertSettings.site_id == site_id))
+            ).scalar_one()
+            assert row.slack_webhook_url == "https://hooks.slack.com/services/T000/B000/secret"
+    finally:
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = original_auth_enabled
 
 
 @pytest.mark.asyncio
@@ -3751,4 +3826,174 @@ async def test_public_signup_standard_returns_checkout_url(client, monkeypatch):
             public_signup_router.settings.STRIPE_STANDARD_PRICE_ID,
             public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
             public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+        ) = original_stripe
+
+
+def test_collect_token_dependency_rejects_admin_token_fallback():
+    from fastapi import HTTPException
+
+    from app.access_control import require_collect_endpoint_token
+
+    # The admin token must no longer be accepted as a fallback on the collect endpoint.
+    with pytest.raises(HTTPException) as exc:
+        require_collect_endpoint_token(x_collect_token=os.environ["ADMIN_API_TOKEN"])
+    assert exc.value.status_code == 401
+
+    # The dedicated collect token still works.
+    require_collect_endpoint_token(x_collect_token=os.environ["COLLECT_ENDPOINT_TOKEN"])
+
+
+def test_alert_webhook_requires_token(client):
+    payload = {"source": "reducer", "severity": "warning", "message": "stale reducer", "metadata": {}}
+
+    missing = client.post("/api/alert/webhook", json=payload)
+    assert missing.status_code == 401
+
+    wrong = client.post("/api/alert/webhook", json=payload, headers={"X-Alert-Token": "not-the-token"})
+    assert wrong.status_code == 401
+
+
+def test_alert_webhook_accepts_valid_token(client, monkeypatch):
+    import app.routers.alert_webhook as alert_webhook_module
+
+    forwarded: list = []
+
+    async def _fake_forward(payload):
+        forwarded.append(payload)
+
+    monkeypatch.setattr(alert_webhook_module, "forward_to_sidecar", _fake_forward)
+
+    payload = {"source": "reducer", "severity": "critical", "message": "no events", "metadata": {"site_id": "x"}}
+    resp = client.post(
+        "/api/alert/webhook",
+        json=payload,
+        headers={"X-Alert-Token": os.environ["ALERT_WEBHOOK_TOKEN"]},
+    )
+    assert resp.status_code == 202
+    assert len(forwarded) == 1
+
+
+def test_login_is_rate_limited(client):
+    import app.routers.auth as auth_router
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.LOGIN_RATE_LIMIT_PER_MINUTE,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "rl-owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "rl-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "login-rate-limit-secret"
+    dashboard_auth_settings.LOGIN_RATE_LIMIT_PER_MINUTE = 3
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    auth_router.login_rate_limiter.clear()
+    try:
+        statuses = [
+            client.post("/api/auth/login", json={"username": "rl-owner", "password": "wrong"}).status_code
+            for _ in range(4)
+        ]
+        # First 3 attempts are processed (and rejected for bad credentials),
+        # the 4th trips the per-IP limiter.
+        assert statuses[:3] == [401, 401, 401]
+        assert statuses[3] == 429
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        auth_router.login_rate_limiter.clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.LOGIN_RATE_LIMIT_PER_MINUTE,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_checkout_rejects_disallowed_redirect_url(client, monkeypatch):
+    import app.routers.stripe_billing as stripe_billing
+
+    site_id = "site-redirect-allowlist"
+    await _set_site_plan(site_id, "free")
+
+    original_auth = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+    )
+    original_stripe = (
+        stripe_billing.settings.STRIPE_SECRET_KEY,
+        stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+        stripe_billing.settings.STRIPE_STANDARD_PRICE_ID,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "redir-owner"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = "redir-pass"
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "redirect-allowlist-secret"
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = site_id
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    stripe_billing.settings.STRIPE_WEBHOOK_SECRET = "whsec_mock"
+    stripe_billing.settings.STRIPE_STANDARD_PRICE_ID = "price_mock_standard"
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    stripe_billing._allowed_redirect_origins.cache_clear()
+
+    created: dict = {}
+
+    def _fake_checkout_create(**kwargs):
+        created.update(kwargs)
+        return SimpleNamespace(url="https://stripe.test/session", id="cs_test_123")
+
+    monkeypatch.setattr(stripe_billing.stripe.checkout.Session, "create", _fake_checkout_create)
+    try:
+        login = client.post("/api/auth/login", json={"username": "redir-owner", "password": "redir-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        bad = client.post(
+            "/api/checkout/session",
+            json={"site_id": site_id, "plan": "standard", "success_url": "https://evil.example.com/win"},
+            headers=headers,
+        )
+        assert bad.status_code == 400
+
+        good = client.post(
+            "/api/checkout/session",
+            json={
+                "site_id": site_id,
+                "plan": "standard",
+                "success_url": "https://app.validanalytics.io/billing/success",
+            },
+            headers=headers,
+        )
+        assert good.status_code == 200
+        assert created["success_url"].startswith("https://app.validanalytics.io/billing/success")
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        stripe_billing._allowed_redirect_origins.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        ) = original_auth
+        (
+            stripe_billing.settings.STRIPE_SECRET_KEY,
+            stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+            stripe_billing.settings.STRIPE_STANDARD_PRICE_ID,
         ) = original_stripe

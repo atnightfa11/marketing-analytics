@@ -14,6 +14,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Site-level tracking health panel/API for recent reports, active key, reducer, aggregate windows, and forecast state.
 - [x] Standard import history and rollback for newly tagged import batches while raw import rows are retained.
 - [x] Owner-managed dashboard site access for existing dashboard users.
+- [x] Owner-managed anomaly alert settings for Slack and email destinations.
 - [x] Reducer cadence supports hourly operation (`PROD_REDUCER_INTERVAL_MINUTES`, default `60`).
 
 ## Still required before broader launch
@@ -48,6 +49,6 @@ This checklist reflects what is live in production and what remains before broad
 
 ## Nice-to-have immediately after launch
 
-- [ ] Alerting for failed reducer/forecast jobs (beyond status polling).
+- [ ] Alerting for failed reducer/forecast jobs (separate from customer-facing anomaly alerts).
 - [x] Expanded migration import docs for history and rollback.
 - [ ] Pro/Enterprise v2 privacy docs for zero-access local/hybrid DP.

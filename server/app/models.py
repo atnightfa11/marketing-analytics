@@ -358,6 +358,45 @@ class SiteIpBlock(Base):
     )
 
 
+class SiteAlertSettings(Base):
+    __tablename__ = "site_alert_settings"
+    __table_args__ = (
+        UniqueConstraint("site_id", name="uq_site_alert_settings_site"),
+        Index("ix_site_alert_settings_site", "site_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    anomaly_alerts_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    slack_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    slack_webhook_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    email_recipients: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class SiteAlertDelivery(Base):
+    __tablename__ = "site_alert_deliveries"
+    __table_args__ = (
+        UniqueConstraint("site_id", "metric", "channel", "anomaly_key", name="uq_site_alert_delivery"),
+        Index("ix_site_alert_deliveries_site_sent", "site_id", "sent_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    anomaly_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    sent_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DashboardNote(Base):
     __tablename__ = "dashboard_notes"
     __table_args__ = (

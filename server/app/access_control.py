@@ -26,6 +26,14 @@ def require_admin_api_token(x_admin_token: str | None = Header(default=None, ali
 def require_collect_endpoint_token(
     x_collect_token: str | None = Header(default=None, alias="X-Collect-Token")
 ) -> None:
-    expected = settings.COLLECT_ENDPOINT_TOKEN or settings.ADMIN_API_TOKEN
-    _require_token(expected, x_collect_token, token_name="collect endpoint token")
+    # The collect endpoint is a cross-tenant write surface, so it must carry its own
+    # dedicated token. Do not fall back to ADMIN_API_TOKEN: that would let a single
+    # leaked admin credential write events for any site.
+    _require_token(settings.COLLECT_ENDPOINT_TOKEN, x_collect_token, token_name="collect endpoint token")
+
+
+def require_alert_webhook_token(
+    x_alert_token: str | None = Header(default=None, alias="X-Alert-Token")
+) -> None:
+    _require_token(settings.ALERT_WEBHOOK_TOKEN, x_alert_token, token_name="alert webhook token")
 

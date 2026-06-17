@@ -28,6 +28,7 @@ import {
   fetchDashboardNotes,
   fetchForecast,
   fetchImportHistory,
+  fetchSiteAlertSettings,
   fetchSiteIpBlocks,
   fetchSiteAccess,
   fetchSiteHealth,
@@ -43,9 +44,11 @@ import {
   resolveActiveSiteId,
   rollbackImportBatch,
   SiteAccessMember,
+  SiteAlertSettings,
   SiteHealthResponse,
   SiteIpBlock,
   TimePartingDayType,
+  updateSiteAlertSettings,
   updateSiteTimezone,
 } from "./api";
 import { KPIGrid } from "./components/KPIGrid";
@@ -4411,6 +4414,16 @@ const Settings: React.FC = () => {
   const [ipBlockStatus, setIpBlockStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
   const [ipBlockMessage, setIpBlockMessage] = useState<string | null>(null);
   const [deletingIpBlockId, setDeletingIpBlockId] = useState<number | null>(null);
+  const [alertSettings, setAlertSettings] = useState<SiteAlertSettings | null>(null);
+  const [anomalyAlertsEnabled, setAnomalyAlertsEnabled] = useState<boolean>(false);
+  const [slackAlertsEnabled, setSlackAlertsEnabled] = useState<boolean>(false);
+  const [slackWebhookUrl, setSlackWebhookUrl] = useState<string>("");
+  const [slackWebhookUrlSet, setSlackWebhookUrlSet] = useState<boolean>(false);
+  const [clearSlackWebhook, setClearSlackWebhook] = useState<boolean>(false);
+  const [emailAlertsEnabled, setEmailAlertsEnabled] = useState<boolean>(false);
+  const [emailRecipientsDraft, setEmailRecipientsDraft] = useState<string>("");
+  const [alertStatus, setAlertStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [goals, setGoals] = useState<SiteGoalsMap>({});
   const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
@@ -4549,6 +4562,36 @@ const Settings: React.FC = () => {
   useEffect(() => {
     void refreshIpBlocks();
   }, [refreshIpBlocks]);
+
+  const applyAlertSettings = useCallback((settings: SiteAlertSettings) => {
+    setAlertSettings(settings);
+    setAnomalyAlertsEnabled(Boolean(settings.anomaly_alerts_enabled));
+    setSlackAlertsEnabled(Boolean(settings.slack_enabled));
+    setSlackWebhookUrlSet(Boolean(settings.slack_webhook_url_set));
+    setSlackWebhookUrl("");
+    setClearSlackWebhook(false);
+    setEmailAlertsEnabled(Boolean(settings.email_enabled));
+    setEmailRecipientsDraft((settings.email_recipients ?? []).join("\n"));
+  }, []);
+
+  const refreshAlertSettings = useCallback(async () => {
+    if (!canQuery) return;
+    setAlertStatus("loading");
+    setAlertMessage(null);
+    try {
+      const result = await fetchSiteAlertSettings(token ?? undefined, siteId);
+      applyAlertSettings(result);
+      setAlertStatus("idle");
+    } catch (error) {
+      setAlertSettings(null);
+      setAlertStatus("error");
+      setAlertMessage(extractApiErrorMessage(error) ?? "Unable to load anomaly alert settings right now.");
+    }
+  }, [applyAlertSettings, canQuery, siteId, token]);
+
+  useEffect(() => {
+    void refreshAlertSettings();
+  }, [refreshAlertSettings]);
 
   const existingGoal = goals[goalMetric];
   useEffect(() => {
@@ -4729,9 +4772,53 @@ const Settings: React.FC = () => {
     }
   };
 
+  const parseEmailRecipients = (value: string): string[] =>
+    value
+      .split(/[\n,;]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  const saveAlertSettings = async () => {
+    const recipients = parseEmailRecipients(emailRecipientsDraft);
+    const webhook = slackWebhookUrl.trim();
+    const payload: {
+      anomaly_alerts_enabled: boolean;
+      slack_enabled: boolean;
+      slack_webhook_url?: string | null;
+      email_enabled: boolean;
+      email_recipients: string[];
+    } = {
+      anomaly_alerts_enabled: anomalyAlertsEnabled,
+      slack_enabled: slackAlertsEnabled,
+      email_enabled: emailAlertsEnabled,
+      email_recipients: recipients,
+    };
+    if (clearSlackWebhook) {
+      payload.slack_webhook_url = "";
+    } else if (webhook) {
+      payload.slack_webhook_url = webhook;
+    }
+
+    setAlertStatus("saving");
+    setAlertMessage(null);
+    try {
+      const result = await updateSiteAlertSettings(payload, token ?? undefined, siteId);
+      applyAlertSettings(result);
+      setAlertStatus("saved");
+      setAlertMessage("Anomaly alert settings saved.");
+      window.setTimeout(() => {
+        setAlertStatus((prev) => (prev === "saved" ? "idle" : prev));
+      }, 1200);
+    } catch (error) {
+      setAlertStatus("error");
+      setAlertMessage(extractApiErrorMessage(error) ?? "Unable to save anomaly alert settings right now.");
+    }
+  };
+
   const hasTimezoneChanges = timezoneDraft !== timezone;
   const canImportHistoricalData = billingPlan === "standard";
   const importStatusClassName = importStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
+  const alertStatusClassName = alertStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
 
   const billingDescription = (() => {
     if (billingPlan === "standard") {
@@ -4830,6 +4917,7 @@ const Settings: React.FC = () => {
               {[
                 ["#general", "General"],
                 ["#targets", "Performance targets"],
+                ["#alerts", "Anomaly alerts"],
                 ["#shields", "Shields"],
                 ["#billing", "Plan & billing"],
                 ["#imports", "Imports & exports"],
@@ -5113,6 +5201,152 @@ const Settings: React.FC = () => {
                     No targets configured yet for this site.
                   </div>
                 )}
+              </div>
+            </section>
+
+            <section id="alerts" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                    Anomaly alerts
+                  </div>
+                  <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                    Notify your team when Valid flags an unusual recent pattern in forecasted metrics.
+                  </div>
+                </div>
+                {alertStatus === "loading" ? (
+                  <span className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Loading
+                  </span>
+                ) : alertSettings?.updated_at ? (
+                  <span className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Updated {formatDateTime(alertSettings.updated_at)}
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="mt-4 space-y-4">
+                <label className="flex items-start gap-3 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={anomalyAlertsEnabled}
+                    onChange={(event) => setAnomalyAlertsEnabled(event.target.checked)}
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                      Enable anomaly alerts
+                    </span>
+                    <span className="mt-1 block text-[11px] text-gray-500" style={fontBody}>
+                      Alerts are sent after forecast training when the latest data is unusually different from the site's recent pattern.
+                    </span>
+                  </span>
+                </label>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <label className="flex items-center gap-2 text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                      <input
+                        type="checkbox"
+                        checked={slackAlertsEnabled}
+                        onChange={(event) => setSlackAlertsEnabled(event.target.checked)}
+                      />
+                      Slack
+                    </label>
+                    <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
+                      Paste a Slack incoming webhook URL. Saved webhooks are hidden after save.
+                    </div>
+                    <input
+                      type="password"
+                      className="mt-3 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                      style={fontBody}
+                      value={slackWebhookUrl}
+                      onChange={(event) => {
+                        setSlackWebhookUrl(event.target.value);
+                        setClearSlackWebhook(false);
+                      }}
+                      placeholder={slackWebhookUrlSet && !clearSlackWebhook ? "Webhook saved. Paste a new URL to replace it." : "https://hooks.slack.com/services/..."}
+                    />
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {slackWebhookUrlSet && !clearSlackWebhook ? (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-emerald-700" style={fontBody}>
+                          Webhook saved
+                        </span>
+                      ) : null}
+                      {clearSlackWebhook ? (
+                        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-700" style={fontBody}>
+                          Webhook will be removed
+                        </span>
+                      ) : null}
+                      {slackWebhookUrlSet ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setClearSlackWebhook(true);
+                            setSlackAlertsEnabled(false);
+                            setSlackWebhookUrl("");
+                          }}
+                          className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-500 hover:text-[#8B2635]"
+                          style={fontBody}
+                        >
+                          Remove webhook
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <label className="flex items-center gap-2 text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                      <input
+                        type="checkbox"
+                        checked={emailAlertsEnabled}
+                        onChange={(event) => setEmailAlertsEnabled(event.target.checked)}
+                      />
+                      Email
+                    </label>
+                    <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
+                      Enter one recipient per line or separate recipients with commas.
+                    </div>
+                    <textarea
+                      className="mt-3 min-h-[90px] w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                      style={fontBody}
+                      value={emailRecipientsDraft}
+                      onChange={(event) => setEmailRecipientsDraft(event.target.value)}
+                      placeholder="ops@example.com"
+                    />
+                    <div className="mt-2 text-[11px] text-gray-500" style={fontBody}>
+                      {alertSettings?.email_delivery_configured
+                        ? "Email delivery is configured for this environment."
+                        : "Email recipients can be saved now. Outbound email sends after SMTP is configured."}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void saveAlertSettings()}
+                    disabled={alertStatus === "loading" || alertStatus === "saving"}
+                    className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                    style={fontBody}
+                  >
+                    {alertStatus === "saving" ? "Saving..." : "Save alerts"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refreshAlertSettings()}
+                    disabled={alertStatus === "loading" || alertStatus === "saving"}
+                    className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    Reset
+                  </button>
+                </div>
+                {alertMessage ? (
+                  <div className={`text-[11px] ${alertStatusClassName}`} style={fontBody}>
+                    {alertMessage}
+                  </div>
+                ) : null}
               </div>
             </section>
 

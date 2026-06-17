@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from functools import lru_cache
+from urllib.parse import urlsplit
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,6 +25,40 @@ def _require_stripe_settings() -> None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Stripe is not configured")
     if not settings.STRIPE_WEBHOOK_SECRET:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Stripe webhook secret missing")
+
+
+def _origin_of(url: str) -> str | None:
+    parts = urlsplit(url)
+    if parts.scheme in {"http", "https"} and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+    return None
+
+
+@lru_cache(1)
+def _allowed_redirect_origins() -> frozenset[str]:
+    """Origins a client may redirect to after checkout.
+
+    Derived from the configured Stripe redirect URLs plus the dashboard/marketing
+    CORS origins, so a caller can't smuggle an attacker-controlled URL into a
+    payment flow served from our domain.
+    """
+    candidates = (
+        settings.STRIPE_CHECKOUT_SUCCESS_URL,
+        settings.STRIPE_CHECKOUT_CANCEL_URL,
+        settings.STRIPE_SIGNUP_SUCCESS_URL,
+        settings.STRIPE_SIGNUP_CANCEL_URL,
+        *settings.cors_origins,
+    )
+    return frozenset(origin for url in candidates if (origin := _origin_of(url)))
+
+
+def _safe_redirect_url(candidate: str | None, default: str) -> str:
+    if not candidate:
+        return default
+    origin = _origin_of(candidate)
+    if origin is None or origin not in _allowed_redirect_origins():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="redirect URL is not allowed")
+    return candidate
 
 
 def _price_id_for_plan(plan: str) -> str:
@@ -117,10 +153,10 @@ async def create_checkout_session(
     _require_stripe_settings()
     stripe.api_key = settings.STRIPE_SECRET_KEY
     price_id = _price_id_for_plan(payload.plan)
-    base_success_url = payload.success_url or settings.STRIPE_CHECKOUT_SUCCESS_URL
+    base_success_url = _safe_redirect_url(payload.success_url, settings.STRIPE_CHECKOUT_SUCCESS_URL)
     success_sep = "&" if "?" in base_success_url else "?"
     success_url = f"{base_success_url}{success_sep}session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = payload.cancel_url or settings.STRIPE_CHECKOUT_CANCEL_URL
+    cancel_url = _safe_redirect_url(payload.cancel_url, settings.STRIPE_CHECKOUT_CANCEL_URL)
 
     # Ensure the site has a baseline plan row before Stripe events arrive.
     await _upsert_site_plan(session, site_id=payload.site_id, plan="free")

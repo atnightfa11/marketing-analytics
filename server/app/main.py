@@ -34,6 +34,7 @@ from .routers import (
     public_signup,
     site_settings,
     site_access,
+    site_alerts,
     site_health,
     site_shields,
     sdk_bootstrap,
@@ -252,6 +253,7 @@ app.include_router(stripe_billing.router, prefix="/api")
 app.include_router(public_signup.router, prefix="/api")
 app.include_router(site_settings.router, prefix="/api")
 app.include_router(site_access.router, prefix="/api")
+app.include_router(site_alerts.router, prefix="/api")
 app.include_router(site_health.router, prefix="/api")
 app.include_router(site_shields.router, prefix="/api")
 app.include_router(sdk_bootstrap.router, prefix="/api")

@@ -384,6 +384,26 @@ class AlertWebhookPayload(BaseModel):
     metadata: dict[str, Any]
 
 
+class SiteAlertSettingsUpdateRequest(BaseModel):
+    site_id: str
+    anomaly_alerts_enabled: bool = False
+    slack_enabled: bool = False
+    slack_webhook_url: str | None = Field(default=None, max_length=2048)
+    email_enabled: bool = False
+    email_recipients: list[str] = Field(default_factory=list)
+
+
+class SiteAlertSettingsResponse(BaseModel):
+    site_id: str
+    anomaly_alerts_enabled: bool
+    slack_enabled: bool
+    slack_webhook_url_set: bool
+    email_enabled: bool
+    email_recipients: list[str] = Field(default_factory=list)
+    email_delivery_configured: bool
+    updated_at: dt.datetime | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     checks: dict[str, bool] = Field(default_factory=dict)

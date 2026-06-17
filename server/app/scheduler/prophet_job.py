@@ -14,6 +14,7 @@ from prophet.diagnostics import cross_validation
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..alert_delivery import notify_anomaly_if_needed
 from ..config import get_settings
 from ..models import DpWindow, Forecast, ModelStore
 from .ewma import ewma
@@ -439,6 +440,8 @@ async def refresh_site_metric_forecast(
     if forecasts is None:
         await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
         await session.commit()
+    elif forecasts:
+        await notify_anomaly_if_needed(session, site_id=site_id, metric=metric, forecast=forecasts[0])
     return forecasts
 
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import datetime as dt
+from collections import defaultdict
+from typing import DefaultDict
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +14,23 @@ from ..schemas import AuthLoginRequest, AuthLoginResponse, AuthMeResponse, AuthS
 
 router = APIRouter(tags=["auth"])
 
+login_rate_limiter: DefaultDict[str, list[float]] = defaultdict(list)
+
+
+def _apply_login_rate_limit(request: Request) -> None:
+    """Throttle login attempts per client IP to blunt credential-stuffing/brute force."""
+    limit = settings.LOGIN_RATE_LIMIT_PER_MINUTE
+    if limit <= 0:
+        return
+    ip = request.client.host if request.client else "unknown"
+    now = dt.datetime.now(dt.timezone.utc).timestamp()
+    window_start = now - 60
+    recent = [ts for ts in login_rate_limiter[ip] if ts >= window_start]
+    recent.append(now)
+    login_rate_limiter[ip] = recent
+    if len(recent) > limit:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many login attempts")
+
 
 @router.get("/auth/status", response_model=AuthStatusResponse)
 async def auth_status() -> AuthStatusResponse:
@@ -17,9 +38,14 @@ async def auth_status() -> AuthStatusResponse:
 
 
 @router.post("/auth/login", response_model=AuthLoginResponse)
-async def auth_login(payload: AuthLoginRequest, session: AsyncSession = Depends(get_session)) -> AuthLoginResponse:
+async def auth_login(
+    payload: AuthLoginRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> AuthLoginResponse:
     if not settings.DASHBOARD_AUTH_ENABLED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dashboard auth is disabled")
+    _apply_login_rate_limit(request)
     username = payload.username.strip().lower()
     if not username:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
