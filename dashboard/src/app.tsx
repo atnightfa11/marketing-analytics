@@ -1426,9 +1426,9 @@ const Overview: React.FC = () => {
   const [dashboardNotes, setDashboardNotes] = useState<DashboardNote[]>([]);
   const [noteDate, setNoteDate] = useState<string>("");
   const [noteBody, setNoteBody] = useState<string>("");
-  const [noteMetric, setNoteMetric] = useState<string>("period");
   const [noteStatus, setNoteStatus] = useState<string | null>(null);
   const [isSavingNote, setIsSavingNote] = useState(false);
+  const [isNoteComposerOpen, setIsNoteComposerOpen] = useState(false);
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
   const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>({
     sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
@@ -3129,14 +3129,15 @@ const Overview: React.FC = () => {
         {
           day: noteDate,
           body,
-          metric: noteMetric === "period" ? null : noteMetric,
+          metric: null,
         },
         token ?? undefined,
         siteId
       );
       setDashboardNotes((prev) => [created, ...prev].sort((a, b) => b.day.localeCompare(a.day)));
       setNoteBody("");
-      setNoteStatus("Note saved");
+      setIsNoteComposerOpen(false);
+      setNoteStatus("Saved");
     } catch (error) {
       setNoteStatus(extractApiErrorMessage(error) ?? "Unable to save note.");
       console.error(error);
@@ -3772,16 +3773,9 @@ const Overview: React.FC = () => {
                     <ReferenceLine
                       key={`note-${day}`}
                       x={day}
-                      stroke="#9CA3AF"
-                      strokeDasharray="2 5"
-                      strokeOpacity={0.75}
-                      label={{
-                        value: "Note",
-                        position: "insideTop",
-                        fill: "#6B7280",
-                        fontSize: 10,
-                        fontFamily: "var(--font-sans)",
-                      }}
+                      stroke="#CBD5E1"
+                      strokeDasharray="2 6"
+                      strokeOpacity={0.7}
                     />
                   ))}
                   {hasForecastBand && (
@@ -3950,6 +3944,95 @@ const Overview: React.FC = () => {
               </span>
             )}
           </div>
+          {!showSeededBreakdowns && (
+            <div className="mt-3 border-t border-[var(--color-border-subtle)] pt-3">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#6B7280]" style={fontBody}>
+                <span className="font-semibold uppercase tracking-[0.18em] text-[#7B8190]">Notes</span>
+                {dashboardNotes.length === 0 ? (
+                  <span className="text-[#9CA3AF]">None for this range</span>
+                ) : (
+                  dashboardNotes.map((note) => (
+                    <span
+                      key={note.id}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#DDE4EC] bg-[#FBFCFE] px-2.5 py-1 text-[#4B5563]"
+                    >
+                      <span className="shrink-0 font-semibold text-[#6B7280]">{formatShortDate(note.day)}</span>
+                      {note.metric && <span className="shrink-0 text-[#9CA3AF]">{formatNoteMetric(note.metric)}</span>}
+                      <span className="max-w-[280px] truncate">{note.body}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteNote(note)}
+                        className="-mr-1 rounded-full p-0.5 text-[#9CA3AF] transition-colors hover:bg-[#EEF2F7] hover:text-[#8B2635]"
+                        aria-label={`Delete note from ${note.day}`}
+                      >
+                        <CloseIcon />
+                      </button>
+                    </span>
+                  ))
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNoteComposerOpen((open) => !open);
+                    setNoteStatus(null);
+                  }}
+                  className="inline-flex h-6 items-center rounded-full border border-transparent px-2 text-[11px] font-semibold text-[#4F46E5] transition-colors hover:bg-[#F1F3FF]"
+                  aria-expanded={isNoteComposerOpen}
+                  style={fontBody}
+                >
+                  + Add note
+                </button>
+                {noteStatus && <span className="text-[#7B8190]">{noteStatus}</span>}
+              </div>
+              {isNoteComposerOpen && (
+                <div className="mt-2 flex flex-col gap-2 rounded-md border border-[#E5EAF1] bg-[#FBFCFE] px-3 py-2 sm:flex-row sm:items-center">
+                  <input
+                    type="date"
+                    value={noteDate}
+                    min={primaryRangeBounds?.start}
+                    max={primaryRangeBounds?.end}
+                    onChange={(event) => setNoteDate(event.target.value)}
+                    className={`${dashboardControlClass} sm:w-[150px]`}
+                    aria-label="Note date"
+                    style={fontBody}
+                  />
+                  <input
+                    type="text"
+                    value={noteBody}
+                    onChange={(event) => setNoteBody(event.target.value)}
+                    maxLength={1200}
+                    placeholder="Add context for this date"
+                    className={`${dashboardControlClass} flex-1`}
+                    aria-label="Note"
+                    style={fontBody}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCreateNote}
+                      disabled={isSavingNote || !noteBody.trim() || !noteDate}
+                      className="inline-flex h-8 items-center rounded-md bg-[#4F46E5] px-3 text-[11px] font-semibold text-white transition-colors hover:bg-[#4338CA] disabled:cursor-not-allowed disabled:opacity-50"
+                      style={fontBody}
+                    >
+                      {isSavingNote ? "Saving" : "Save"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsNoteComposerOpen(false);
+                        setNoteBody("");
+                        setNoteStatus(null);
+                      }}
+                      className="inline-flex h-8 items-center rounded-md px-2 text-[11px] font-semibold text-[#6B7280] transition-colors hover:bg-[#EEF2F7] hover:text-[#374151]"
+                      style={fontBody}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <div className="mt-4 border-t border-[var(--color-border-subtle)] pt-4">
             <div className="grid gap-3 md:grid-cols-3">
               <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
@@ -4012,109 +4095,6 @@ const Overview: React.FC = () => {
             </div>
           </div>
         </section>
-
-        {!showSeededBreakdowns && (
-          <section>
-            <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-              Notes
-            </div>
-            <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-              <div className="grid gap-3 lg:grid-cols-[160px_180px_minmax(0,1fr)_auto]">
-                <label className="block">
-                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
-                    Date
-                  </span>
-                  <input
-                    type="date"
-                    value={noteDate}
-                    min={primaryRangeBounds?.start}
-                    max={primaryRangeBounds?.end}
-                    onChange={(event) => setNoteDate(event.target.value)}
-                    className={`${dashboardControlClass} mt-1 w-full`}
-                    style={fontBody}
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
-                    Applies to
-                  </span>
-                  <select
-                    value={noteMetric}
-                    onChange={(event) => setNoteMetric(event.target.value)}
-                    className={`${dashboardControlClass} mt-1 w-full`}
-                    style={fontBody}
-                  >
-                    <option value="period">Period</option>
-                    {aggregateMetricKeys.map((metric) => (
-                      <option key={metric} value={metric}>
-                        {metricLabels[metric] ?? metric}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
-                    Note
-                  </span>
-                  <textarea
-                    value={noteBody}
-                    onChange={(event) => setNoteBody(event.target.value)}
-                    maxLength={1200}
-                    rows={2}
-                    placeholder="Rain drove lake-level checks, campaign launch, outage, press mention..."
-                    className="mt-1 block min-h-[40px] w-full rounded-md border border-[#DDE4EC] bg-white px-3 py-2 text-xs text-[#424A57] shadow-sm outline-none transition-colors placeholder:text-[#9CA3AF] hover:border-[#C7D0DC] focus:border-[#5b55ff]"
-                    style={fontBody}
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={handleCreateNote}
-                  disabled={isSavingNote || !noteBody.trim() || !noteDate}
-                  className="self-end rounded-md border border-[#6B63FF] bg-[#6B63FF] px-3 py-2 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-[#554DF2] disabled:cursor-not-allowed disabled:opacity-50"
-                  style={fontBody}
-                >
-                  {isSavingNote ? "Saving" : "Add note"}
-                </button>
-              </div>
-              {noteStatus && (
-                <div className="mt-3 text-[12px] text-[#6B7280]" style={fontBody}>
-                  {noteStatus}
-                </div>
-              )}
-              <div className="mt-4 space-y-3">
-                {dashboardNotes.length === 0 ? (
-                  <div className="text-[12px] text-[#7B8190]" style={fontBody}>
-                    No notes for this date range.
-                  </div>
-                ) : (
-                  dashboardNotes.map((note) => (
-                    <div key={note.id} className="flex gap-3 border-l-2 border-[#9CA3AF] pl-3">
-                      <div className="min-w-[92px] text-[11px] font-semibold text-[#6B7280]" style={fontBody}>
-                        {formatShortDate(note.day)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#7B8190]" style={fontBody}>
-                          {formatNoteMetric(note.metric)}
-                        </div>
-                        <div className="mt-1 text-[13px] leading-relaxed text-[#374151]" style={fontBody}>
-                          {note.body}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteNote(note)}
-                        className="self-start p-1 text-[#9CA3AF] transition-colors hover:text-[#8B2635]"
-                        aria-label={`Delete note from ${note.day}`}
-                      >
-                        <CloseIcon />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </section>
-        )}
 
         <section>
           <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
