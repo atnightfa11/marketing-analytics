@@ -340,6 +340,23 @@ class DashboardSiteAccess(Base):
     )
 
 
+class SiteIpBlock(Base):
+    __tablename__ = "site_ip_blocks"
+    __table_args__ = (
+        UniqueConstraint("site_id", "cidr", name="uq_site_ip_blocks_site_cidr"),
+        Index("ix_site_ip_blocks_site", "site_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    cidr: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class DashboardNote(Base):
     __tablename__ = "dashboard_notes"
     __table_args__ = (

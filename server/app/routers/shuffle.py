@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import TokenClaims, get_settings
 from ..hostnames import hostname_from_request_headers
 from ..maintenance import maybe_purge_expired_upload_tokens
-from ..models import LdpReport, RawReport, SitePlan, TokenNonce, UploadToken, get_session
+from ..models import LdpReport, RawReport, SiteIpBlock, SitePlan, TokenNonce, UploadToken, get_session
 from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import CollectRequest, ShuffleRequest
 
@@ -116,6 +116,27 @@ async def resolve_plan(site_id: str, claims_plan: str, session: AsyncSession) ->
     if db_plan == "pro" and not settings.ENABLE_PRO_INGEST:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pro tier is not enabled")
     return db_plan
+
+
+async def _client_ip_is_blocked(site_id: str, client_ip: str, session: AsyncSession) -> bool:
+    parsed_ip = _parse_ip_candidate(client_ip)
+    if not parsed_ip:
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(parsed_ip)
+    except ValueError:
+        return False
+
+    rows = (
+        await session.execute(select(SiteIpBlock.cidr).where(SiteIpBlock.site_id == site_id))
+    ).scalars().all()
+    for raw_cidr in rows:
+        try:
+            if ip_obj in ipaddress.ip_network(raw_cidr, strict=False):
+                return True
+        except ValueError:
+            logger.warning("Invalid stored IP block skipped", extra={"site_id": site_id, "cidr": raw_cidr})
+    return False
 
 
 def _rate_limit_bucket_for_plan(plan: str) -> int:
@@ -506,6 +527,9 @@ async def ingest_reports(
     user_agent = request.headers.get("User-Agent", "")
     if _is_likely_bot_request(request, user_agent):
         counters["events_dropped_bot_total"].labels(site_id=collect.site_id).inc()
+        return
+    if await _client_ip_is_blocked(collect.site_id, resolved_client_ip, session):
+        counters["events_dropped_ip_block_total"].labels(site_id=collect.site_id).inc()
         return
     request_hostname = hostname_from_request_headers(
         request.headers.get("Origin"),

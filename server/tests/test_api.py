@@ -27,7 +27,7 @@ from sqlalchemy import select  # noqa: E402
 
 from argon2 import PasswordHasher  # noqa: E402
 
-from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteApiKey, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
@@ -1677,6 +1677,159 @@ async def test_site_access_membership_grants_dashboard_access(client):
             dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
             dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
         ) = original
+
+
+@pytest.mark.asyncio
+async def test_site_ip_blocks_can_be_managed_from_settings(client):
+    site_id = "site-ip-block-settings"
+    password_hasher = PasswordHasher()
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username="ip-owner",
+                email="ip-owner@example.com",
+                password_hash=password_hasher.hash("owner-pass"),
+            )
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username="ip-owner",
+                site_name="IP Block Site",
+                allowed_origin="https://ip-block.example.com",
+                timezone="UTC",
+            )
+        )
+        await session.commit()
+
+    original = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-ip-block-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES = False
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+    try:
+        login = client.post("/api/auth/login", json={"username": "ip-owner", "password": "owner-pass"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        empty = client.get("/api/site-shields/ip-blocks", params={"site_id": site_id}, headers=headers)
+        assert empty.status_code == 200
+        assert empty.json()["blocks"] == []
+
+        invalid = client.post(
+            "/api/site-shields/ip-blocks",
+            json={"site_id": site_id, "cidr": "not an ip"},
+            headers=headers,
+        )
+        assert invalid.status_code == 400
+
+        created = client.post(
+            "/api/site-shields/ip-blocks",
+            json={"site_id": site_id, "cidr": "203.0.113.10", "label": "Office"},
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        blocks = created.json()["blocks"]
+        assert len(blocks) == 1
+        assert blocks[0]["cidr"] == "203.0.113.10/32"
+        assert blocks[0]["label"] == "Office"
+
+        duplicate = client.post(
+            "/api/site-shields/ip-blocks",
+            json={"site_id": site_id, "cidr": "203.0.113.10/32"},
+            headers=headers,
+        )
+        assert duplicate.status_code == 409
+
+        deleted = client.delete(
+            f"/api/site-shields/ip-blocks/{blocks[0]['id']}",
+            params={"site_id": site_id},
+            headers=headers,
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["blocks"] == []
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+            dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_site_ip_block_drops_matching_ingest(client):
+    site_id = "site-ip-block-ingest"
+    await _set_site_plan(site_id, "free")
+    async with async_session_factory() as session:
+        session.add(SiteIpBlock(site_id=site_id, cidr="203.0.113.0/24", label="Office"))
+        await session.commit()
+
+    token_resp = client.post(
+        "/api/upload-token",
+        json={
+            "site_id": site_id,
+            "allowed_origin": "https://example.com",
+            "epsilon_budget": 1.0,
+            "sampling_rate": 1.0,
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert token_resp.status_code == 200
+    token = token_resp.json()["token"]
+    now = datetime.now(timezone.utc).isoformat()
+
+    accepted = client.post(
+        "/api/shuffle",
+        json={
+            "token": token,
+            "nonce": "nonce-ip-blocked",
+            "batch": [
+                {
+                    "site_id": site_id,
+                    "kind": "pageviews",
+                    "payload": {"url": "/blocked"},
+                    "epsilon_used": 0.5,
+                    "sampling_rate": 1.0,
+                    "client_timestamp": now,
+                }
+            ],
+        },
+        headers={
+            "Origin": "https://example.com",
+            "X-Bypass-Delay": "true",
+            "X-Forwarded-For": "203.0.113.25",
+            "User-Agent": "Mozilla/5.0",
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    raw_count, ldp_count = await _count_reports(site_id)
+    assert raw_count == 0
+    assert ldp_count == 0
 
 
 @pytest.mark.asyncio

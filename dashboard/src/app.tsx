@@ -28,19 +28,23 @@ import {
   fetchDashboardNotes,
   fetchForecast,
   fetchImportHistory,
+  fetchSiteIpBlocks,
   fetchSiteAccess,
   fetchSiteHealth,
   fetchSiteSettings,
   ForecastEntry,
   ForecastResponse,
+  createSiteIpBlock,
   grantSiteAccess,
   HistoricalImportBatch,
   importHistoricalCsv,
+  deleteSiteIpBlock,
   removeSiteAccess,
   resolveActiveSiteId,
   rollbackImportBatch,
   SiteAccessMember,
   SiteHealthResponse,
+  SiteIpBlock,
   TimePartingDayType,
   updateSiteTimezone,
 } from "./api";
@@ -4443,7 +4447,7 @@ const Settings: React.FC = () => {
   const [importBatches, setImportBatches] = useState<HistoricalImportBatch[]>([]);
   const [importHistoryStatus, setImportHistoryStatus] = useState<"idle" | "loading" | "error">("idle");
   const [importHistoryMessage, setImportHistoryMessage] = useState<string | null>(null);
-  const [rollbackBatchId, setRollbackBatchId] = useState<number | null>(null);
+  const [deletingImportBatchId, setDeletingImportBatchId] = useState<number | null>(null);
   const [health, setHealth] = useState<SiteHealthResponse | null>(null);
   const [healthStatus, setHealthStatus] = useState<"idle" | "loading" | "error">("idle");
   const [healthMessage, setHealthMessage] = useState<string | null>(null);
@@ -4451,6 +4455,12 @@ const Settings: React.FC = () => {
   const [accessUsername, setAccessUsername] = useState<string>("");
   const [accessStatus, setAccessStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
   const [accessMessage, setAccessMessage] = useState<string | null>(null);
+  const [ipBlocks, setIpBlocks] = useState<SiteIpBlock[]>([]);
+  const [ipBlockCidr, setIpBlockCidr] = useState<string>("");
+  const [ipBlockLabel, setIpBlockLabel] = useState<string>("");
+  const [ipBlockStatus, setIpBlockStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
+  const [ipBlockMessage, setIpBlockMessage] = useState<string | null>(null);
+  const [deletingIpBlockId, setDeletingIpBlockId] = useState<number | null>(null);
   const [goals, setGoals] = useState<SiteGoalsMap>({});
   const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
@@ -4571,6 +4581,25 @@ const Settings: React.FC = () => {
     void refreshSiteAccess();
   }, [refreshSiteAccess]);
 
+  const refreshIpBlocks = useCallback(async () => {
+    if (!canQuery) return;
+    setIpBlockStatus("loading");
+    setIpBlockMessage(null);
+    try {
+      const result = await fetchSiteIpBlocks(token ?? undefined, siteId);
+      setIpBlocks(result.blocks ?? []);
+      setIpBlockStatus("idle");
+    } catch (error) {
+      setIpBlocks([]);
+      setIpBlockStatus("error");
+      setIpBlockMessage(extractApiErrorMessage(error) ?? "Unable to load IP block list right now.");
+    }
+  }, [canQuery, siteId, token]);
+
+  useEffect(() => {
+    void refreshIpBlocks();
+  }, [refreshIpBlocks]);
+
   const existingGoal = goals[goalMetric];
   useEffect(() => {
     setGoalTargetInput(existingGoal ? String(existingGoal.target) : "");
@@ -4655,13 +4684,13 @@ const Settings: React.FC = () => {
     }
   };
 
-  const rollbackImport = async (batchId: number) => {
-    setRollbackBatchId(batchId);
+  const deleteImport = async (batchId: number) => {
+    setDeletingImportBatchId(batchId);
     setImportHistoryMessage(null);
     try {
       const result = await rollbackImportBatch(batchId, token ?? undefined, siteId);
       setImportMessage(
-        `Rolled back batch ${result.batch_id}. Removed ${formatNumber(result.deleted_rows)} rows and rebuilt ${formatNumber(
+        `Deleted import ${result.batch_id}. Removed ${formatNumber(result.deleted_rows)} rows and rebuilt ${formatNumber(
           result.reduced_days
         )} days.`
       );
@@ -4669,9 +4698,9 @@ const Settings: React.FC = () => {
       await refreshImportHistory();
     } catch (error) {
       setImportStatus("error");
-      setImportMessage(extractApiErrorMessage(error) ?? "Unable to roll back that import right now.");
+      setImportMessage(extractApiErrorMessage(error) ?? "Unable to delete that import right now.");
     } finally {
-      setRollbackBatchId(null);
+      setDeletingImportBatchId(null);
     }
   };
 
@@ -4708,6 +4737,45 @@ const Settings: React.FC = () => {
     } catch (error) {
       setAccessStatus("error");
       setAccessMessage(extractApiErrorMessage(error) ?? "Unable to remove that user right now.");
+    }
+  };
+
+  const addIpBlock = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const cidr = ipBlockCidr.trim();
+    if (!cidr) {
+      setIpBlockStatus("error");
+      setIpBlockMessage("Enter an IP address or CIDR range to block.");
+      return;
+    }
+    setIpBlockStatus("saving");
+    setIpBlockMessage(null);
+    try {
+      const result = await createSiteIpBlock(cidr, ipBlockLabel.trim() || undefined, token ?? undefined, siteId);
+      setIpBlocks(result.blocks ?? []);
+      setIpBlockCidr("");
+      setIpBlockLabel("");
+      setIpBlockStatus("idle");
+      setIpBlockMessage("IP block added. Matching future traffic will be ignored.");
+    } catch (error) {
+      setIpBlockStatus("error");
+      setIpBlockMessage(extractApiErrorMessage(error) ?? "Unable to add that IP block right now.");
+    }
+  };
+
+  const removeIpBlock = async (blockId: number) => {
+    setDeletingIpBlockId(blockId);
+    setIpBlockMessage(null);
+    try {
+      const result = await deleteSiteIpBlock(blockId, token ?? undefined, siteId);
+      setIpBlocks(result.blocks ?? []);
+      setIpBlockStatus("idle");
+      setIpBlockMessage("IP block removed.");
+    } catch (error) {
+      setIpBlockStatus("error");
+      setIpBlockMessage(extractApiErrorMessage(error) ?? "Unable to remove that IP block right now.");
+    } finally {
+      setDeletingIpBlockId(null);
     }
   };
 
@@ -4796,381 +4864,409 @@ const Settings: React.FC = () => {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl space-y-4 px-6 pb-10 pt-6">
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                Site Settings
-              </div>
-              <div className="mt-1 text-[11px] uppercase tracking-[0.18em] text-gray-500" style={fontMeta}>
-                Site: {siteId}
-              </div>
-            </div>
-            <a
-              href={`/site/${encodeURIComponent(siteId)}`}
-              className="border border-gray-300 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-gray-600 hover:border-gray-400 hover:text-[#1F2937]"
-              style={fontBody}
-            >
-              Back to dashboard
-            </a>
-          </div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                Reporting Timezone
-              </label>
-              <select
-                aria-label="Reporting timezone"
-                className="mt-2 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
-                style={fontBody}
-                value={timezoneDraft}
-                onChange={(event) => setTimezoneDraft(event.target.value)}
-              >
-                {timezoneOptions.map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz}
-                  </option>
-                ))}
-              </select>
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => void saveTimezone()}
-                  disabled={!hasTimezoneChanges || timezoneStatus === "saving" || timezoneStatus === "loading"}
-                  className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
-                  style={fontBody}
-                >
-                  Save Timezone
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTimezoneDraft(timezone)}
-                  disabled={!hasTimezoneChanges || timezoneStatus === "saving"}
-                  className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
-                  style={fontBody}
-                >
-                  Reset
-                </button>
-              </div>
-              <div className={`mt-2 text-[11px] ${timezoneStatusClassName}`} style={fontBody}>
-                {timezoneStatusText}
-              </div>
-            </div>
-            <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                Subscription
-              </div>
-              <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
-                Current plan: <span className="font-semibold capitalize">{billingPlan}</span>
-              </div>
-              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                {billingStatusText}
-              </div>
-              <div className="mt-3">
-                <button
-                  type="button"
-                  onClick={() => void beginStandardCheckout()}
-                  disabled={billingActionDisabled}
-                  className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
-                  style={fontBody}
-                >
-                  {billingActionLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
+      <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
+        <a href={`/site/${encodeURIComponent(siteId)}`} className="text-sm font-semibold text-[#4f46e5]" style={fontBody}>
+          Back to stats
+        </a>
+        <div className="mt-2 border-b border-gray-200 pb-5">
+          <h1 className="text-2xl font-semibold text-[#111827]" style={fontHeading}>
+            Settings for {siteId}
+          </h1>
+        </div>
 
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                Tracking Health
-              </div>
-              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                Recent tracking, reduction, and forecast signals for this site.
-              </div>
-            </div>
-            {health ? (
-              <span
-                className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
-                  health.overall_status
-                )}`}
-                style={fontBody}
-              >
-                {health.overall_status}
-              </span>
-            ) : null}
-          </div>
-          {healthStatus === "loading" ? (
-            <div className="mt-4 text-[12px] text-gray-500" style={fontBody}>
-              Loading tracking health...
-            </div>
-          ) : healthStatus === "error" ? (
-            <div className="mt-4 text-[12px] text-[#8B2635]" style={fontBody}>
-              {healthMessage ?? "Unable to load tracking health."}
-            </div>
-          ) : health ? (
-            <div className="mt-4 grid gap-3 lg:grid-cols-[1.4fr_1fr]">
-              <div className="grid gap-2">
-                {health.checks.map((check) => (
-                  <div key={check.key} className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                        {check.label}
-                      </div>
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
-                          check.status
-                        )}`}
-                        style={fontBody}
-                      >
-                        {check.status}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-[11px] text-gray-600" style={fontBody}>
-                      {check.detail}
-                    </div>
-                    {check.action ? (
-                      <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                        {check.action}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-              <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                  Last {health.lookback_minutes} minutes
-                </div>
-                <div className="mt-2 text-2xl metric-number text-[#1F2937]" style={fontMetric}>
-                  {formatNumber(health.recent_reports)}
-                </div>
-                <div className="text-[11px] text-gray-500" style={fontBody}>
-                  reports received
-                </div>
-                <div className="mt-3 space-y-1 text-[11px] text-gray-600" style={fontBody}>
-                  <div>Last report: {formatDateTime(health.last_report_at)}</div>
-                  <div>Active site keys: {formatNumber(health.active_site_keys)}</div>
-                  <div>Latest reducer day: {health.latest_reducer_day ?? "—"}</div>
-                  <div>Latest aggregate: {formatDateTime(health.latest_standard_published_at)}</div>
-                </div>
-                {Object.keys(health.counts_by_kind).length > 0 ? (
-                  <div className="mt-3 flex flex-wrap gap-1">
-                    {Object.entries(health.counts_by_kind).map(([kind, count]) => (
-                      <span
-                        key={kind}
-                        className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-700"
-                        style={fontBody}
-                      >
-                        {kind}: {formatNumber(count)}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {health.detected_hostnames.length > 0 ? (
-                  <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
-                    Hostnames: {health.detected_hostnames.join(", ")}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </section>
+        <div className="mt-7 grid gap-6 lg:grid-cols-[230px_1fr]">
+          <aside className="lg:sticky lg:top-4 lg:self-start">
+            <nav className="grid gap-1 text-sm" style={fontBody}>
+              {[
+                ["#general", "General"],
+                ["#targets", "Performance targets"],
+                ["#shields", "Shields"],
+                ["#billing", "Plan & billing"],
+                ["#imports", "Imports & exports"],
+                ["#tracking-health", "Tracking health"],
+              ].map(([href, label]) => (
+                <a key={href} href={href} className="rounded px-3 py-2 text-gray-700 hover:bg-gray-100 hover:text-[#111827]">
+                  {label}
+                </a>
+              ))}
+            </nav>
+          </aside>
 
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                Historical Import
+          <div className="space-y-5">
+            <section id="general" className="scroll-mt-6 space-y-5">
+              <div className="border border-gray-200 bg-white p-5">
+                <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                  General
+                </div>
+                <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                  Core site details, installation review, and dashboard access.
+                </div>
               </div>
-              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                Import daily aggregate CSV data for forecasting and long-range trend continuity.
-              </div>
-            </div>
-            <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-              Standard only
-            </div>
-          </div>
-          {canImportHistoricalData ? (
-            <div className="mt-4 grid gap-3">
-              <div>
-                <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                  CSV File
-                </label>
+
+              <div className="border border-gray-200 bg-white p-5">
+                <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                  Site domain
+                </div>
+                <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
+                  This is the dashboard site identifier used for reporting.
+                </div>
                 <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(event) => void handleImportFileChange(event)}
-                  className="mt-1 block w-full text-sm text-[#1F2937] file:mr-3 file:border file:border-gray-300 file:bg-white file:px-3 file:py-1.5 file:text-[10px] file:font-semibold file:uppercase file:tracking-[0.14em] file:text-gray-700 hover:file:border-gray-400"
+                  className="mt-4 w-full max-w-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500"
                   style={fontBody}
+                  value={siteId}
+                  readOnly
                 />
               </div>
-              <div>
-                <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                  CSV Text
-                </label>
-                <textarea
-                  className="mt-1 min-h-[140px] w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
-                  style={fontMeta}
-                  value={importCsvText}
-                  onChange={(event) => {
-                    setImportCsvText(event.target.value);
-                    setImportStatus("idle");
-                    setImportMessage(null);
-                  }}
-                  placeholder={"day,metric,value\n2026-01-01,pageviews,1200\n2026-01-01,revenue,340.5"}
-                />
-                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                  Required columns: day, metric, value. Metrics: pageviews, uniques, sessions, conversions, revenue.
+
+              <div className="border border-gray-200 bg-white p-5">
+                <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                  Site timezone
                 </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => void submitHistoricalImport()}
-                  disabled={importStatus === "loading" || !importCsvText.trim()}
-                  className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
-                  style={fontBody}
-                >
-                  {importStatus === "loading" ? "Importing..." : "Import CSV"}
-                </button>
-                {importCsvText ? (
+                <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
+                  Update your reporting timezone.
+                </div>
+                <div className="mt-4 max-w-md">
+                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Reporting timezone
+                  </label>
+                  <select
+                    aria-label="Reporting timezone"
+                    className="mt-2 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    style={fontBody}
+                    value={timezoneDraft}
+                    onChange={(event) => setTimezoneDraft(event.target.value)}
+                  >
+                    {timezoneOptions.map((tz) => (
+                      <option key={tz} value={tz}>
+                        {tz}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => {
-                      setImportCsvText("");
-                      setImportStatus("idle");
-                      setImportMessage(null);
-                    }}
-                    className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
+                    onClick={() => void saveTimezone()}
+                    disabled={!hasTimezoneChanges || timezoneStatus === "saving" || timezoneStatus === "loading"}
+                    className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                     style={fontBody}
                   >
-                    Clear
+                    Save timezone
                   </button>
-                ) : null}
-              </div>
-              {importMessage ? (
-                <div className={`text-[11px] ${importStatusClassName}`} style={fontBody}>
-                  {importMessage}
+                  <button
+                    type="button"
+                    onClick={() => setTimezoneDraft(timezone)}
+                    disabled={!hasTimezoneChanges || timezoneStatus === "saving"}
+                    className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    Reset
+                  </button>
                 </div>
-              ) : null}
-              <div className="mt-3 border-t border-gray-100 pt-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className={`mt-2 text-[11px] ${timezoneStatusClassName}`} style={fontBody}>
+                  {timezoneStatusText}
+                </div>
+              </div>
+
+              <div className="border border-gray-200 bg-white p-5">
+                <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                  Site installation
+                </div>
+                <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
+                  Control what data is collected and verify your installation.
+                </div>
+                <a
+                  href="#tracking-health"
+                  className="mt-5 inline-flex border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
+                  style={fontBody}
+                >
+                  Review installation
+                </a>
+              </div>
+
+              <div className="border border-gray-200 bg-white p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                      Import history
+                    <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                      Site access
                     </div>
-                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                      Rollback is available only while the batch's raw import rows are still retained.
+                    <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
+                      Share this dashboard with existing Valid dashboard users.
                     </div>
                   </div>
                   <button
                     type="button"
-                    onClick={() => void refreshImportHistory()}
-                    disabled={importHistoryStatus === "loading"}
+                    onClick={() => void refreshSiteAccess()}
+                    disabled={accessStatus === "loading" || accessStatus === "saving"}
                     className="border border-gray-300 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
                     style={fontBody}
                   >
                     Refresh
                   </button>
                 </div>
-                {importHistoryStatus === "loading" ? (
-                  <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
-                    Loading import history...
+                <form className="mt-4 grid gap-2 md:grid-cols-[1fr_auto]" onSubmit={addSiteMember}>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Dashboard username
+                    </label>
+                    <input
+                      className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                      style={fontBody}
+                      value={accessUsername}
+                      onChange={(event) => setAccessUsername(event.target.value)}
+                      placeholder="username"
+                    />
                   </div>
-                ) : importHistoryStatus === "error" ? (
-                  <div className="mt-3 text-[11px] text-[#8B2635]" style={fontBody}>
-                    {importHistoryMessage ?? "Unable to load import history."}
+                  <button
+                    type="submit"
+                    disabled={accessStatus === "saving" || !accessUsername.trim()}
+                    className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                    style={fontBody}
+                  >
+                    {accessStatus === "saving" ? "Saving..." : "Add user"}
+                  </button>
+                </form>
+                {accessMessage ? (
+                  <div className={`mt-2 text-[11px] ${accessStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`} style={fontBody}>
+                    {accessMessage}
                   </div>
-                ) : importBatches.length > 0 ? (
-                  <div className="mt-3 overflow-x-auto">
-                    <table className="w-full min-w-[720px] border-collapse text-left text-[12px]" style={fontBody}>
-                      <thead className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                        <tr className="border-b border-gray-100">
-                          <th className="py-2 pr-3 font-semibold">Batch</th>
-                          <th className="py-2 pr-3 font-semibold">Dates</th>
-                          <th className="py-2 pr-3 font-semibold">Metrics</th>
-                          <th className="py-2 pr-3 font-semibold">Rows</th>
-                          <th className="py-2 pr-3 font-semibold">Status</th>
-                          <th className="py-2 pr-3 font-semibold">Created</th>
-                          <th className="py-2 pr-0 text-right font-semibold">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {importBatches.map((batch) => (
-                          <tr key={batch.id} className="border-b border-gray-100 last:border-b-0">
-                            <td className="py-2 pr-3 metric-number text-[#1F2937]" style={fontMetric}>
-                              #{batch.id}
-                            </td>
-                            <td className="py-2 pr-3 text-gray-700">
-                              {batch.start_day && batch.end_day
-                                ? `${formatShortDate(batch.start_day)} – ${formatShortDate(batch.end_day)}`
-                                : "—"}
-                            </td>
-                            <td className="py-2 pr-3 text-gray-700">{batch.metrics.join(", ") || "—"}</td>
-                            <td className="py-2 pr-3 metric-number text-gray-700" style={fontMetric}>
-                              {formatNumber(batch.imported_rows)}
-                            </td>
-                            <td className="py-2 pr-3">
-                              <span
-                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
-                                  batch.status
-                                )}`}
-                                style={fontBody}
-                              >
-                                {batch.status.replace("_", " ")}
-                              </span>
-                              {batch.error ? (
-                                <div className="mt-1 max-w-[220px] truncate text-[10px] text-[#8B2635]" style={fontBody}>
-                                  {batch.error}
-                                </div>
-                              ) : null}
-                            </td>
-                            <td className="py-2 pr-3 text-gray-600">{formatDateTime(batch.created_at)}</td>
-                            <td className="py-2 pr-0 text-right">
-                              {batch.rollback_available ? (
-                                <button
-                                  type="button"
-                                  onClick={() => void rollbackImport(batch.id)}
-                                  disabled={rollbackBatchId === batch.id}
-                                  className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
-                                  style={fontBody}
-                                >
-                                  {rollbackBatchId === batch.id ? "Rolling back..." : "Rollback"}
-                                </button>
-                              ) : (
-                                <span className="text-[10px] text-gray-400" style={fontBody}>
-                                  Unavailable
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                ) : null}
+                <div className="mt-4">
+                  {accessStatus === "loading" ? (
+                    <div className="text-[12px] text-gray-500" style={fontBody}>
+                      Loading site access...
+                    </div>
+                  ) : accessMembers.length > 0 ? (
+                    <div className="divide-y divide-gray-100 border border-[var(--color-border-subtle)] bg-[#FCFEFE]">
+                      {accessMembers.map((member) => (
+                        <div key={`${member.role}-${member.username}`} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+                          <div>
+                            <div className="text-sm text-[#1F2937]" style={fontBody}>
+                              {member.username}
+                            </div>
+                            <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                              {member.role}
+                              {member.created_at ? ` - added ${formatDateTime(member.created_at)}` : ""}
+                            </div>
+                          </div>
+                          {member.role === "member" ? (
+                            <button
+                              type="button"
+                              onClick={() => void removeSiteMember(member.username)}
+                              disabled={accessStatus === "saving"}
+                              className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                              style={fontBody}
+                            >
+                              Remove
+                            </button>
+                          ) : (
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600" style={fontBody}>
+                              Owner
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[12px] text-gray-500" style={fontBody}>
+                      No access records loaded for this site.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section id="targets" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+              <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                Performance targets
+              </div>
+              <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                Set dashboard targets for the metrics you want to pace against.
+              </div>
+              <form className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto_auto]" onSubmit={submitGoal}>
+                <div>
+                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Metric
+                  </label>
+                  <select
+                    className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    style={fontBody}
+                    value={goalMetric}
+                    onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}
+                  >
+                    {goalEligibleMetrics.map((metric) => (
+                      <option key={metric} value={metric}>
+                        {metricLabels[metric] ?? metric}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Target
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={goalMetric === "revenue" ? "1" : "0.1"}
+                    className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    style={fontBody}
+                    value={goalTargetInput}
+                    onChange={(event) => setGoalTargetInput(event.target.value)}
+                    placeholder={goalMetric === "revenue" ? "10000" : "250"}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
+                  style={fontBody}
+                >
+                  Save target
+                </button>
+                <button
+                  type="button"
+                  onClick={clearGoal}
+                  className="self-end border border-gray-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
+                  style={fontBody}
+                  disabled={!existingGoal}
+                >
+                  Remove
+                </button>
+              </form>
+              {goalStatus && (
+                <div className="mt-2 text-[12px] text-[#4B5563]" style={fontBody}>
+                  {goalStatus}
+                </div>
+              )}
+              <div className="mt-5">
+                <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                  Configured targets
+                </div>
+                {sortedGoals.length > 0 ? (
+                  <div className="mt-2 space-y-2">
+                    {sortedGoals.map((goal) => (
+                      <div
+                        key={goal.metric}
+                        className="flex items-center justify-between border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2"
+                      >
+                        <div className="text-sm text-[#1F2937]" style={fontBody}>
+                          {metricLabels[goal.metric] ?? goal.metric}
+                        </div>
+                        <div className="text-sm metric-number text-[#1F2937]" style={fontMetric}>
+                          {formatMetricValue(goal.metric, goal.target)}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : (
-                  <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
-                    No historical imports recorded yet.
+                  <div className="mt-2 text-[12px] text-[#6B7280]" style={fontBody}>
+                    No targets configured yet for this site.
                   </div>
                 )}
               </div>
-            </div>
-          ) : (
-            <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-              <div className="text-sm text-[#1F2937]" style={fontBody}>
-                {billingPlan === "free"
-                  ? "Historical imports are available on Standard."
-                  : "Historical imports are currently limited to Standard sites."}
+            </section>
+
+            <section id="shields" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+              <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                Shields
               </div>
-              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                {billingPlan === "free"
-                  ? "Upgrade to bring in prior analytics data and use it for long-range trends and forecasts."
-                  : "This import path uses Standard aggregate storage and is not available for the current plan."}
+              <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                Exclude internal or known traffic before it is included in analytics.
               </div>
-              {billingPlan === "free" ? (
+              <form className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]" onSubmit={addIpBlock}>
+                <div>
+                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    IP address or CIDR
+                  </label>
+                  <input
+                    className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    style={fontBody}
+                    value={ipBlockCidr}
+                    onChange={(event) => setIpBlockCidr(event.target.value)}
+                    placeholder="203.0.113.10 or 203.0.113.0/24"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Label
+                  </label>
+                  <input
+                    className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    style={fontBody}
+                    value={ipBlockLabel}
+                    onChange={(event) => setIpBlockLabel(event.target.value)}
+                    placeholder="Office, agency, home"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={ipBlockStatus === "saving" || !ipBlockCidr.trim()}
+                  className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                  style={fontBody}
+                >
+                  {ipBlockStatus === "saving" ? "Saving..." : "Add block"}
+                </button>
+              </form>
+              {ipBlockMessage ? (
+                <div className={`mt-2 text-[11px] ${ipBlockStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`} style={fontBody}>
+                  {ipBlockMessage}
+                </div>
+              ) : null}
+              <div className="mt-4">
+                {ipBlockStatus === "loading" ? (
+                  <div className="text-[12px] text-gray-500" style={fontBody}>
+                    Loading IP block list...
+                  </div>
+                ) : ipBlocks.length > 0 ? (
+                  <div className="divide-y divide-gray-100 border border-[var(--color-border-subtle)] bg-[#FCFEFE]">
+                    {ipBlocks.map((block) => (
+                      <div key={block.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+                        <div>
+                          <div className="text-sm text-[#1F2937]" style={fontBody}>
+                            {block.cidr}
+                          </div>
+                          <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                            {block.label || "Unlabeled"}
+                            {block.created_at ? ` - added ${formatDateTime(block.created_at)}` : ""}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void removeIpBlock(block.id)}
+                          disabled={deletingIpBlockId === block.id}
+                          className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                          style={fontBody}
+                        >
+                          {deletingIpBlockId === block.id ? "Removing..." : "Remove"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[12px] text-[#6B7280]" style={fontBody}>
+                    No IP blocks configured yet.
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section id="billing" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+              <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                Plan & billing
+              </div>
+              <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                Manage this site's current plan.
+              </div>
+              <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                  Subscription
+                </div>
+                <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
+                  Current plan: <span className="font-semibold capitalize">{billingPlan}</span>
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                  {billingStatusText}
+                </div>
                 <button
                   type="button"
                   onClick={() => void beginStandardCheckout()}
@@ -5178,191 +5274,318 @@ const Settings: React.FC = () => {
                   className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                   style={fontBody}
                 >
-                  Upgrade To Standard
+                  {billingActionLabel}
                 </button>
-              ) : null}
-            </div>
-          )}
-        </section>
+              </div>
+            </section>
 
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                Site Access
+            <section id="imports" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                    Imports & exports
+                  </div>
+                  <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                    Import historical aggregate data for long-range trends and forecasts.
+                  </div>
+                </div>
+                <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                  Standard only
+                </div>
               </div>
-              <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                Share this dashboard with existing Valid dashboard users.
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => void refreshSiteAccess()}
-              disabled={accessStatus === "loading" || accessStatus === "saving"}
-              className="border border-gray-300 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
-              style={fontBody}
-            >
-              Refresh
-            </button>
-          </div>
-          <form className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]" onSubmit={addSiteMember}>
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                Dashboard username
-              </label>
-              <input
-                className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
-                style={fontBody}
-                value={accessUsername}
-                onChange={(event) => setAccessUsername(event.target.value)}
-                placeholder="username"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={accessStatus === "saving" || !accessUsername.trim()}
-              className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
-              style={fontBody}
-            >
-              {accessStatus === "saving" ? "Saving..." : "Add user"}
-            </button>
-          </form>
-          {accessMessage ? (
-            <div className={`mt-2 text-[11px] ${accessStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`} style={fontBody}>
-              {accessMessage}
-            </div>
-          ) : null}
-          <div className="mt-4">
-            {accessStatus === "loading" ? (
-              <div className="text-[12px] text-gray-500" style={fontBody}>
-                Loading site access...
-              </div>
-            ) : accessMembers.length > 0 ? (
-              <div className="divide-y divide-gray-100 border border-[var(--color-border-subtle)] bg-[#FCFEFE]">
-                {accessMembers.map((member) => (
-                  <div key={`${member.role}-${member.username}`} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
-                    <div>
-                      <div className="text-sm text-[#1F2937]" style={fontBody}>
-                        {member.username}
-                      </div>
-                      <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
-                        {member.role}
-                        {member.created_at ? ` · added ${formatDateTime(member.created_at)}` : ""}
-                      </div>
+              {canImportHistoricalData ? (
+                <div className="mt-4 grid gap-3">
+                  <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                    Import historical data
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      CSV file
+                    </label>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(event) => void handleImportFileChange(event)}
+                      className="mt-1 block w-full text-sm text-[#1F2937] file:mr-3 file:border file:border-gray-300 file:bg-white file:px-3 file:py-1.5 file:text-[10px] file:font-semibold file:uppercase file:tracking-[0.14em] file:text-gray-700 hover:file:border-gray-400"
+                      style={fontBody}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      CSV text
+                    </label>
+                    <textarea
+                      className="mt-1 min-h-[120px] w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                      style={fontMeta}
+                      value={importCsvText}
+                      onChange={(event) => {
+                        setImportCsvText(event.target.value);
+                        setImportStatus("idle");
+                        setImportMessage(null);
+                      }}
+                      placeholder={"day,metric,value\n2026-01-01,pageviews,1200\n2026-01-01,revenue,340.5"}
+                    />
+                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                      Required columns: day, metric, value. Metrics: pageviews, uniques, sessions, conversions, revenue.
                     </div>
-                    {member.role === "member" ? (
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void submitHistoricalImport()}
+                      disabled={importStatus === "loading" || !importCsvText.trim()}
+                      className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                      style={fontBody}
+                    >
+                      {importStatus === "loading" ? "Importing..." : "Import CSV"}
+                    </button>
+                    {importCsvText ? (
                       <button
                         type="button"
-                        onClick={() => void removeSiteMember(member.username)}
-                        disabled={accessStatus === "saving"}
-                        className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                        onClick={() => {
+                          setImportCsvText("");
+                          setImportStatus("idle");
+                          setImportMessage(null);
+                        }}
+                        className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
                         style={fontBody}
                       >
-                        Remove
+                        Clear
                       </button>
+                    ) : null}
+                  </div>
+                  {importMessage ? (
+                    <div className={`text-[11px] ${importStatusClassName}`} style={fontBody}>
+                      {importMessage}
+                    </div>
+                  ) : null}
+                  <div className="mt-3 border-t border-gray-100 pt-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                          Import history
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                          Deleting an import removes only the imported rows and rebuilds the affected days.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void refreshImportHistory()}
+                        disabled={importHistoryStatus === "loading"}
+                        className="border border-gray-300 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                        style={fontBody}
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                    {importHistoryStatus === "loading" ? (
+                      <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                        Loading import history...
+                      </div>
+                    ) : importHistoryStatus === "error" ? (
+                      <div className="mt-3 text-[11px] text-[#8B2635]" style={fontBody}>
+                        {importHistoryMessage ?? "Unable to load import history."}
+                      </div>
+                    ) : importBatches.length > 0 ? (
+                      <div className="mt-3 overflow-x-auto">
+                        <table className="w-full min-w-[720px] border-collapse text-left text-[12px]" style={fontBody}>
+                          <thead className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                            <tr className="border-b border-gray-100">
+                              <th className="py-2 pr-3 font-semibold">Import</th>
+                              <th className="py-2 pr-3 font-semibold">Dates</th>
+                              <th className="py-2 pr-3 font-semibold">Metrics</th>
+                              <th className="py-2 pr-3 font-semibold">Rows</th>
+                              <th className="py-2 pr-3 font-semibold">Status</th>
+                              <th className="py-2 pr-3 font-semibold">Created</th>
+                              <th className="py-2 pr-0 text-right font-semibold">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importBatches.map((batch) => (
+                              <tr key={batch.id} className="border-b border-gray-100 last:border-b-0">
+                                <td className="py-2 pr-3 metric-number text-[#1F2937]" style={fontMetric}>
+                                  #{batch.id}
+                                </td>
+                                <td className="py-2 pr-3 text-gray-700">
+                                  {batch.start_day && batch.end_day
+                                    ? `${formatShortDate(batch.start_day)} - ${formatShortDate(batch.end_day)}`
+                                    : "-"}
+                                </td>
+                                <td className="py-2 pr-3 text-gray-700">{batch.metrics.join(", ") || "-"}</td>
+                                <td className="py-2 pr-3 metric-number text-gray-700" style={fontMetric}>
+                                  {formatNumber(batch.imported_rows)}
+                                </td>
+                                <td className="py-2 pr-3">
+                                  <span
+                                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
+                                      batch.status
+                                    )}`}
+                                    style={fontBody}
+                                  >
+                                    {batch.status.replace("_", " ")}
+                                  </span>
+                                  {batch.error ? (
+                                    <div className="mt-1 max-w-[220px] truncate text-[10px] text-[#8B2635]" style={fontBody}>
+                                      {batch.error}
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className="py-2 pr-3 text-gray-600">{formatDateTime(batch.created_at)}</td>
+                                <td className="py-2 pr-0 text-right">
+                                  {batch.rollback_available ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void deleteImport(batch.id)}
+                                      disabled={deletingImportBatchId === batch.id}
+                                      className="border border-gray-300 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                                      style={fontBody}
+                                    >
+                                      {deletingImportBatchId === batch.id ? "Deleting..." : "Delete import"}
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] text-gray-400" style={fontBody}>
+                                      Unavailable
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     ) : (
-                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600" style={fontBody}>
-                        Owner
-                      </span>
+                      <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                        No historical imports recorded yet.
+                      </div>
                     )}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-[12px] text-gray-500" style={fontBody}>
-                No access records loaded for this site.
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="border border-gray-200 bg-white p-4">
-          <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-            Metric Goals
-          </div>
-          <form className="mt-3 grid gap-3 md:grid-cols-[1fr_1fr_auto_auto]" onSubmit={submitGoal}>
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                Metric
-              </label>
-              <select
-                className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
-                style={fontBody}
-                value={goalMetric}
-                onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}
-              >
-                {goalEligibleMetrics.map((metric) => (
-                  <option key={metric} value={metric}>
-                    {metricLabels[metric] ?? metric}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                Target
-              </label>
-              <input
-                type="number"
-                min={0}
-                step={goalMetric === "revenue" ? "1" : "0.1"}
-                className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
-                style={fontBody}
-                value={goalTargetInput}
-                onChange={(event) => setGoalTargetInput(event.target.value)}
-                placeholder={goalMetric === "revenue" ? "10000" : "250"}
-              />
-            </div>
-            <button
-              type="submit"
-              className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
-              style={fontBody}
-            >
-              Save goal
-            </button>
-            <button
-              type="button"
-              onClick={clearGoal}
-              className="self-end border border-gray-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
-              style={fontBody}
-              disabled={!existingGoal}
-            >
-              Remove
-            </button>
-          </form>
-          {goalStatus && (
-            <div className="mt-2 text-[12px] text-[#4B5563]" style={fontBody}>
-              {goalStatus}
-            </div>
-          )}
-          <div className="mt-4">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-              Configured goals
-            </div>
-            {sortedGoals.length > 0 ? (
-              <div className="mt-2 space-y-2">
-                {sortedGoals.map((goal) => (
-                  <div
-                    key={goal.metric}
-                    className="flex items-center justify-between border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2"
-                  >
-                    <div className="text-sm text-[#1F2937]" style={fontBody}>
-                      {metricLabels[goal.metric] ?? goal.metric}
-                    </div>
-                    <div className="text-sm metric-number text-[#1F2937]" style={fontMetric}>
-                      {formatMetricValue(goal.metric, goal.target)}
-                    </div>
+                </div>
+              ) : (
+                <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                  <div className="text-sm text-[#1F2937]" style={fontBody}>
+                    {billingPlan === "free"
+                      ? "Historical imports are available on Standard."
+                      : "Historical imports are currently limited to Standard sites."}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="mt-2 text-[12px] text-[#6B7280]" style={fontBody}>
-                No goals configured yet for this site.
-              </div>
-            )}
-          </div>
-        </section>
+                  <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                    {billingPlan === "free"
+                      ? "Upgrade to bring in prior analytics data and use it for long-range trends and forecasts."
+                      : "This import path uses Standard aggregate storage and is not available for the current plan."}
+                  </div>
+                  {billingPlan === "free" ? (
+                    <button
+                      type="button"
+                      onClick={() => void beginStandardCheckout()}
+                      disabled={billingActionDisabled}
+                      className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                      style={fontBody}
+                    >
+                      Upgrade to Standard
+                    </button>
+                  ) : null}
+                </div>
+              )}
+            </section>
 
+            <section id="tracking-health" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                    Tracking health
+                  </div>
+                  <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                    Recent tracking, reduction, and forecast signals for this site.
+                  </div>
+                </div>
+                {health ? (
+                  <span
+                    className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
+                      health.overall_status
+                    )}`}
+                    style={fontBody}
+                  >
+                    {health.overall_status}
+                  </span>
+                ) : null}
+              </div>
+              {healthStatus === "loading" ? (
+                <div className="mt-4 text-[12px] text-gray-500" style={fontBody}>
+                  Loading tracking health...
+                </div>
+              ) : healthStatus === "error" ? (
+                <div className="mt-4 text-[12px] text-[#8B2635]" style={fontBody}>
+                  {healthMessage ?? "Unable to load tracking health."}
+                </div>
+              ) : health ? (
+                <div className="mt-4 grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+                  <div className="grid gap-2">
+                    {health.checks.map((check) => (
+                      <div key={check.key} className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                            {check.label}
+                          </div>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
+                              check.status
+                            )}`}
+                            style={fontBody}
+                          >
+                            {check.status}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-600" style={fontBody}>
+                          {check.detail}
+                        </div>
+                        {check.action ? (
+                          <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                            {check.action}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Last {health.lookback_minutes} minutes
+                    </div>
+                    <div className="mt-2 text-2xl metric-number text-[#1F2937]" style={fontMetric}>
+                      {formatNumber(health.recent_reports)}
+                    </div>
+                    <div className="text-[11px] text-gray-500" style={fontBody}>
+                      reports received
+                    </div>
+                    <div className="mt-3 space-y-1 text-[11px] text-gray-600" style={fontBody}>
+                      <div>Last report: {formatDateTime(health.last_report_at)}</div>
+                      <div>Active site keys: {formatNumber(health.active_site_keys)}</div>
+                      <div>Latest reducer day: {health.latest_reducer_day ?? "-"}</div>
+                      <div>Latest aggregate: {formatDateTime(health.latest_standard_published_at)}</div>
+                    </div>
+                    {Object.keys(health.counts_by_kind).length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-1">
+                        {Object.entries(health.counts_by_kind).map(([kind, count]) => (
+                          <span
+                            key={kind}
+                            className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-700"
+                            style={fontBody}
+                          >
+                            {kind}: {formatNumber(count)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {health.detected_hostnames.length > 0 ? (
+                      <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                        Hostnames: {health.detected_hostnames.join(", ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          </div>
+        </div>
       </main>
     </div>
   );

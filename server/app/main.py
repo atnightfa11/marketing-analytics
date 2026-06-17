@@ -35,6 +35,7 @@ from .routers import (
     site_settings,
     site_access,
     site_health,
+    site_shields,
     sdk_bootstrap,
     shuffle,
     stripe_billing,
@@ -90,6 +91,9 @@ prometheus_counters = {
     ),
     "events_dropped_bot_total": Counter(
         "events_dropped_bot_total", "Count of events dropped by bot filter", ["site_id"]
+    ),
+    "events_dropped_ip_block_total": Counter(
+        "events_dropped_ip_block_total", "Count of events dropped by customer IP block list", ["site_id"]
     ),
     "tokens_revoked_total": Counter(
         "tokens_revoked_total", "Count of token revocations", ["site_id"]
@@ -246,6 +250,7 @@ app.include_router(public_signup.router, prefix="/api")
 app.include_router(site_settings.router, prefix="/api")
 app.include_router(site_access.router, prefix="/api")
 app.include_router(site_health.router, prefix="/api")
+app.include_router(site_shields.router, prefix="/api")
 app.include_router(sdk_bootstrap.router, prefix="/api")
 app.include_router(job_status.router, prefix="/api")
 app.include_router(alert_webhook.router, prefix="/api")

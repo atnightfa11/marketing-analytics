@@ -229,6 +229,26 @@ class SiteAccessListResponse(BaseModel):
     members: list[SiteAccessMemberResponse]
 
 
+class SiteIpBlockCreateRequest(BaseModel):
+    site_id: str
+    cidr: str = Field(min_length=1, max_length=64)
+    label: str | None = Field(default=None, max_length=255)
+
+
+class SiteIpBlockResponse(BaseModel):
+    id: int
+    site_id: str
+    cidr: str
+    label: str | None = None
+    created_by: str | None = None
+    created_at: dt.datetime
+
+
+class SiteIpBlockListResponse(BaseModel):
+    site_id: str
+    blocks: list[SiteIpBlockResponse]
+
+
 class SiteHealthCheck(BaseModel):
     key: str
     label: str

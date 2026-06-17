@@ -129,6 +129,20 @@ export interface SiteAccessListResponse {
   members: SiteAccessMember[];
 }
 
+export interface SiteIpBlock {
+  id: number;
+  site_id: string;
+  cidr: string;
+  label?: string | null;
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface SiteIpBlockListResponse {
+  site_id: string;
+  blocks: SiteIpBlock[];
+}
+
 export interface SiteHealthCheck {
   key: string;
   label: string;
@@ -436,6 +450,47 @@ export async function removeSiteAccess(
 ): Promise<SiteAccessListResponse> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.delete(`/api/site-access/${encodeURIComponent(username)}`, {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function fetchSiteIpBlocks(token?: string, siteId?: string): Promise<SiteIpBlockListResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/site-shields/ip-blocks", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function createSiteIpBlock(
+  cidr: string,
+  label: string | undefined,
+  token?: string,
+  siteId?: string
+): Promise<SiteIpBlockListResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/site-shields/ip-blocks",
+    {
+      site_id: resolvedSiteId,
+      cidr,
+      label,
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function deleteSiteIpBlock(
+  blockId: number,
+  token?: string,
+  siteId?: string
+): Promise<SiteIpBlockListResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.delete(`/api/site-shields/ip-blocks/${blockId}`, {
     headers: authHeaders(token),
     params: { site_id: resolvedSiteId },
   });
