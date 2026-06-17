@@ -25,6 +25,32 @@ Dashboard-derived engagement metrics:
 - `avg_pages_per_visit`: `pageviews / sessions`
 - `bounce_rate`: pageview-only estimate based on aggregate counts (single-page-session approximation), does not use conversion events as engagement input.
 
+## GA4 comparison reference
+
+This section is for support, QA, and migration review. It should not be surfaced as a warning in the dashboard UI.
+
+Google Analytics 4 and Valid use similar top-level concepts, but the collection and identity models are different:
+
+| Valid metric | Closest GA4 metric | Comparison notes |
+|---|---|---|
+| `pageviews` | Views | Closest match. GA4 Views counts repeated page or screen views. Valid counts accepted pageview events after Valid script execution, bot filtering, origin checks, and any plan-specific publish thresholds. |
+| `sessions` | Sessions | Similar concept, different sessionization. GA4 sessions begin when a user opens the app/site or views a page with no active session, and default timeout is 30 minutes. Valid Standard uses server-derived coarse HMAC session keys within `SESSION_WINDOW_MINUTES`, then publishes daily aggregate windows. |
+| `uniques` | Total users or Users/Active users | Directionally comparable, not equivalent. GA4 Total users counts unique user IDs that triggered events, while GA4 Reports often show Active users as Users. Valid does not use cookies or persistent browser identifiers; Standard uniques use a daily coarse-context HMAC and may undercount when many visitors share similar coarse context. |
+| `conversions` | Key events / configured conversion events | Comparable only when both products are configured to fire on the same actions. GA4 key events depend on GA4 event configuration; Valid conversions depend on explicit or auto-conversion capture in the Valid SDK. |
+| `revenue` | Purchase revenue / event value | Comparable only when both products receive the same commerce or value events. GA4 purchase revenue is tied to purchase/refund semantics; Valid revenue is the sum of accepted `revenue` events. |
+
+Expected investigation checklist for large aggregate gaps:
+
+1. Confirm date boundaries and timezone match.
+2. Compare the same hostname/subdomain scope.
+3. Confirm Valid script and GA4 tag are present on the same templates.
+4. Check whether consent, ad blockers, tag managers, or CSP rules affect one script but not the other.
+5. Confirm conversion/revenue events are configured on the same user actions.
+6. Check bot filtering and data-center traffic differences.
+7. For Standard, account for aggregate noise, suppression gates, and daily publishing.
+
+Primary GA4 reference: [Google Analytics dimensions and metrics](https://support.google.com/analytics/answer/9143382).
+
 ## Dimension breakdowns
 
 - Endpoint: `GET /api/breakdown`

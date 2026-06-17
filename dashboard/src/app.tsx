@@ -2990,6 +2990,8 @@ const Overview: React.FC = () => {
       ? "text-emerald-600"
       : "text-amber-600"
     : "text-gray-400";
+  const showForecastBuildingInfo =
+    forecastAccuracy === "Building" && (selectedMetric === "conversions" || selectedMetric === "revenue");
   const selectedMetricLabel = metricLabels[selectedMetric] ?? selectedMetric;
   const selectedMetricLower = selectedMetricLabel.toLowerCase();
   const selectedMetricCurrentValue = (scaledTotals as Record<string, number>)[selectedMetric] ?? Number.NaN;
@@ -3958,10 +3960,29 @@ const Overview: React.FC = () => {
             )}
             {hasForecast && (
               <span
-                className={`${chartGranularity !== "day" ? "" : "ml-auto"} text-[11px] text-[#4B5563]`}
+                className={`${chartGranularity !== "day" ? "" : "ml-auto"} flex items-center gap-1.5 text-[11px] text-[#4B5563]`}
                 style={fontBody}
               >
                 Forecast accuracy <span className={`metric-number ${forecastAccuracyClass}`} style={fontMetric}>{forecastAccuracy}</span>
+                {showForecastBuildingInfo && (
+                  <span className="group relative inline-flex">
+                    <span
+                      tabIndex={0}
+                      aria-label="Why forecast accuracy is building"
+                      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-[#DDE4EC] bg-white text-[10px] font-semibold text-[#7B8190] outline-none transition-colors hover:border-[#B9C3D0] hover:text-[#4B5563] focus:border-[#6B63FF] focus:text-[#4B5563]"
+                      style={fontBody}
+                    >
+                      i
+                    </span>
+                    <span
+                      role="tooltip"
+                      className="pointer-events-none absolute bottom-full right-0 z-20 mb-2 hidden w-[240px] rounded-md border border-[#DDE4EC] bg-white px-3 py-2 text-left text-[11px] leading-4 text-[#4B5563] shadow-lg group-hover:block group-focus-within:block"
+                      style={fontBody}
+                    >
+                      {selectedMetricLabel} can take longer to reach a statistically useful forecast accuracy because it often has fewer completed daily data points.
+                    </span>
+                  </span>
+                )}
               </span>
             )}
           </div>
