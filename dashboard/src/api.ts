@@ -191,6 +191,15 @@ export interface SiteHealthResponse {
   checks: SiteHealthCheck[];
 }
 
+export interface SdkInstallVerifyResponse {
+  site_id: string;
+  lookback_minutes: number;
+  has_recent_activity: boolean;
+  recent_reports: number;
+  counts_by_kind: Record<string, number>;
+  last_report_at?: string | null;
+}
+
 export interface DashboardSiteSummary {
   site_id: string;
   site_name: string;
@@ -548,6 +557,19 @@ export async function fetchSiteHealth(token?: string, siteId?: string): Promise<
   const response = await api.get("/api/site-health", {
     headers: authHeaders(token),
     params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function verifySdkInstall(
+  token?: string,
+  siteId?: string,
+  lookbackMinutes: number = 15
+): Promise<SdkInstallVerifyResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/sdk/verify-install", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId, lookback_minutes: lookbackMinutes },
   });
   return response.data;
 }

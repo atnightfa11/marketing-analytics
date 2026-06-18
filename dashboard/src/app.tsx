@@ -47,9 +47,11 @@ import {
   SiteAlertSettings,
   SiteHealthResponse,
   SiteIpBlock,
+  SdkInstallVerifyResponse,
   TimePartingDayType,
   updateSiteAlertSettings,
   updateSiteTimezone,
+  verifySdkInstall,
 } from "./api";
 import { KPIGrid } from "./components/KPIGrid";
 import { useAuth } from "./hooks/useAuth";
@@ -199,6 +201,93 @@ const formatDateTime = (value?: string | null): string => {
   if (!value) return "—";
   return new Date(value).toLocaleString();
 };
+
+const formatRelativeTime = (value?: string | null): string => {
+  if (!value) return "recently";
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "recently";
+  const diffMs = Date.now() - timestamp;
+  if (diffMs < 60_000) return "just now";
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return formatDateTime(value);
+};
+
+type ErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): ErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: unknown) {
+    console.error("Dashboard render error", error, info);
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    return (
+      <div className="min-h-screen bg-[#F9FAFB] px-6 py-10">
+        <div className="mx-auto max-w-xl rounded-lg border border-[var(--color-border-subtle)] bg-white p-6 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+          <div className="text-lg font-semibold text-[#111827]" style={fontHeading}>
+            Something went wrong
+          </div>
+          <div className="mt-2 text-sm leading-6 text-[#4B5563]" style={fontBody}>
+            The dashboard hit an unexpected display issue. Reloading usually clears it; if it happens again, the API response probably needs review.
+          </div>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-5 rounded-md border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-sm font-semibold text-white hover:bg-[#3730a3]"
+            style={fontBody}
+          >
+            Reload dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
+const DashboardLoadingSkeleton: React.FC<{ label?: string }> = ({ label = "Loading dashboard" }) => (
+  <div className="min-h-screen bg-[#F9FAFB] px-5 py-6 sm:px-8" role="status" aria-live="polite">
+    <div className="mx-auto max-w-[1180px] animate-pulse space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="h-7 w-20 rounded bg-[#E5E7EB]" />
+          <div className="mt-3 h-3 w-56 rounded bg-[#E5E7EB]" />
+        </div>
+        <div className="hidden gap-2 sm:flex">
+          <div className="h-8 w-20 rounded bg-[#E5E7EB]" />
+          <div className="h-8 w-28 rounded bg-[#E5E7EB]" />
+          <div className="h-8 w-20 rounded bg-[#E5E7EB]" />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-[var(--color-border-subtle)] bg-white md:grid-cols-4 xl:grid-cols-8">
+        {Array.from({ length: 8 }).map((_, index) => (
+          <div key={index} className="border-b border-r border-[var(--color-border-subtle)] px-4 py-4 xl:border-b-0">
+            <div className="h-3 w-20 rounded bg-[#EEF2F7]" />
+            <div className="mt-3 h-6 w-16 rounded bg-[#E5E7EB]" />
+            <div className="mt-2 h-3 w-24 rounded bg-[#EEF2F7]" />
+          </div>
+        ))}
+      </div>
+      <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white p-5">
+        <div className="h-5 w-32 rounded bg-[#E5E7EB]" />
+        <div className="mt-8 h-[260px] rounded bg-[#F1F3F6]" />
+      </div>
+    </div>
+    <span className="sr-only">{label}</span>
+  </div>
+);
 
 const writeGoalStore = (store: GoalStore) => {
   if (typeof window === "undefined") return;
@@ -1445,9 +1534,10 @@ const Overview: React.FC = () => {
       : "30d";
   });
   const [forecast, setForecast] = useState<ForecastEntry[]>([]);
-  const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "mape" | "has_anomaly"> | null>(
+  const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "mape" | "has_anomaly" | "trained_at"> | null>(
     null
   );
+  const [forecastError, setForecastError] = useState<string | null>(null);
   const [dashboardNotes, setDashboardNotes] = useState<DashboardNote[]>([]);
   const [noteDate, setNoteDate] = useState<string>("");
   const [noteBody, setNoteBody] = useState<string>("");
@@ -1583,6 +1673,7 @@ const Overview: React.FC = () => {
     if (!aggregateMetricKeys.includes(selectedMetric as (typeof aggregateMetricKeys)[number])) {
       setForecast([]);
       setForecastMeta(null);
+      setForecastError(null);
       return;
     }
     if (showSeededBreakdowns) {
@@ -1593,19 +1684,23 @@ const Overview: React.FC = () => {
       else if (selectedMetric === "conversions") seededMetricSeries = seededSeries.conversions;
       else if (selectedMetric === "revenue") seededMetricSeries = seededSeries.revenue;
       setForecast(buildSeededForecast(seededMetricSeries, 120));
-      setForecastMeta({ mape: 0.08, has_anomaly: false });
+      setForecastMeta({ mape: 0.08, has_anomaly: false, trained_at: new Date().toISOString() });
+      setForecastError(null);
       return;
     }
     if (!canQuery) return;
+    setForecastError(null);
     fetchForecast(token ?? undefined, selectedMetric, siteId)
       .then((data) => {
         setAccessError(null);
         setForecast(data.forecast);
-        setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly });
+        setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly, trained_at: data.trained_at ?? null });
       })
       .catch((error) => {
         const message = extractApiErrorMessage(error);
-        if (message) setAccessError(message);
+        setForecast([]);
+        setForecastMeta({ mape: Number.NaN, has_anomaly: false, trained_at: null });
+        setForecastError(message ?? "Unable to load the current forecast.");
         console.error(error);
       });
   }, [canQuery, token, selectedMetric, siteId, showSeededBreakdowns]);
@@ -2578,10 +2673,20 @@ const Overview: React.FC = () => {
   const hasCompare = chartData.some((point) => point.compare !== null);
   const hasForecast = chartData.some((point) => point.forecast !== null);
   const hasForecastBand = chartData.some((point) => point.forecastBandSpan !== null);
-  const hasAnyForecastData = forecastCandidates.length > 0;
-  const forecastMutedNote = hasAnyForecastData
+  const hasCurrentForecastRows = forecast.length > 0;
+  const forecastMutedNote = hasCurrentForecastRows
     ? "Forecast unavailable in selected date range."
-    : "Forecast unavailable until more history is collected.";
+    : "Forecast building - needs about 60 complete days of history.";
+  const forecastFreshnessText = hasForecast
+    ? forecastMeta?.trained_at
+      ? `Updated ${formatRelativeTime(forecastMeta.trained_at)}`
+      : "Updated recently"
+    : "Forecast building";
+  const forecastFreshnessDetail = hasForecast
+    ? forecastMeta?.trained_at
+      ? `Last trained ${formatDateTime(forecastMeta.trained_at)}`
+      : "Fresh forecast returned by the API."
+    : "Valid will show forecasts here after enough complete daily history has been reduced.";
   const selectedRangeDayCount = rangeDomainDays.length;
 
   const seededBreakdownTotals = useMemo(
@@ -3343,7 +3448,7 @@ const Overview: React.FC = () => {
     const viewBox = props.viewBox ?? {};
     const x = Number(viewBox.x ?? 0);
     const y = Number(viewBox.y ?? 0) + Number(viewBox.height ?? 0) - 3;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return <g />;
     const isActive = activeNoteMarkerDay === day;
     const toggleMarker = () => {
       setSelectedNoteMarkerDay((current) => (current === day ? null : day));
@@ -3568,7 +3673,12 @@ const Overview: React.FC = () => {
       </header>
       <main className="mx-auto max-w-[1180px] space-y-5 px-5 pb-12 pt-0 sm:px-8 print-container">
         {accessError && (
-          <div className="border-l-2 border-[#8B2635] bg-[#FFF4F5] px-4 py-3 text-sm text-[#6B1F2A]" style={fontBody}>
+          <div
+            className="border-l-2 border-[#8B2635] bg-[#FFF4F5] px-4 py-3 text-sm text-[#6B1F2A]"
+            role="status"
+            aria-live="polite"
+            style={fontBody}
+          >
             {accessError}
           </div>
         )}
@@ -3678,6 +3788,17 @@ const Overview: React.FC = () => {
             <div className="flex items-center gap-3">
               <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
                 Forecast horizon
+              </span>
+              <span
+                className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${
+                  hasForecast
+                    ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+                    : "border-[#E5E7EB] bg-[#F7F8FA] text-[#7B8190]"
+                }`}
+                title={forecastFreshnessDetail}
+                style={fontBody}
+              >
+                {forecastFreshnessText}
               </span>
               <select
                 aria-label="Forecast horizon"
@@ -4025,6 +4146,11 @@ const Overview: React.FC = () => {
               </div>
             )}
           </div>
+          {forecastError && (
+            <div className="mt-3 rounded-md border border-[#FECACA] bg-[#FFF7F7] px-3 py-2 text-[12px] text-[#8B2635]" role="status" style={fontBody}>
+              {forecastError}
+            </div>
+          )}
           <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-[#4B5563]" style={fontBody}>
             {hasActual && (
               <span className="flex items-center gap-2">
@@ -4072,9 +4198,16 @@ const Overview: React.FC = () => {
                 Viewing {granularityLabel(chartGranularity)} (auto)
               </span>
             )}
+            <span
+              className={`${chartGranularity !== "day" || hasForecast ? "" : "ml-auto"} flex items-center gap-1.5 text-[11px] text-[#4B5563]`}
+              title={forecastFreshnessDetail}
+              style={fontBody}
+            >
+              Forecast status <span className="metric-number text-[#6B7280]" style={fontMetric}>{forecastFreshnessText}</span>
+            </span>
             {hasForecast && (
               <span
-                className={`${chartGranularity !== "day" ? "" : "ml-auto"} flex items-center gap-1.5 text-[11px] text-[#4B5563]`}
+                className="flex items-center gap-1.5 text-[11px] text-[#4B5563]"
                 style={fontBody}
               >
                 Forecast accuracy <span className={`metric-number ${forecastAccuracyClass}`} style={fontMetric}>{forecastAccuracy}</span>
@@ -4404,6 +4537,9 @@ const Settings: React.FC = () => {
   const [health, setHealth] = useState<SiteHealthResponse | null>(null);
   const [healthStatus, setHealthStatus] = useState<"idle" | "loading" | "error">("idle");
   const [healthMessage, setHealthMessage] = useState<string | null>(null);
+  const [installVerify, setInstallVerify] = useState<SdkInstallVerifyResponse | null>(null);
+  const [installVerifyStatus, setInstallVerifyStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [installVerifyMessage, setInstallVerifyMessage] = useState<string | null>(null);
   const [accessMembers, setAccessMembers] = useState<SiteAccessMember[]>([]);
   const [accessUsername, setAccessUsername] = useState<string>("");
   const [accessStatus, setAccessStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
@@ -4543,6 +4679,30 @@ const Settings: React.FC = () => {
   useEffect(() => {
     void refreshSiteAccess();
   }, [refreshSiteAccess]);
+
+  const reviewInstallation = async () => {
+    if (!canQuery) return;
+    setInstallVerifyStatus("loading");
+    setInstallVerifyMessage(null);
+    try {
+      const result = await verifySdkInstall(token ?? undefined, siteId, 15);
+      setInstallVerify(result);
+      setInstallVerifyStatus("success");
+      setInstallVerifyMessage(
+        result.has_recent_activity
+          ? `${formatNumber(result.recent_reports)} reports received in the last ${result.lookback_minutes} minutes.`
+          : `No reports received in the last ${result.lookback_minutes} minutes.`
+      );
+      const refreshedHealth = await fetchSiteHealth(token ?? undefined, siteId);
+      setHealth(refreshedHealth);
+      setHealthStatus("idle");
+      setHealthMessage(null);
+    } catch (error) {
+      setInstallVerify(null);
+      setInstallVerifyStatus("error");
+      setInstallVerifyMessage(extractApiErrorMessage(error) ?? "Unable to verify the installation right now.");
+    }
+  };
 
   const refreshIpBlocks = useCallback(async () => {
     if (!canQuery) return;
@@ -5007,19 +5167,86 @@ const Settings: React.FC = () => {
               </div>
 
               <div className="border border-gray-200 bg-white p-5">
-                <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                  Site installation
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                      Site installation
+                    </div>
+                    <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
+                      Verify that the tracking script is installed and sending recent data.
+                    </div>
+                  </div>
+                  {health ? (
+                    <span
+                      className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
+                        health.overall_status
+                      )}`}
+                      style={fontBody}
+                    >
+                      {health.overall_status}
+                    </span>
+                  ) : null}
                 </div>
-                <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
-                  Control what data is collected and verify your installation.
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Site keys
+                    </div>
+                    <div className="mt-2 metric-number text-xl text-[#1F2937]" style={fontMetric}>
+                      {health ? formatNumber(health.active_site_keys) : "—"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                      active
+                    </div>
+                  </div>
+                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3 md:col-span-2">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Recent activity
+                    </div>
+                    <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
+                      {installVerify
+                        ? installVerify.has_recent_activity
+                          ? `${formatNumber(installVerify.recent_reports)} reports in the last ${installVerify.lookback_minutes} minutes`
+                          : `No reports in the last ${installVerify.lookback_minutes} minutes`
+                        : health?.last_report_at
+                          ? `Last report ${formatRelativeTime(health.last_report_at)}`
+                          : "Not verified in this session"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                      {installVerify?.last_report_at
+                        ? `Last report at ${formatDateTime(installVerify.last_report_at)}.`
+                        : "Use Review installation after loading the tracked site in a browser."}
+                    </div>
+                  </div>
                 </div>
-                <a
-                  href="#tracking-health"
-                  className="mt-5 inline-flex border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
-                  style={fontBody}
-                >
-                  Review installation
-                </a>
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void reviewInstallation()}
+                    disabled={installVerifyStatus === "loading"}
+                    className="inline-flex border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                    style={fontBody}
+                  >
+                    {installVerifyStatus === "loading" ? "Checking..." : "Review installation"}
+                  </button>
+                  <a
+                    href="#tracking-health"
+                    className="inline-flex border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    View health
+                  </a>
+                  {installVerifyMessage ? (
+                    <span
+                      className={`text-[11px] ${installVerifyStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`}
+                      role="status"
+                      aria-live="polite"
+                      style={fontBody}
+                    >
+                      {installVerifyMessage}
+                    </span>
+                  ) : null}
+                </div>
               </div>
 
               <div className="border border-gray-200 bg-white p-5">
@@ -5970,7 +6197,7 @@ const HomeRoute: React.FC = () => {
     return <Overview />;
   }
   if (availableSites === null) {
-    return <div className="p-6 text-sm text-gray-500">{en.loading}</div>;
+    return <DashboardLoadingSkeleton label={en.loading} />;
   }
   if (availableSites.length === 1) {
     return <Navigate to={`/site/${encodeURIComponent(availableSites[0].site_id)}`} replace />;
@@ -5983,7 +6210,7 @@ export const App: React.FC = () => {
   useTheme();
 
   if (!ready) {
-    return <div className="p-6 text-sm text-gray-500">{en.loading}</div>;
+    return <DashboardLoadingSkeleton label={en.loading} />;
   }
   if (authEnabled && !token) {
     return <LoginGate />;
@@ -5991,21 +6218,23 @@ export const App: React.FC = () => {
 
   return (
     <BrowserRouter future={{ v7_relativeSplatPath: true }}>
-      <Suspense fallback={<div>{en.loading}</div>}>
-        <Routes>
-          <Route path="/" element={<HomeRoute />} />
-          <Route path="/site/:siteId" element={<Overview />} />
-          <Route path="/site/:siteId/charts" element={<SiteDashboardRedirect />} />
-          <Route path="/site/:siteId/alerts" element={<SiteDashboardRedirect />} />
-          <Route path="/site/:siteId/settings" element={<Settings />} />
-          <Route path="/charts" element={<Navigate to="/" replace />} />
-          <Route path="/alerts" element={<Navigate to="/" replace />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/billing/success" element={<BillingSuccess />} />
-          <Route path="/billing/cancel" element={<BillingCancel />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Suspense>
+      <ErrorBoundary>
+        <Suspense fallback={<DashboardLoadingSkeleton label={en.loading} />}>
+          <Routes>
+            <Route path="/" element={<HomeRoute />} />
+            <Route path="/site/:siteId" element={<Overview />} />
+            <Route path="/site/:siteId/charts" element={<SiteDashboardRedirect />} />
+            <Route path="/site/:siteId/alerts" element={<SiteDashboardRedirect />} />
+            <Route path="/site/:siteId/settings" element={<Settings />} />
+            <Route path="/charts" element={<Navigate to="/" replace />} />
+            <Route path="/alerts" element={<Navigate to="/" replace />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/billing/success" element={<BillingSuccess />} />
+            <Route path="/billing/cancel" element={<BillingCancel />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </ErrorBoundary>
     </BrowserRouter>
   );
 };
