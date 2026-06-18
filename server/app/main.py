@@ -4,12 +4,12 @@ import logging
 import os
 
 from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge
 from starlette.middleware.base import BaseHTTPMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from .config import Settings, get_settings
+from .cors import PathAwareCORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .geoip_db import ensure_geoip_database
 from .job_status import mark_job_error, mark_job_run, mark_job_success
@@ -55,17 +55,7 @@ app = FastAPI(
 )
 Instrumentator().instrument(app).expose(app)
 
-cors_allow_origins = ["*"] if settings.cors_allow_all else settings.cors_origins
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_allow_origins,
-    allow_origin_regex=settings.cors_origin_regex,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
-    expose_headers=["Retry-After"],
-)
+app.add_middleware(PathAwareCORSMiddleware, settings=settings)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

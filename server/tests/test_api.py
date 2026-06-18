@@ -2246,9 +2246,10 @@ def test_sdk_bootstrap_preflight_allows_customer_https_origin(client):
             "Access-Control-Request-Headers": "content-type",
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 204
     allowed_origin = resp.headers.get("access-control-allow-origin")
-    assert allowed_origin in {"*", "https://customer.example"}
+    assert allowed_origin == "*"
+    assert "access-control-allow-credentials" not in resp.headers
     allow_methods = (resp.headers.get("access-control-allow-methods") or "").upper()
     assert "POST" in allow_methods
 
@@ -2262,11 +2263,57 @@ def test_sdk_bootstrap_preflight_allows_customer_http_origin(client):
             "Access-Control-Request-Headers": "content-type",
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 204
     allowed_origin = resp.headers.get("access-control-allow-origin")
-    assert allowed_origin in {"*", "http://customer.example"}
+    assert allowed_origin == "*"
+    assert "access-control-allow-credentials" not in resp.headers
     allow_methods = (resp.headers.get("access-control-allow-methods") or "").upper()
     assert "POST" in allow_methods
+
+
+def test_dashboard_preflight_is_credentialed_only_for_trusted_origins(client):
+    trusted = client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "https://app.validanalytics.io",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert trusted.status_code == 204
+    assert trusted.headers.get("access-control-allow-origin") == "https://app.validanalytics.io"
+    assert trusted.headers.get("access-control-allow-credentials") == "true"
+
+    untrusted = client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert untrusted.status_code == 400
+    assert "access-control-allow-origin" not in untrusted.headers
+    assert "access-control-allow-credentials" not in untrusted.headers
+
+
+def test_dashboard_actual_cors_headers_are_not_reflected_for_untrusted_origins(client):
+    trusted = client.get("/api/auth/status", headers={"Origin": "https://app.validanalytics.io"})
+    assert trusted.status_code == 200
+    assert trusted.headers.get("access-control-allow-origin") == "https://app.validanalytics.io"
+    assert trusted.headers.get("access-control-allow-credentials") == "true"
+
+    untrusted = client.get("/api/auth/status", headers={"Origin": "https://evil.example"})
+    assert untrusted.status_code == 200
+    assert "access-control-allow-origin" not in untrusted.headers
+    assert "access-control-allow-credentials" not in untrusted.headers
+
+
+def test_dashboard_mutations_reject_untrusted_browser_origins(client):
+    resp = client.post("/api/auth/logout", headers={"Origin": "https://evil.example"})
+    assert resp.status_code == 403
+    assert resp.text == "Origin not allowed"
+    assert "access-control-allow-origin" not in resp.headers
 
 
 @pytest.mark.asyncio

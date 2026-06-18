@@ -78,6 +78,16 @@ class Settings(BaseSettings):
   DASHBOARD_AUTH_COOKIE_NAME: str = Field(default="valid_dashboard_session")
   DASHBOARD_AUTH_COOKIE_SECURE: bool | None = Field(default=None)
   DASHBOARD_AUTH_COOKIE_SAMESITE: str = Field(default="lax")
+  DASHBOARD_CORS_ORIGINS: list[str] = Field(
+      default_factory=lambda: [
+          "https://app.validanalytics.io",
+          "https://validanalytics.io",
+          "https://dashboard.localdp.example.com",
+          "http://localhost:5173",
+          "http://127.0.0.1:5173",
+      ]
+  )
+  DASHBOARD_CORS_ORIGINS_CSV: str | None = None
   DASHBOARD_ALLOWED_SITE_IDS: str | None = None
   DASHBOARD_SITE_ACCESS_JSON: str | None = None
   DASHBOARD_ALLOW_UNCLAIMED_SITES: bool = Field(default=False)
@@ -142,6 +152,9 @@ class Settings(BaseSettings):
     if self.cors_origins_csv:
       extras = [item.strip() for item in self.cors_origins_csv.split(",") if item.strip()]
       self.cors_origins = [*self.cors_origins, *extras]
+    if self.DASHBOARD_CORS_ORIGINS_CSV:
+      extras = [item.strip() for item in self.DASHBOARD_CORS_ORIGINS_CSV.split(",") if item.strip()]
+      self.DASHBOARD_CORS_ORIGINS = [*self.DASHBOARD_CORS_ORIGINS, *extras]
 
     required = ("https://app.validanalytics.io", "https://validanalytics.io")
     normalized = [origin.rstrip("/") for origin in self.cors_origins if origin]
@@ -151,6 +164,14 @@ class Settings(BaseSettings):
         normalized.append(origin)
         seen.add(origin)
     self.cors_origins = normalized
+
+    dashboard_normalized = [origin.rstrip("/") for origin in self.DASHBOARD_CORS_ORIGINS if origin]
+    dashboard_seen = set(dashboard_normalized)
+    for origin in required:
+      if origin not in dashboard_seen:
+        dashboard_normalized.append(origin)
+        dashboard_seen.add(origin)
+    self.DASHBOARD_CORS_ORIGINS = dashboard_normalized
     return self
 
   def billing_configured(self) -> bool:
