@@ -221,11 +221,14 @@ export interface DashboardNote {
 const fallbackApiBase =
   typeof window !== "undefined" && window.location.hostname.endsWith("validanalytics.io")
     ? "https://api.validanalytics.io"
-    : "http://localhost:8000";
+    : typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)
+      ? `${window.location.protocol}//${window.location.hostname}:8000`
+      : "http://localhost:8000";
+const COOKIE_SESSION_TOKEN = "cookie-session";
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? fallbackApiBase,
-  withCredentials: false,
+  withCredentials: true,
 });
 
 const defaultSiteId = import.meta.env.VITE_SITE_ID ?? "demo";
@@ -251,10 +254,9 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      const hadToken = Boolean(localStorage.getItem("ma_token"));
       localStorage.removeItem("ma_token");
-      if (hadToken && typeof window !== "undefined") {
-        window.location.reload();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("valid-auth-expired"));
       }
     }
     return Promise.reject(err);
@@ -262,7 +264,7 @@ api.interceptors.response.use(
 );
 
 function authHeaders(token?: string): Record<string, string> | undefined {
-  if (!token) return undefined;
+  if (!token || token === COOKIE_SESSION_TOKEN) return undefined;
   return { Authorization: `Bearer ${token}` };
 }
 

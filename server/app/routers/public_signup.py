@@ -8,12 +8,12 @@ from urllib.parse import quote_plus
 
 import stripe
 from argon2 import PasswordHasher
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..dashboard_auth import create_access_token
+from ..dashboard_auth import create_access_token, set_dashboard_auth_cookie
 from ..models import DashboardSite, DashboardUser, SiteApiKey, SitePlan, get_session
 from ..schemas import PublicSignupRequest, PublicSignupResponse
 from ..site_keys import build_site_key, canonical_origin_for_domain, hash_site_key, site_id_from_domain
@@ -111,6 +111,7 @@ def _create_checkout_session_for_signup(site_id: str, plan: str) -> str:
 async def public_signup(
     payload: PublicSignupRequest,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> PublicSignupResponse:
     if not settings.DASHBOARD_AUTH_ENABLED:
@@ -171,6 +172,7 @@ async def public_signup(
     await session.commit()
 
     access_token, expires_at = create_access_token(username)
+    set_dashboard_auth_cookie(response, access_token, expires_at)
     return PublicSignupResponse(
         username=username,
         access_token=access_token,

@@ -50,6 +50,7 @@ Optional attribution controls:
    curl -s "https://api.validanalytics.io/api/sdk/verify-install?site_id=live-validanalytics-io&lookback_minutes=15" \
      -H "Authorization: Bearer <dashboard_token>"
    ```
+   The browser dashboard uses an `HttpOnly` login cookie; the bearer token is only needed for manual API checks like this.
 4. Open `https://app.validanalytics.io/site/live-validanalytics-io` and verify metrics populate.
 5. Optional aggregate API check:
    ```bash

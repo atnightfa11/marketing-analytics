@@ -75,6 +75,9 @@ class Settings(BaseSettings):
   DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV: bool = Field(default=False)
   DASHBOARD_AUTH_SECRET: str | None = None
   DASHBOARD_AUTH_TTL_SECONDS: int = Field(default=8 * 60 * 60)
+  DASHBOARD_AUTH_COOKIE_NAME: str = Field(default="valid_dashboard_session")
+  DASHBOARD_AUTH_COOKIE_SECURE: bool | None = Field(default=None)
+  DASHBOARD_AUTH_COOKIE_SAMESITE: str = Field(default="lax")
   DASHBOARD_ALLOWED_SITE_IDS: str | None = None
   DASHBOARD_SITE_ACCESS_JSON: str | None = None
   DASHBOARD_ALLOW_UNCLAIMED_SITES: bool = Field(default=False)
@@ -127,6 +130,12 @@ class Settings(BaseSettings):
       raise ValueError("DASHBOARD_AUTH_ENABLED cannot be disabled in production")
     if production_like and self.DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV:
       raise ValueError("DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV cannot be enabled in production")
+    if self.DASHBOARD_AUTH_COOKIE_SAMESITE.lower() not in {"lax", "strict", "none"}:
+      raise ValueError("DASHBOARD_AUTH_COOKIE_SAMESITE must be lax, strict, or none")
+    if self.DASHBOARD_AUTH_COOKIE_SAMESITE.lower() == "none":
+      cookie_secure = self.DASHBOARD_AUTH_COOKIE_SECURE if self.DASHBOARD_AUTH_COOKIE_SECURE is not None else production_like
+      if not cookie_secure:
+        raise ValueError("DASHBOARD_AUTH_COOKIE_SAMESITE=none requires a Secure cookie")
     if self.SHUFFLE_MAX_DELAY_SECONDS < 0:
       raise ValueError("SHUFFLE_MAX_DELAY_SECONDS cannot be negative")
 

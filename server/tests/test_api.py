@@ -3199,12 +3199,25 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
 
         good_login = client.post("/api/auth/login", json={"username": "owner", "password": "secret-pass"})
         assert good_login.status_code == 200
+        set_cookie_header = good_login.headers.get("set-cookie", "").lower()
+        assert dashboard_auth_settings.DASHBOARD_AUTH_COOKIE_NAME in set_cookie_header
+        assert "httponly" in set_cookie_header
         access_token = good_login.json()["access_token"]
         assert access_token
+
+        me_cookie_resp = client.get("/api/auth/me")
+        assert me_cookie_resp.status_code == 200
+        assert me_cookie_resp.json()["username"] == "owner"
 
         me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {access_token}"})
         assert me_resp.status_code == 200
         assert me_resp.json()["username"] == "owner"
+
+        cookie_authorized_metrics = client.get(
+            "/api/metrics",
+            params={"site_id": site_id},
+        )
+        assert cookie_authorized_metrics.status_code == 200
 
         authorized_metrics = client.get(
             "/api/metrics",
@@ -3261,6 +3274,14 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert mapped_owner.status_code == 200
+
+        logout = client.post("/api/auth/logout")
+        assert logout.status_code == 200
+        assert "max-age=0" in logout.headers.get("set-cookie", "").lower()
+        logged_out_me = client.get("/api/auth/me")
+        assert logged_out_me.status_code == 401
+        bearer_after_logout = client.get("/api/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+        assert bearer_after_logout.status_code == 200
     finally:
         dashboard_auth_module._parse_auth_users.cache_clear()
         dashboard_auth_module._parse_site_access_map.cache_clear()

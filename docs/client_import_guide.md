@@ -10,7 +10,7 @@ Imported data is aggregate-only and is reduced into Standard daily aggregate buc
 
 Headers:
 
-- `Authorization: Bearer <dashboard_token>`
+- Browser dashboard requests use the `HttpOnly` login cookie. Manual API calls can use `Authorization: Bearer <dashboard_token>`.
 
 Body:
 
@@ -30,7 +30,7 @@ Body:
 
 Headers:
 
-- `Authorization: Bearer <dashboard_token>`
+- Browser dashboard requests use the `HttpOnly` login cookie. Manual API calls can use `Authorization: Bearer <dashboard_token>`.
 
 Body:
 
@@ -51,7 +51,7 @@ The API creates an import batch record, triggers reducer reprocessing across aff
 
 Headers:
 
-- `Authorization: Bearer <dashboard_token>`
+- Browser dashboard requests use the `HttpOnly` login cookie. Manual API calls can use `Authorization: Bearer <dashboard_token>`.
 
 Returns the most recent import batches with date range, metrics, status, row count, creator, and whether rollback is currently available.
 
@@ -61,7 +61,7 @@ Returns the most recent import batches with date range, metrics, status, row cou
 
 Headers:
 
-- `Authorization: Bearer <dashboard_token>`
+- Browser dashboard requests use the `HttpOnly` login cookie. Manual API calls can use `Authorization: Bearer <dashboard_token>`.
 
 Rollback deletes the retained raw import rows for that batch, re-runs the reducer for the affected days, and refreshes forecasts. Rollback is available for completed or failed batches only while the batch's raw import rows are still retained. After raw processing rows are purged, the batch remains in history as an audit record but cannot be rolled back automatically.
 

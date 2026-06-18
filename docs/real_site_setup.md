@@ -63,6 +63,9 @@ Set these environment variables on the backend service:
 - `BOT_FILTER_UA_PATTERNS_CSV=` (optional comma-separated extra User-Agent substrings to filter)
 - `DASHBOARD_AUTH_ENABLED=true` (set `false` only for local/dev)
 - `DASHBOARD_AUTH_SECRET=<strong-random-secret>`
+- `DASHBOARD_AUTH_COOKIE_NAME=valid_dashboard_session`
+- `DASHBOARD_AUTH_COOKIE_SECURE=` (leave unset; production infers `true`, local/dev infers `false`)
+- `DASHBOARD_AUTH_COOKIE_SAMESITE=lax`
 - Dashboard users should live in `dashboard_users` with Argon2 password hashes. Do not configure production dashboard passwords in env vars.
 - `DASHBOARD_ALLOWED_SITE_IDS=<comma-separated-site-ids>` (optional, recommended for ownership auth on `site_id` endpoints)
 - `DASHBOARD_SITE_ACCESS_JSON={"username":["site-a","site-b"]}` (optional per-user ownership mapping; explicit user mappings take precedence over `DASHBOARD_ALLOWED_SITE_IDS`, and unmapped users fall back to DB ownership checks)
@@ -89,7 +92,7 @@ Privileged endpoint headers:
 
 - `POST /api/upload-token` and `POST /api/admin/*` require `X-Admin-Token`.
 - `POST /api/collect` requires `X-Collect-Token` (or `ADMIN_API_TOKEN` when `COLLECT_ENDPOINT_TOKEN` is unset).
-- Dashboard-protected reads (for example `/api/metrics`, `/api/aggregate`, `/api/breakdown`, `/api/forecast/{metric}`, `/api/jobs/status`) require `Authorization: Bearer <token>` from `/api/auth/login`.
+- Browser dashboard reads use the `HttpOnly` session cookie set by `/api/auth/login`. Manual scripts can still pass `Authorization: Bearer <token>` from `/api/auth/login` for dashboard-protected reads such as `/api/metrics`, `/api/aggregate`, `/api/breakdown`, `/api/forecast/{metric}`, and `/api/jobs/status`.
 
 Stripe billing env vars:
 

@@ -21,7 +21,7 @@
 - Verify upload token has not expired.
 - `/api/shuffle` now requires an `Origin` header that matches the token origin pattern.
 - SDK automatically refreshes once; if still failing, rotate site key.
-- If dashboard auth is enabled, dashboard/API reads require a valid bearer token from `/api/auth/login`:
+- If dashboard auth is enabled, browser dashboard reads use the `HttpOnly` session cookie set by `/api/auth/login`. Manual API calls can still use the bearer token returned by `/api/auth/login`:
   - `/api/metrics`
   - `/api/aggregate`
   - `/api/forecast/{metric}`

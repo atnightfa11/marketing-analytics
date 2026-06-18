@@ -63,7 +63,7 @@ app.add_middleware(
     allow_origin_regex=settings.cors_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     expose_headers=["Retry-After"],
 )
 

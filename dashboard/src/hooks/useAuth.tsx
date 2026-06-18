@@ -4,8 +4,11 @@ const API_BASE =
   import.meta.env.VITE_API_BASE_URL ??
   (typeof window !== "undefined" && window.location.hostname.endsWith("validanalytics.io")
     ? "https://api.validanalytics.io"
-    : "http://localhost:8000");
+    : typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)
+      ? `${window.location.protocol}//${window.location.hostname}:8000`
+      : "http://localhost:8000");
 const TOKEN_STORAGE_KEY = "ma_token";
+const COOKIE_SESSION_TOKEN = "cookie-session";
 
 interface AuthContextValue {
   token: string | null;
@@ -18,20 +21,33 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_STORAGE_KEY));
+  const [token, setToken] = useState<string | null>(null);
   const [authEnabled, setAuthEnabled] = useState(true);
   const [ready, setReady] = useState(false);
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
+    void fetch(`${API_BASE}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
     setToken(null);
+  }, []);
+
+  useEffect(() => {
+    const handleExpiredSession = () => {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      setToken(null);
+    };
+    window.addEventListener("valid-auth-expired", handleExpiredSession);
+    return () => window.removeEventListener("valid-auth-expired", handleExpiredSession);
   }, []);
 
   useEffect(() => {
     let mounted = true;
     const init = async () => {
       try {
-        const statusResp = await fetch(`${API_BASE}/api/auth/status`);
+        const statusResp = await fetch(`${API_BASE}/api/auth/status`, { credentials: "include" });
         if (!statusResp.ok) {
           throw new Error("Failed to fetch auth status");
         }
@@ -43,20 +59,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
 
-        const existingToken = localStorage.getItem(TOKEN_STORAGE_KEY);
-        if (!existingToken) {
-          setReady(true);
-          return;
-        }
-
         const meResp = await fetch(`${API_BASE}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${existingToken}` },
+          credentials: "include",
         });
         if (!mounted) return;
         if (!meResp.ok) {
-          logout();
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+          setToken(null);
         } else {
-          setToken(existingToken);
+          setToken(COOKIE_SESSION_TOKEN);
         }
       } catch {
         if (!mounted) return;
@@ -76,6 +87,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const response = await fetch(`${API_BASE}/api/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ username, password }),
     });
     if (!response.ok) {
@@ -88,9 +100,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       throw new Error(message);
     }
-    const body = (await response.json()) as { access_token: string };
-    localStorage.setItem(TOKEN_STORAGE_KEY, body.access_token);
-    setToken(body.access_token);
+    await response.json();
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    setToken(COOKIE_SESSION_TOKEN);
   }, []);
 
   const value = useMemo(

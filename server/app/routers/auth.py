@@ -4,11 +4,18 @@ import datetime as dt
 from collections import defaultdict
 from typing import DefaultDict
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dashboard_auth import create_access_token, require_dashboard_auth, settings, validate_credentials_async
+from ..dashboard_auth import (
+    clear_dashboard_auth_cookie,
+    create_access_token,
+    require_dashboard_auth,
+    set_dashboard_auth_cookie,
+    settings,
+    validate_credentials_async,
+)
 from ..models import DashboardSite, DashboardSiteAccess, SitePlan, get_session
 from ..schemas import AuthLoginRequest, AuthLoginResponse, AuthMeResponse, AuthStatusResponse, DashboardSiteSummary, DashboardSitesResponse
 
@@ -41,6 +48,7 @@ async def auth_status() -> AuthStatusResponse:
 async def auth_login(
     payload: AuthLoginRequest,
     request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> AuthLoginResponse:
     if not settings.DASHBOARD_AUTH_ENABLED:
@@ -52,7 +60,14 @@ async def auth_login(
     if not await validate_credentials_async(username, payload.password, session):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token, expires_at = create_access_token(username)
+    set_dashboard_auth_cookie(response, token, expires_at)
     return AuthLoginResponse(access_token=token, expires_at=expires_at)
+
+
+@router.post("/auth/logout")
+async def auth_logout(response: Response) -> dict[str, bool]:
+    clear_dashboard_auth_cookie(response)
+    return {"ok": True}
 
 
 @router.get("/auth/me", response_model=AuthMeResponse)

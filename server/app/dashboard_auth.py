@@ -10,7 +10,7 @@ from functools import lru_cache
 from typing import Any
 
 from argon2 import PasswordHasher, exceptions as argon_exceptions
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,34 @@ def _require_auth_config() -> None:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Dashboard auth is enabled but DASHBOARD_AUTH_SECRET is not configured",
         )
+
+
+def _dashboard_cookie_secure() -> bool:
+    if settings.DASHBOARD_AUTH_COOKIE_SECURE is not None:
+        return settings.DASHBOARD_AUTH_COOKIE_SECURE
+    return settings.APP_ENV.strip().lower() in {"prod", "production"}
+
+
+def set_dashboard_auth_cookie(response: Response, token: str, expires_at: dt.datetime) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    max_age = max(0, int((expires_at - now).total_seconds()))
+    response.set_cookie(
+        key=settings.DASHBOARD_AUTH_COOKIE_NAME,
+        value=token,
+        max_age=max_age,
+        expires=expires_at,
+        path="/",
+        secure=_dashboard_cookie_secure(),
+        httponly=True,
+        samesite=settings.DASHBOARD_AUTH_COOKIE_SAMESITE.lower(),
+    )
+
+
+def clear_dashboard_auth_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.DASHBOARD_AUTH_COOKIE_NAME,
+        path="/",
+    )
 
 
 def create_access_token(username: str) -> tuple[str, dt.datetime]:
@@ -112,15 +140,21 @@ async def validate_credentials_async(username: str, password: str, session: Asyn
     return True
 
 
-def require_dashboard_auth(authorization: str | None = Header(default=None)) -> dict[str, Any] | None:
+def require_dashboard_auth(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any] | None:
     if not settings.DASHBOARD_AUTH_ENABLED:
         return None
-    if not authorization:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header required")
-    parts = authorization.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
+    if authorization:
+        parts = authorization.split(" ", 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return _decode_access_token(parts[1])
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization scheme")
-    return _decode_access_token(parts[1])
+    token = request.cookies.get(settings.DASHBOARD_AUTH_COOKIE_NAME)
+    if token:
+        return _decode_access_token(token)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Dashboard session required")
 
 
 @lru_cache(maxsize=8)
