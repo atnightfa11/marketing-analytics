@@ -54,112 +54,66 @@ import {
   updateSiteTimezone,
   verifySdkInstall,
 } from "./api";
+import { GoalsProgressCard } from "./components/GoalsProgressCard";
 import { KPIGrid } from "./components/KPIGrid";
+import { CloseIcon, MoonIcon, SunIcon } from "./components/icons";
+import { LogoutButton } from "./components/LogoutButton";
+import { SitePicker } from "./components/SitePicker";
+import { TableBlock } from "./components/TableBlock";
+import { TimePartingHeatmap } from "./components/TimePartingHeatmap";
+import {
+  aggregateMetricKeys,
+  breakdownDimensions,
+  DASHBOARD_GOALS_STORAGE_KEY,
+  dayOfWeekLabels,
+  ENABLE_DEMO_MODE,
+  forecastOptions,
+  goalEligibleMetrics,
+  hourOfDayLabels,
+  LAST_SITE_ID_STORAGE_KEY,
+  MAX_PUBLISHED_FORECAST_ACCURACY_MAPE,
+  metricLabels,
+  metricOptions,
+  MS_PER_DAY,
+  rangeOptions,
+  timezoneOptions,
+} from "./constants";
 import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
-import { formatNumber, formatPercent, formatShortDate } from "./utils/format";
+import { BillingCancel, BillingSuccess } from "./routes/BillingStatusRoutes";
+import { LoginGate } from "./routes/LoginGate";
+import { fontBody, fontHeading, fontMeta, fontMetric } from "./styles/typography";
+import type {
+  ActiveFilter,
+  BreakdownData,
+  BreakdownErrorMap,
+  BreakdownMetricTotals,
+  BreakdownTableRow,
+  ChartGranularity,
+  ComparisonPoint,
+  DailyValuePoint,
+  DateRange,
+  ForecastOption,
+  GoalMetric,
+  GoalRepeat,
+  GoalStore,
+  MetricGoal,
+  RangeOption,
+  SiteGoalsMap,
+  TrendChartPoint,
+} from "./types";
+import {
+  formatCurrency,
+  formatDailyPace,
+  formatDuration,
+  formatMetricValue,
+  formatNumber,
+  formatPercent,
+  formatShortDate,
+} from "./utils/format";
+import { aggregateRowsByLabel, getBreakdownMetricValue, renderBreakdownLabel, renderFilterDimensionLabel } from "./utils/breakdowns";
 import { buildSourceMediumLabel, classifyChannelLabel, normalizeSourceLabel } from "./utils/sourceAttribution";
 import en from "./locales/en.json";
-
-const fontHeading: React.CSSProperties = { fontFamily: "var(--font-sans)" };
-const fontBody: React.CSSProperties = {
-  fontFamily: "var(--font-sans)",
-};
-const fontMetric: React.CSSProperties = {
-  fontFamily: "var(--font-sans)",
-  fontVariantNumeric: "tabular-nums lining-nums",
-  fontFeatureSettings: '"tnum" 1, "lnum" 1',
-  letterSpacing: "0em",
-};
-const fontMeta: React.CSSProperties = {
-  fontFamily: "var(--font-mono)",
-  fontVariantNumeric: "tabular-nums lining-nums",
-  fontFeatureSettings: '"tnum" 1, "lnum" 1',
-  letterSpacing: "0.01em",
-};
-
-const LAST_SITE_ID_STORAGE_KEY = "valid_last_site_id";
-const ENABLE_DEMO_MODE = import.meta.env.VITE_ENABLE_DEMO_MODE === "true";
-
-const metricLabels: Record<string, string> = {
-  uniques: "Unique Visitors",
-  sessions: "Sessions",
-  pageviews: "Pageviews",
-  conversions: "Conversions",
-  avg_pages_per_visit: "Pages per Visit",
-  bounce_rate: "Bounce Rate",
-  visit_duration: "Visit Duration",
-  revenue: "Revenue",
-};
-const breakdownMetricInlineLabels: Record<BreakdownMetricKey, string> = {
-  uniques: "Visitors",
-  sessions: "Sessions",
-  pageviews: "Pageviews",
-  conversions: "Conversions",
-};
-const hourOfDayLabels = [
-  "12 AM",
-  "1 AM",
-  "2 AM",
-  "3 AM",
-  "4 AM",
-  "5 AM",
-  "6 AM",
-  "7 AM",
-  "8 AM",
-  "9 AM",
-  "10 AM",
-  "11 AM",
-  "12 PM",
-  "1 PM",
-  "2 PM",
-  "3 PM",
-  "4 PM",
-  "5 PM",
-  "6 PM",
-  "7 PM",
-  "8 PM",
-  "9 PM",
-  "10 PM",
-  "11 PM",
-] as const;
-const dayOfWeekLabels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
-
-const metricOptions = [
-  { key: "pageviews", label: "Pageviews" },
-  { key: "uniques", label: "Unique Visitors" },
-  { key: "sessions", label: "Sessions" },
-  { key: "conversions", label: "Conversions" },
-  { key: "revenue", label: "Revenue" },
-  { key: "avg_pages_per_visit", label: "Average Pages per Visit" },
-  { key: "visit_duration", label: "Visit Duration" },
-  { key: "bounce_rate", label: "Bounce Rate" },
-];
-const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
-const breakdownDimensions: BreakdownDimension[] = ["sources", "pages", "devices", "countries", "conversions", "hour_of_day", "day_of_week"];
-const timezoneOptions = [
-  "UTC",
-  "America/Chicago",
-  "America/New_York",
-  "America/Los_Angeles",
-  "Europe/London",
-  "Europe/Berlin",
-] as const;
-const goalEligibleMetrics = ["revenue", "conversions", "pageviews", "sessions", "uniques"] as const;
-type GoalMetric = (typeof goalEligibleMetrics)[number];
-type GoalRepeat = "monthly";
-
-interface MetricGoal {
-  metric: GoalMetric;
-  target: number;
-  periodDays: number;
-  repeat: GoalRepeat;
-  updatedAt: string;
-}
-
-type SiteGoalsMap = Partial<Record<GoalMetric, MetricGoal>>;
-type GoalStore = Record<string, SiteGoalsMap>;
-const DASHBOARD_GOALS_STORAGE_KEY = "valid_dashboard_metric_goals_v1";
 
 const readGoalStore = (): GoalStore => {
   if (typeof window === "undefined") return {};
@@ -328,55 +282,6 @@ const removeGoalForSite = (siteId: string, metric: GoalMetric): SiteGoalsMap => 
   return current;
 };
 
-const rangeOptions = ["Today", "Yesterday", "Last 7", "Last 30", "Last 90", "MTD", "YTD", "Custom"] as const;
-const forecastOptions = [
-  { key: "7d", label: "Next 7 Days", kind: "days", days: 7 },
-  { key: "30d", label: "Next 30 Days", kind: "days", days: 30 },
-  { key: "60d", label: "Next 60 Days", kind: "days", days: 60 },
-  { key: "90d", label: "Next 90 Days", kind: "days", days: 90 },
-  { key: "q1", label: "Q1", kind: "quarter", quarter: 1 },
-  { key: "q2", label: "Q2", kind: "quarter", quarter: 2 },
-  { key: "q3", label: "Q3", kind: "quarter", quarter: 3 },
-  { key: "q4", label: "Q4", kind: "quarter", quarter: 4 },
-] as const;
-
-const formatCurrency = (value: number) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(value);
-
-const formatDuration = (seconds: number) => {
-  if (!Number.isFinite(seconds) || seconds < 0) return "—";
-  const rounded = Math.round(seconds);
-  const minutes = Math.floor(rounded / 60);
-  const secs = rounded % 60;
-  if (minutes >= 60) {
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return `${hours}h ${mins}m`;
-  }
-  return `${minutes}m ${secs.toString().padStart(2, "0")}s`;
-};
-
-const formatMetricValue = (metric: string, value: number) => {
-  if (!Number.isFinite(value)) return "N/A";
-  if (metric === "revenue") return formatCurrency(value);
-  if (metric === "visit_duration") return formatDuration(value);
-  if (metric.includes("rate")) return formatPercent(value);
-  return formatNumber(value);
-};
-
-const formatDailyPace = (metric: string, value: number) => {
-  if (!Number.isFinite(value)) return "—";
-  if (metric === "revenue") return `${formatCurrency(value)}/day`;
-  if (Math.abs(value) < 10 && !Number.isInteger(value)) return `${value.toFixed(1)}/day`;
-  return `${formatNumber(value)}/day`;
-};
-
-const MAX_PUBLISHED_FORECAST_ACCURACY_MAPE = 0.5;
-
 const metricSupportsGoals = (metric: string): metric is GoalMetric =>
   (goalEligibleMetrics as readonly string[]).includes(metric);
 
@@ -395,8 +300,6 @@ const formatAxisDate = (value: string) =>
   new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const formatTooltipDate = (value: string) =>
   new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-
-type ChartGranularity = "day" | "week" | "month";
 
 // Returns the ISO date (YYYY-MM-DD) marking the start of the bucket that contains `day`.
 // Weeks start on Monday so partial weeks line up with common analytics conventions.
@@ -471,14 +374,9 @@ const deriveVisitDurationSeconds = (avgPagesPerVisit: number, bounceRate: number
   return clamp((avgPagesPerVisit - 1) * 45 + (1 - bounceRate) * 30, 0, 1800);
 };
 
-type ForecastOption = (typeof forecastOptions)[number];
-type RangeOption = (typeof rangeOptions)[number];
-type DateRange = { start: string; end: string };
-
 const parseDay = (day: string) => new Date(`${day}T00:00:00`);
 const formatIsoDate = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-const MS_PER_DAY = 86_400_000;
 
 const getQuarterWindow = (quarter: number, reference: Date) => {
   const currentQuarter = Math.floor(reference.getMonth() / 3) + 1;
@@ -522,154 +420,6 @@ const resolveForecastWindow = (
   });
   return { label, entries: windowEntries };
 };
-
-type BreakdownMetricTotals = Partial<Record<BreakdownMetricKey, number>>;
-
-interface BreakdownTableRow {
-  label: string;
-  metrics: BreakdownMetricTotals;
-}
-
-interface ActiveFilter {
-  dimension: string;
-  value: string;
-  share: number;
-}
-
-interface BreakdownData {
-  rows: BreakdownTableRow[];
-  total: number;
-  primaryMetric: BreakdownMetricKey;
-  metricKeys: BreakdownMetricKey[];
-}
-
-type BreakdownErrorMap = Partial<Record<BreakdownDimension, string>>;
-
-interface ComparisonPoint {
-  day: string;
-  value: number;
-}
-
-interface TrendChartPoint {
-  day: string;
-  actual: number | null;
-  todaySoFar: number | null;
-  todayBridge: number | null;
-  compare: number | null;
-  compareDay: string | null;
-  forecast: number | null;
-  forecastLine: number | null;
-  forecastLower: number | null;
-  forecastUpper: number | null;
-  forecastBandSpan: number | null;
-  deltaPositiveRange: [number, number] | null;
-  deltaNegativeRange: [number, number] | null;
-}
-
-const DeviceIcon: React.FC<{ label: string }> = ({ label }) => {
-  const commonProps = {
-    width: 14,
-    height: 14,
-    viewBox: "0 0 14 14",
-    fill: "none",
-    stroke: "#94A3B8",
-    strokeWidth: 1.3,
-    strokeLinecap: "round" as const,
-    strokeLinejoin: "round" as const,
-    "aria-hidden": true,
-  };
-
-  if (label === "Mobile") {
-    return (
-      <svg {...commonProps}>
-        <rect x="4" y="1.5" width="6" height="11" rx="1.6" />
-        <path d="M6.3 10.2h1.4" />
-      </svg>
-    );
-  }
-
-  if (label === "Tablet") {
-    return (
-      <svg {...commonProps}>
-        <rect x="2.7" y="1.7" width="8.6" height="10.6" rx="1.2" />
-        <path d="M6.2 10.4h1.6" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg {...commonProps}>
-      <rect x="1.7" y="2" width="10.6" height="7" rx="1" />
-      <path d="M4.7 11.5h4.6" />
-      <path d="M7 9v2.5" />
-    </svg>
-  );
-};
-
-const renderBreakdownLabel = (dimension: string | undefined, label: string) => {
-  if (dimension !== "device") return label;
-  return (
-    <span className="inline-flex min-w-0 items-center gap-2">
-      <DeviceIcon label={label} />
-      <span className="truncate">{label}</span>
-    </span>
-  );
-};
-
-const filterDimensionLabels: Record<string, string> = {
-  channel: "Channel",
-  source: "Source",
-  source_medium: "Source / Medium",
-  campaign: "Campaign",
-  content: "Content",
-  term: "Term",
-  page: "Page",
-  country: "Country",
-  device: "Device",
-  goal: "Goal",
-  hour_of_day: "Hour",
-  day_of_week: "Day",
-};
-
-const renderFilterDimensionLabel = (dimension: string): string =>
-  filterDimensionLabels[dimension] ??
-  dimension
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-
-const breakdownFallbackDimensionLabels: Record<string, string> = {
-  acquisition: "Channel",
-  "traffic sources": "Channel",
-  "top pages": "Page",
-  countries: "Country",
-  devices: "Device",
-  goals: "Goal",
-  "time parting": "Time",
-};
-
-const getBreakdownDimensionHeaderLabel = (title: string, rowDimension?: string): string => {
-  if (rowDimension) return renderFilterDimensionLabel(rowDimension);
-  return breakdownFallbackDimensionLabels[title.toLowerCase()] ?? "Dimension";
-};
-
-const breakdownBarColorsByDimension: Record<string, string> = {
-  channel: "#eef2ff",
-  source: "#eef2ff",
-  source_medium: "#eef2ff",
-  campaign: "#eef2ff",
-  content: "#eef2ff",
-  term: "#eef2ff",
-  page: "#eef2ff",
-  country: "#eef2ff",
-  device: "#eef2ff",
-  goal: "#eef2ff",
-  hour_of_day: "#eef2ff",
-  day_of_week: "#eef2ff",
-  hostname: "#eef2ff",
-};
-
-const getBreakdownBarColor = (rowDimension?: string): string =>
-  (rowDimension && breakdownBarColorsByDimension[rowDimension]) || "#eef2ff";
 
 const createEmptyBreakdownData = (
   primaryMetric: BreakdownMetricKey,
@@ -790,8 +540,6 @@ const enumerateDays = (startDay: string, endDay: string): string[] => {
   return days;
 };
 
-type DailyValuePoint = { day: string; value: number };
-
 const fillMissingDaysWithZero = (
   entries: DailyValuePoint[],
   rangeStart: string,
@@ -897,66 +645,6 @@ const buildSeededForecast = (entries: { day: string; value: number }[], horizonD
   return forecast;
 };
 
-const getBreakdownMetricValue = (row: BreakdownTableRow, metric: BreakdownMetricKey) => row.metrics[metric] ?? 0;
-
-const aggregateRowsByLabel = (rows: BreakdownTableRow[]) => {
-  const bucket = new Map<string, BreakdownMetricTotals>();
-  rows.forEach((row) => {
-    const existing = bucket.get(row.label) ?? {};
-    const next: BreakdownMetricTotals = { ...existing };
-    Object.entries(row.metrics).forEach(([metric, value]) => {
-      next[metric as BreakdownMetricKey] = (next[metric as BreakdownMetricKey] ?? 0) + value;
-    });
-    bucket.set(row.label, next);
-  });
-  return Array.from(bucket.entries())
-    .map(([label, metrics]) => ({ label, metrics }))
-    .sort((a, b) => {
-      const aPrimary = getBreakdownMetricValue(a, "sessions") || getBreakdownMetricValue(a, "pageviews");
-      const bPrimary = getBreakdownMetricValue(b, "sessions") || getBreakdownMetricValue(b, "pageviews");
-      return bPrimary - aPrimary || a.label.localeCompare(b.label);
-    });
-};
-
-const SunIcon: React.FC = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.4"
-    strokeLinecap="round"
-    aria-hidden="true"
-  >
-    <circle cx="8" cy="8" r="3" />
-    <line x1="8" y1="1.5" x2="8" y2="3" />
-    <line x1="8" y1="13" x2="8" y2="14.5" />
-    <line x1="1.5" y1="8" x2="3" y2="8" />
-    <line x1="13" y1="8" x2="14.5" y2="8" />
-    <line x1="3.4" y1="3.4" x2="4.4" y2="4.4" />
-    <line x1="11.6" y1="11.6" x2="12.6" y2="12.6" />
-    <line x1="3.4" y1="12.6" x2="4.4" y2="11.6" />
-    <line x1="11.6" y1="4.4" x2="12.6" y2="3.4" />
-  </svg>
-);
-
-const MoonIcon: React.FC = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.4"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M13.5 9.5A5.5 5.5 0 1 1 6.5 2.5 a4.5 4.5 0 0 0 7 7Z" />
-  </svg>
-);
-
 const ThemeToggle: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const isDark = theme === "dark";
@@ -970,562 +658,6 @@ const ThemeToggle: React.FC = () => {
     >
       {isDark ? <SunIcon /> : <MoonIcon />}
     </button>
-  );
-};
-
-const ExpandIcon: React.FC = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <polyline points="3 6.5 3 3 6.5 3" />
-    <polyline points="9.5 3 13 3 13 6.5" />
-    <polyline points="13 9.5 13 13 9.5 13" />
-    <polyline points="6.5 13 3 13 3 9.5" />
-  </svg>
-);
-
-const CloseIcon: React.FC = () => (
-  <svg
-    width="14"
-    height="14"
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    strokeLinecap="round"
-    aria-hidden="true"
-  >
-    <line x1="4" y1="4" x2="12" y2="12" />
-    <line x1="12" y1="4" x2="4" y2="12" />
-  </svg>
-);
-
-const TableBlock: React.FC<{
-  title: string;
-  header?: React.ReactNode;
-  rows: BreakdownTableRow[];
-  metricKeys: BreakdownMetricKey[];
-  primaryMetric: BreakdownMetricKey;
-  total?: number;
-  emptyState?: string;
-  error?: string | null;
-  rowDimension?: string;
-  activeFilters?: ActiveFilter[];
-  onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
-}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, error, rowDimension, activeFilters, onToggleFilter }) => {
-  const [expanded, setExpanded] = useState(false);
-  const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
-  const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
-
-  useEffect(() => {
-    if (!expanded) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setExpanded(false);
-    };
-    window.addEventListener("keydown", onKey);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [expanded]);
-
-  const renderRows = (compact: boolean) => {
-    if (error) {
-      return (
-        <div className="py-6 text-xs text-[#8B2635]" style={fontBody}>
-          {error}
-        </div>
-      );
-    }
-    if (rows.length === 0) {
-      return (
-        <div className="py-6 text-xs text-gray-400" style={fontBody}>
-          {emptyState ?? "Awaiting events. This table will populate after data arrives."}
-        </div>
-      );
-    }
-    const dimensionLabel = getBreakdownDimensionHeaderLabel(title, rowDimension);
-    const metricMinWidth = compact ? "minmax(64px,auto)" : "minmax(86px,auto)";
-    const gridTemplateColumns = `minmax(0,1fr) ${metricKeys.map(() => metricMinWidth).join(" ")}`;
-    const gridStyle: React.CSSProperties = { gridTemplateColumns };
-    const barColor = getBreakdownBarColor(rowDimension);
-    return (
-      <div className="space-y-1.5">
-        <div
-          className={`grid items-center gap-2 border-b border-[var(--color-border-subtle)] pb-2 text-[11px] text-[#6B7280] ${
-            compact ? "" : "text-xs"
-          }`}
-          style={{ ...fontBody, ...gridStyle }}
-        >
-          <div className="uppercase tracking-[0.06em]">{dimensionLabel}</div>
-          {metricKeys.map((metricKey) => (
-            <div key={metricKey} className="text-right uppercase tracking-[0.06em]">
-              {breakdownMetricInlineLabels[metricKey]}
-            </div>
-          ))}
-        </div>
-        {rows.map((row) => {
-          const primaryValue = getBreakdownMetricValue(row, primaryMetric);
-          const width = maxValue > 0 ? Math.max(5, (primaryValue / maxValue) * 100) : 0;
-          const isActive = Boolean(
-            rowDimension && activeFilters?.some((f) => f.dimension === rowDimension && f.value === row.label)
-          );
-          const labelClass = compact
-            ? "truncate whitespace-nowrap"
-            : "whitespace-normal break-words";
-          const textSize = compact ? "text-[13px]" : "text-sm";
-          return (
-            <div key={row.label} className={compact ? "py-1" : "py-1.5"}>
-              <div className="grid items-center gap-2" style={gridStyle}>
-                <button
-                  type="button"
-                  className={`relative min-w-0 overflow-hidden rounded-sm px-2 py-1.5 text-left ${textSize} text-[#374151] transition-colors ${
-                    rowDimension && onToggleFilter
-                      ? isActive
-                        ? "text-[#4338ca] underline decoration-[#4338ca] underline-offset-2"
-                        : "hover:text-[#4338ca] hover:underline hover:decoration-[#4338ca] hover:underline-offset-2"
-                      : ""
-                  }`}
-                  style={fontBody}
-                  onClick={() => {
-                    if (!rowDimension || !onToggleFilter) return;
-                    onToggleFilter(rowDimension, row, totalValue, primaryMetric);
-                  }}
-                >
-                  <span
-                    className="pointer-events-none absolute inset-y-0 left-0 rounded-sm"
-                    style={{ width: `${width}%`, backgroundColor: barColor }}
-                  />
-                  <span className={`relative z-10 block min-w-0 ${labelClass}`}>
-                    {renderBreakdownLabel(rowDimension, row.label)}
-                  </span>
-                </button>
-                {metricKeys.map((metricKey) => (
-                  <div
-                    key={metricKey}
-                    className={`${textSize} whitespace-nowrap text-right font-medium text-[#111827] metric-number`}
-                    style={fontMetric}
-                  >
-                    {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  return (
-    <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-      <div className="mb-4 flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          {header ? (
-            header
-          ) : (
-            <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
-              {title}
-            </div>
-          )}
-        </div>
-        <button
-          type="button"
-          aria-label={`Expand ${title}`}
-          title="Expand"
-          onClick={() => setExpanded(true)}
-          className="shrink-0 p-1 text-gray-400 transition-colors hover:text-[#1F2937]"
-        >
-          <ExpandIcon />
-        </button>
-      </div>
-      {renderRows(true)}
-      {expanded && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/50 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`${title} details`}
-          onClick={() => setExpanded(false)}
-        >
-          <div
-            className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg border border-[var(--color-border-subtle)] bg-white shadow-xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border-subtle)] px-5 py-3">
-              <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                {title}
-              </div>
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={() => setExpanded(false)}
-                className="p-1 text-gray-400 transition-colors hover:text-[#1F2937]"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="overflow-auto px-5 py-4">{renderRows(false)}</div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const shortDayOfWeekLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
-const hourTickIndexes = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22] as const;
-
-const getHourIndexFromLabel = (label: string): number => {
-  const numeric = Number(label);
-  if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 23) return numeric;
-  const normalized = label.trim().toLowerCase();
-  const exactIndex = hourOfDayLabels.findIndex((hour) => hour.toLowerCase() === normalized);
-  if (exactIndex >= 0) return exactIndex;
-  return -1;
-};
-
-const getDayIndexFromLabel = (label: string): number => {
-  const normalized = label.trim().toLowerCase();
-  const exactIndex = dayOfWeekLabels.findIndex((day) => day.toLowerCase() === normalized);
-  if (exactIndex >= 0) return exactIndex;
-  const shortIndex = shortDayOfWeekLabels.findIndex((day) => day.toLowerCase() === normalized.slice(0, 3));
-  if (shortIndex >= 0) return shortIndex;
-  const numeric = Number(label);
-  if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 6) return numeric;
-  return -1;
-};
-
-const TimePartingHeatmap: React.FC<{
-  hourRows: BreakdownTableRow[];
-  dayRows: BreakdownTableRow[];
-  primaryMetric: BreakdownMetricKey;
-  dayType: TimePartingDayType;
-  setDayType: (value: TimePartingDayType) => void;
-  emptyState: string;
-  error?: string | null;
-  rangeLabel: string;
-}> = ({ hourRows, dayRows, primaryMetric, dayType, setDayType, emptyState, error, rangeLabel }) => {
-  const hourValues = Array.from({ length: 24 }, () => 0);
-  const dayValues = Array.from({ length: 7 }, () => 0);
-
-  hourRows.forEach((row) => {
-    const index = getHourIndexFromLabel(row.label);
-    if (index >= 0) hourValues[index] = getBreakdownMetricValue(row, primaryMetric);
-  });
-  dayRows.forEach((row) => {
-    const index = getDayIndexFromLabel(row.label);
-    if (index >= 0) dayValues[index] = getBreakdownMetricValue(row, primaryMetric);
-  });
-
-  const visibleDayIndexes =
-    dayType === "weekday" ? [0, 1, 2, 3, 4] : dayType === "weekend" ? [5, 6] : [0, 1, 2, 3, 4, 5, 6];
-  const maxHour = Math.max(...hourValues, 0);
-  const maxDay = Math.max(...dayValues, 0);
-  const hasData = maxHour > 0 || maxDay > 0;
-  let peakLabel = "No peak yet";
-  let peakValue = 0;
-
-  const getIntensity = (dayIndex: number, hourIndex: number) => {
-    const hourShare = maxHour > 0 ? hourValues[hourIndex] / maxHour : 0;
-    const dayShare = maxDay > 0 ? dayValues[dayIndex] / maxDay : 0;
-    if (!hasData) return 0;
-    return clamp(hourShare * 0.72 + dayShare * 0.28, 0.08, 1);
-  };
-
-  visibleDayIndexes.forEach((dayIndex) => {
-    hourValues.forEach((_, hourIndex) => {
-      const intensity = getIntensity(dayIndex, hourIndex);
-      if (intensity > peakValue) {
-        peakValue = intensity;
-        peakLabel = `${shortDayOfWeekLabels[dayIndex]} · ${hourOfDayLabels[hourIndex]}`;
-      }
-    });
-  });
-
-  return (
-    <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
-          When visitors arrive
-        </div>
-        <div className="flex items-center gap-1 rounded-md bg-[#F1F3F6] p-0.5 text-[11px]" style={fontBody}>
-          {([
-            ["all", "All"],
-            ["weekday", "Weekdays"],
-            ["weekend", "Weekends"],
-          ] as const).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              className={
-                dayType === value
-                  ? "rounded bg-white px-2.5 py-1 font-semibold text-[#1F2937] shadow-sm"
-                  : "px-2.5 py-1 font-semibold text-[#7B8190] hover:text-[#1F2937]"
-              }
-              onClick={() => setDayType(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {error ? (
-        <div className="py-10 text-xs text-[#8B2635]" style={fontBody}>
-          {error}
-        </div>
-      ) : !hasData ? (
-        <div className="py-10 text-xs text-gray-400" style={fontBody}>
-          {emptyState}
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-[38px_1fr] gap-x-2 gap-y-1">
-            <div />
-            <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1 text-[10px] text-[#9CA3AF]" style={fontMeta}>
-              {hourTickIndexes.map((hour) => (
-                <div key={hour} className="col-span-2 text-center">
-                  {hour}
-                </div>
-              ))}
-            </div>
-            {visibleDayIndexes.map((dayIndex) => (
-              <React.Fragment key={dayIndex}>
-                <div className="flex h-4 items-center text-[11px] text-[#6B7280]" style={fontBody}>
-                  {shortDayOfWeekLabels[dayIndex]}
-                </div>
-                <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1">
-                  {hourValues.map((_, hourIndex) => {
-                    const intensity = getIntensity(dayIndex, hourIndex);
-                    const alpha = 0.1 + intensity * 0.68;
-                    return (
-                      <div
-                        key={`${dayIndex}-${hourIndex}`}
-                        className="h-4 rounded-[2px]"
-                        title={`${dayOfWeekLabels[dayIndex]} ${hourOfDayLabels[hourIndex]}`}
-                        style={{ backgroundColor: `rgba(79, 70, 229, ${alpha})` }}
-                      />
-                    );
-                  })}
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#7B8190]" style={fontBody}>
-            <span>
-              Peak · <span className="font-semibold text-[#4B5563]">{peakLabel}</span>
-            </span>
-            <span>Period · {rangeLabel}</span>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
-
-const GoalsProgressCard: React.FC<{
-  goals: MetricGoal[];
-  values: Record<string, number>;
-  dayCount: number;
-  rangeLabel: string;
-  siteId: string;
-}> = ({ goals, values, dayCount, rangeLabel, siteId }) => (
-  <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-    <div className="mb-4 flex items-start justify-between gap-2">
-      <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
-        Goals
-      </div>
-      <a
-        href={`/site/${encodeURIComponent(siteId)}/settings`}
-        className="text-[11px] font-semibold text-[#5b55ff] hover:text-[#4338ca]"
-        style={fontBody}
-      >
-        + Add goal
-      </a>
-    </div>
-    {goals.length === 0 ? (
-      <div className="py-10 text-xs text-gray-400" style={fontBody}>
-        Goals set in Settings will show here with pacing against the selected period.
-      </div>
-    ) : (
-      <div className="space-y-4">
-        {goals.slice(0, 4).map((goal) => {
-          const currentValue = values[goal.metric] ?? Number.NaN;
-          const targetForWindow = goal.target * (Math.max(1, dayCount) / Math.max(1, goal.periodDays));
-          const progressPct =
-            Number.isFinite(currentValue) && Number.isFinite(targetForWindow) && targetForWindow > 0
-              ? clamp(currentValue / targetForWindow, 0, 1.25)
-              : 0;
-          const gap = Number.isFinite(currentValue) && Number.isFinite(targetForWindow) ? currentValue - targetForWindow : Number.NaN;
-          const statusClass = Number.isFinite(gap) && gap >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-[#FFF1F2] text-[#8B2635]";
-          const statusLabel = Number.isFinite(gap)
-            ? gap >= 0
-              ? "On pace"
-              : "Behind"
-            : "Needs data";
-          return (
-            <div key={goal.metric}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-[13px] font-semibold text-[#374151]" style={fontBody}>
-                    {metricLabels[goal.metric] ?? goal.metric}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-[#7B8190]" style={fontBody}>
-                    Target · {formatMetricValue(goal.metric, targetForWindow)}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="metric-number text-[13px] font-semibold text-[#111827]" style={fontMetric}>
-                    {formatMetricValue(goal.metric, currentValue)}
-                  </div>
-                  <span className={`mt-1 inline-flex rounded px-1.5 py-0.5 text-[10px] font-semibold ${statusClass}`} style={fontBody}>
-                    {statusLabel}
-                  </span>
-                </div>
-              </div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#EEF1F4]">
-                <div
-                  className="h-full rounded-full bg-[#5b55ff]"
-                  style={{ width: `${Math.min(100, progressPct * 100)}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
-        <div className="pt-1 text-right text-[11px] text-[#7B8190]" style={fontBody}>
-          Period · {rangeLabel}
-        </div>
-      </div>
-    )}
-  </div>
-);
-
-const LogoutButton: React.FC<{ className?: string }> = ({ className }) => {
-  const { token, authEnabled, logout } = useAuth();
-  const navigate = useNavigate();
-
-  if (!authEnabled || !token) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        logout();
-        navigate("/", { replace: true });
-      }}
-      className={className ?? "border border-gray-200 bg-white px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-gray-500 hover:border-gray-300 hover:text-[#1F2937]"}
-      style={fontBody}
-    >
-      Log out
-    </button>
-  );
-};
-
-const formatSiteHost = (site: DashboardSiteSummary): string => {
-  const raw = site.allowed_origin || site.site_id;
-  try {
-    return new URL(raw).hostname || raw;
-  } catch {
-    return raw.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  }
-};
-
-const SitePicker: React.FC<{ sites: DashboardSiteSummary[]; error?: string | null }> = ({ sites, error }) => {
-  const lastSiteId =
-    typeof window !== "undefined" ? localStorage.getItem(LAST_SITE_ID_STORAGE_KEY) : null;
-
-  return (
-    <div className="min-h-screen bg-[#F7F8FA] px-6 py-8 text-[#111827]">
-      <main className="mx-auto max-w-5xl">
-        <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <a href="/" className="text-[28px] font-bold tracking-[-0.01em] text-[#111827]" style={fontHeading}>
-              Valid
-            </a>
-            <div className="mt-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#737B8C]" style={fontMeta}>
-              Select a site
-            </div>
-          </div>
-          <LogoutButton />
-        </header>
-
-        <section className="rounded-lg border border-[#DDE1E7] bg-white p-5 shadow-sm">
-          <div className="flex flex-wrap items-end justify-between gap-3 border-b border-[#EEF1F4] pb-4">
-            <div>
-              <h1 className="text-xl font-semibold text-[#111827]" style={fontHeading}>
-                Your dashboards
-              </h1>
-              <p className="mt-1 text-sm text-[#6B7280]" style={fontBody}>
-                Choose the account you want to view.
-              </p>
-            </div>
-            <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#737B8C]" style={fontMeta}>
-              {sites.length} {sites.length === 1 ? "site" : "sites"}
-            </span>
-          </div>
-
-          {error && (
-            <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700" style={fontBody}>
-              {error}
-            </div>
-          )}
-
-          {sites.length === 0 ? (
-            <div className="py-10 text-center text-sm text-[#6B7280]" style={fontBody}>
-              No dashboards are available for this login.
-            </div>
-          ) : (
-            <div className="divide-y divide-[#EEF1F4]">
-              {sites.map((site) => {
-                const isRecent = site.site_id === lastSiteId;
-                return (
-                  <a
-                    key={site.site_id}
-                    href={`/site/${encodeURIComponent(site.site_id)}`}
-                    className="group flex flex-wrap items-center justify-between gap-4 py-4 text-left hover:bg-[#FAFBFC]"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-base font-semibold text-[#111827]" style={fontHeading}>
-                          {site.site_name || site.site_id}
-                        </span>
-                        {isRecent && (
-                          <span className="rounded border border-[#DDE1E7] bg-[#F7F8FA] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#737B8C]" style={fontMeta}>
-                            Recent
-                          </span>
-                        )}
-                        <span className="rounded border border-[#E5E7EB] bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#737B8C]" style={fontMeta}>
-                          {site.plan}
-                        </span>
-                      </div>
-                      <div className="mt-1 truncate text-sm text-[#6B7280]" style={fontBody}>
-                        {formatSiteHost(site)}
-                      </div>
-                      <div className="mt-1 truncate text-[11px] text-[#9CA3AF]" style={fontMeta}>
-                        {site.site_id}
-                      </div>
-                    </div>
-                    <span className="text-sm font-semibold text-[#5B55FF] group-hover:text-[#4338CA]" style={fontBody}>
-                      Open dashboard -&gt;
-                    </span>
-                  </a>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      </main>
-    </div>
   );
 };
 
@@ -6095,165 +5227,6 @@ const Settings: React.FC = () => {
             </section>
           </div>
         </div>
-      </main>
-    </div>
-  );
-};
-
-const BillingSuccess: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const sessionId = searchParams.get("session_id");
-
-  return (
-    <div className="min-h-screen bg-[#F9FAFB] print-bg">
-      <header className="border-b border-gray-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-          <a href="/" className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
-            Valid
-          </a>
-          <LogoutButton />
-        </div>
-      </header>
-      <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
-        <section className="border border-gray-200 bg-white p-6">
-          <h1 className="text-2xl text-[#1F2937]" style={fontHeading}>
-            Billing Confirmed
-          </h1>
-          <p className="mt-3 text-sm text-gray-700" style={fontBody}>
-            Your subscription update was accepted. We have received the Stripe session and are syncing your site plan.
-          </p>
-          {sessionId ? (
-            <p className="mt-3 text-xs text-gray-500" style={fontBody}>
-              Session ID: <span className="meta-number" style={fontMeta}>{sessionId}</span>
-            </p>
-          ) : null}
-          <div className="mt-6 flex flex-wrap gap-3">
-            <a
-              href="/"
-              className="inline-flex items-center border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white"
-              style={fontBody}
-            >
-              Open Dashboard
-            </a>
-            <a href="/settings" className="inline-flex items-center border border-gray-300 px-4 py-2 text-sm" style={fontBody}>
-              Billing Settings
-            </a>
-          </div>
-        </section>
-      </main>
-    </div>
-  );
-};
-
-const BillingCancel: React.FC = () => (
-  <div className="min-h-screen bg-[#F9FAFB] print-bg">
-    <header className="border-b border-gray-200 bg-white">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <a href="/" className="text-xl font-semibold text-[#1F2937]" style={fontHeading}>
-          Valid
-        </a>
-        <LogoutButton />
-      </div>
-    </header>
-    <main className="mx-auto max-w-3xl px-6 pb-10 pt-10">
-      <section className="border border-gray-200 bg-white p-6">
-        <h1 className="text-2xl text-[#1F2937]" style={fontHeading}>
-          Billing Update Canceled
-        </h1>
-        <p className="mt-3 text-sm text-gray-700" style={fontBody}>
-          No change was made to your subscription. You can return anytime to retry checkout.
-        </p>
-        <div className="mt-6 flex flex-wrap gap-3">
-          <a
-            href="/"
-            className="inline-flex items-center border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white"
-            style={fontBody}
-          >
-            Back to Dashboard
-          </a>
-          <a href="/settings" className="inline-flex items-center border border-gray-300 px-4 py-2 text-sm" style={fontBody}>
-            Review Billing
-          </a>
-        </div>
-      </section>
-    </main>
-  </div>
-);
-
-const LoginGate: React.FC = () => {
-  const { login } = useAuth();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError(null);
-    setIsSubmitting(true);
-    try {
-      await login(username, password);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-[#F9FAFB]">
-      <main className="mx-auto flex min-h-screen max-w-md items-center px-6 py-12">
-        <section className="w-full border border-gray-200 bg-white p-6">
-          <h1 className="text-2xl text-[#1F2937]" style={fontHeading}>
-            Sign In
-          </h1>
-          <p className="mt-2 text-sm text-gray-600" style={fontBody}>
-            Dashboard access is restricted.
-          </p>
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
-            <div>
-              <label className="mb-1 block text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                Username
-              </label>
-              <input
-                type="text"
-                aria-label="Username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                className="w-full border border-gray-300 px-3 py-2 text-sm text-[#111827]"
-                style={fontBody}
-                required
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs uppercase tracking-[0.2em] text-gray-500" style={fontBody}>
-                Password
-              </label>
-              <input
-                type="password"
-                aria-label="Password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="w-full border border-gray-300 px-3 py-2 text-sm text-[#111827]"
-                style={fontBody}
-                required
-              />
-            </div>
-            {error && (
-              <p className="text-sm text-rose-600" style={fontBody}>
-                {error}
-              </p>
-            )}
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full border border-gray-900 bg-gray-900 px-4 py-2 text-sm text-white disabled:opacity-60"
-              style={fontBody}
-            >
-              {isSubmitting ? "Signing in..." : "Sign In"}
-            </button>
-          </form>
-        </section>
       </main>
     </div>
   );

@@ -1,5 +1,6 @@
 import React from "react";
-import { formatNumber, formatPercent } from "../utils/format";
+import { fontBody, fontMetric } from "../styles/typography";
+import { formatMetricValue } from "../utils/format";
 
 interface Props {
   values: Record<string, number>;
@@ -12,51 +13,6 @@ interface Props {
   onSelectMetric?: (metric: string) => void;
   error?: string | null;
 }
-
-const fontBody: React.CSSProperties = {
-  fontFamily: "var(--font-sans)",
-};
-const fontMetric: React.CSSProperties = {
-  fontFamily: "var(--font-sans)",
-  fontVariantNumeric: "tabular-nums lining-nums",
-  fontFeatureSettings: '"tnum" 1, "lnum" 1',
-  letterSpacing: "0em",
-};
-
-const formatCurrency = (value: number): string => {
-  if (!Number.isFinite(value)) return "—";
-  const abs = Math.abs(value);
-  const sign = value < 0 ? "-" : "";
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 10_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(value);
-};
-
-const formatDuration = (seconds: number): string => {
-  if (!Number.isFinite(seconds) || seconds < 0) return "—";
-  const rounded = Math.round(seconds);
-  const minutes = Math.floor(rounded / 60);
-  const secs = rounded % 60;
-  if (minutes >= 60) {
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return `${hours}h ${mins}m`;
-  }
-  return `${minutes}m ${secs.toString().padStart(2, "0")}s`;
-};
-
-const formatMetricValue = (metric: string, value: number) => {
-  if (!Number.isFinite(value)) return "—";
-  if (metric === "revenue") return formatCurrency(value);
-  if (metric === "visit_duration") return formatDuration(value);
-  if (metric.includes("rate")) return formatPercent(value);
-  if (metric === "avg_pages_per_visit") return value.toFixed(2);
-  return formatNumber(value);
-};
 
 const cards = [
   { key: "pageviews", label: "Pageviews", tier: "primary" as const },
