@@ -13,16 +13,22 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Readiness endpoint checks database and surfaces auth/billing configuration state (`/health/readiness`).
 - [x] Site-level tracking health panel/API for recent reports, active key, reducer, aggregate windows, and forecast state.
 - [x] Standard import history and rollback for newly tagged import batches while raw import rows are retained.
+- [x] Historical import preview with duplicate-row checks, live-overlap warnings, and replaceable-import warnings.
+- [x] Plausible-style installation review flow from Settings with one primary Review installation action.
 - [x] Owner-managed dashboard site access for existing dashboard users.
 - [x] Owner-managed anomaly alert settings for Slack and email destinations.
 - [x] Reducer cadence supports hourly operation (`PROD_REDUCER_INTERVAL_MINUTES`, default `60`).
+- [x] Forecast guardrails: fresh forecasts only, non-negative API output, `Building` state when accuracy is not useful.
+- [x] Launch positioning narrowed to privacy-first analytics with forecasting, anomaly context, and goal pacing.
 
 ## Still required before broader launch
 
 - [ ] Complete one real Standard checkout and verify webhook plan flip (`site_plan.plan=standard`) for the purchased site.
 - [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
+- [ ] Decide final Standard entitlement gates for forecasts, notes, goals, alerts, and longer retention before updating Stripe/product copy.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
 - [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
+- [ ] Keep Pro/Enterprise local-DP claims hidden until the Pro path is enabled, tested, and supported commercially.
 - [ ] Run a full launch smoke in production from clean browser:
   - free signup -> dashboard access
   - standard signup -> checkout -> return -> upgraded plan
@@ -52,3 +58,4 @@ This checklist reflects what is live in production and what remains before broad
 - [ ] Alerting for failed reducer/forecast jobs (separate from customer-facing anomaly alerts).
 - [x] Expanded migration import docs for history and rollback.
 - [ ] Pro/Enterprise v2 privacy docs for zero-access local/hybrid DP.
+- [ ] Blog/FAQ explainer for why privacy-first analytics may differ from GA4. Keep this out of onboarding and import settings.

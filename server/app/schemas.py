@@ -180,6 +180,27 @@ class HistoricalCsvImportRequest(BaseModel):
     allow_live_overlap: bool = False
 
 
+class HistoricalImportPreviewOverlap(BaseModel):
+    day: dt.date
+    metric: str
+    source: Literal["live", "historical_import"]
+    count: int
+
+
+class HistoricalImportPreviewResponse(BaseModel):
+    site_id: str
+    valid: bool
+    row_count: int
+    day_count: int
+    start_day: dt.date | None = None
+    end_day: dt.date | None = None
+    metrics: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    live_overlaps: list[HistoricalImportPreviewOverlap] = Field(default_factory=list)
+    replaceable_import_overlaps: list[HistoricalImportPreviewOverlap] = Field(default_factory=list)
+
+
 class HistoricalImportBatchResponse(BaseModel):
     id: int
     site_id: str

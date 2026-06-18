@@ -39,9 +39,11 @@ import {
   createSiteIpBlock,
   grantSiteAccess,
   HistoricalImportBatch,
+  HistoricalImportPreviewResponse,
   importHistoricalCsv,
   deleteSiteIpBlock,
   removeSiteAccess,
+  previewHistoricalCsv,
   resolveActiveSiteId,
   rollbackImportBatch,
   SiteAccessMember,
@@ -3758,6 +3760,9 @@ const Settings: React.FC = () => {
   const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "redirecting" | "error">("idle");
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
   const [importCsvText, setImportCsvText] = useState<string>("");
+  const [importPreview, setImportPreview] = useState<HistoricalImportPreviewResponse | null>(null);
+  const [importPreviewStatus, setImportPreviewStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [importPreviewMessage, setImportPreviewMessage] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [importBatches, setImportBatches] = useState<HistoricalImportBatch[]>([]);
@@ -3770,6 +3775,7 @@ const Settings: React.FC = () => {
   const [installVerify, setInstallVerify] = useState<SdkInstallVerifyResponse | null>(null);
   const [installVerifyStatus, setInstallVerifyStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [installVerifyMessage, setInstallVerifyMessage] = useState<string | null>(null);
+  const [isInstallReviewOpen, setIsInstallReviewOpen] = useState<boolean>(false);
   const [accessMembers, setAccessMembers] = useState<SiteAccessMember[]>([]);
   const [accessUsername, setAccessUsername] = useState<string>("");
   const [accessStatus, setAccessStatus] = useState<"idle" | "loading" | "saving" | "error">("idle");
@@ -4035,6 +4041,9 @@ const Settings: React.FC = () => {
     if (!file) return;
     setImportStatus("idle");
     setImportMessage(null);
+    setImportPreview(null);
+    setImportPreviewStatus("idle");
+    setImportPreviewMessage(null);
     try {
       setImportCsvText(await file.text());
     } catch {
@@ -4043,11 +4052,50 @@ const Settings: React.FC = () => {
     }
   };
 
+  const previewHistoricalImport = async () => {
+    const csvText = importCsvText.trim();
+    if (!csvText) {
+      setImportPreviewStatus("error");
+      setImportPreviewMessage("Paste or upload a CSV before previewing.");
+      setImportPreview(null);
+      return;
+    }
+    setImportPreviewStatus("loading");
+    setImportPreviewMessage(null);
+    setImportStatus("idle");
+    setImportMessage(null);
+    try {
+      const result = await previewHistoricalCsv(csvText, token ?? undefined, siteId);
+      setImportPreview(result);
+      setImportPreviewStatus(result.valid ? "ready" : "error");
+      if (result.valid) {
+        setImportPreviewMessage(
+          `Ready to import ${formatNumber(result.row_count)} rows across ${formatNumber(result.day_count)} days.`
+        );
+      } else if (result.live_overlaps.length > 0) {
+        setImportPreviewMessage("Remove overlapping live-data dates before importing.");
+      } else if (result.errors.length > 0) {
+        setImportPreviewMessage(result.errors[0]);
+      } else {
+        setImportPreviewMessage("Review the warnings before importing.");
+      }
+    } catch (error) {
+      setImportPreview(null);
+      setImportPreviewStatus("error");
+      setImportPreviewMessage(extractApiErrorMessage(error) ?? "Unable to preview historical data right now.");
+    }
+  };
+
   const submitHistoricalImport = async () => {
     const csvText = importCsvText.trim();
     if (!csvText) {
       setImportStatus("error");
       setImportMessage("Paste or upload a CSV before importing.");
+      return;
+    }
+    if (!importPreview?.valid) {
+      setImportStatus("error");
+      setImportMessage("Preview the CSV and resolve any overlap warnings before importing.");
       return;
     }
     setImportStatus("loading");
@@ -4060,6 +4108,9 @@ const Settings: React.FC = () => {
           result.batch_id ? ` in batch ${result.batch_id}` : ""
         }.`
       );
+      setImportPreview(null);
+      setImportPreviewStatus("idle");
+      setImportPreviewMessage(null);
       await refreshImportHistory();
     } catch (error) {
       setImportStatus("error");
@@ -4208,7 +4259,33 @@ const Settings: React.FC = () => {
   const hasTimezoneChanges = timezoneDraft !== timezone;
   const canImportHistoricalData = billingPlan === "standard";
   const importStatusClassName = importStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
+  const importPreviewStatusClassName = importPreviewStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
+  const canSubmitHistoricalImport = Boolean(importPreview?.valid) && importStatus !== "loading";
   const alertStatusClassName = alertStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
+  const latestInstallReportAt = installVerify?.last_report_at ?? health?.last_report_at ?? null;
+  const installationHasRecentActivity = Boolean(installVerify?.has_recent_activity || health?.last_report_at);
+  const installationStatus = installVerifyStatus === "loading" ? "checking" : health?.overall_status ?? "not reviewed";
+  const installationSummary = installationHasRecentActivity
+    ? `Last event ${formatRelativeTime(latestInstallReportAt)}`
+    : "No recent tracking event verified yet.";
+  const reducerSummary = health?.latest_reducer_status
+    ? `${health.latest_reducer_status}${health.latest_reducer_day ? ` through ${formatShortDate(health.latest_reducer_day)}` : ""}`
+    : "No reducer run recorded yet.";
+  const forecastSummary = health
+    ? health.forecast_metrics_ready.length > 0
+      ? `${health.forecast_metrics_ready.join(", ")} ready${
+          health.forecast_metrics_building.length > 0 ? `; ${health.forecast_metrics_building.join(", ")} building` : ""
+        }`
+      : health.forecast_metrics_building.length > 0
+        ? `${health.forecast_metrics_building.join(", ")} building`
+        : "Forecasts are building."
+    : "Forecast status has not loaded.";
+  const alertSetupSummary = anomalyAlertsEnabled
+    ? `Enabled for ${[
+        slackAlertsEnabled && slackWebhookUrlSet ? "Slack" : null,
+        emailAlertsEnabled ? "email" : null,
+      ].filter(Boolean).join(" and ") || "selected channels"}`
+    : "Not enabled.";
 
   const billingDescription = (() => {
     if (billingPlan === "standard") {
@@ -4219,7 +4296,7 @@ const Settings: React.FC = () => {
     if (billingPlan === "pro") {
       return "Your Pro subscription is active for this site.";
     }
-    return "This site is on the Free plan.";
+    return "This site is on the Free plan. Standard is built for forecasting, anomaly alerts, historical imports, and longer-range trend context.";
   })();
 
   const billingActionLabel =
@@ -4403,7 +4480,7 @@ const Settings: React.FC = () => {
                       Site installation
                     </div>
                     <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
-                      Verify that the tracking script is installed and sending recent data.
+                      Review whether this site is receiving data and ready for reporting.
                     </div>
                   </div>
                   {health ? (
@@ -4417,67 +4494,191 @@ const Settings: React.FC = () => {
                     </span>
                   ) : null}
                 </div>
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                      Site keys
-                    </div>
-                    <div className="mt-2 metric-number text-xl text-[#1F2937]" style={fontMetric}>
-                      {health ? formatNumber(health.active_site_keys) : "—"}
-                    </div>
-                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                      active
-                    </div>
-                  </div>
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3 md:col-span-2">
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                      Recent activity
-                    </div>
-                    <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
-                      {installVerify
-                        ? installVerify.has_recent_activity
-                          ? `${formatNumber(installVerify.recent_reports)} reports in the last ${installVerify.lookback_minutes} minutes`
-                          : `No reports in the last ${installVerify.lookback_minutes} minutes`
-                        : health?.last_report_at
-                          ? `Last report ${formatRelativeTime(health.last_report_at)}`
-                          : "Not verified in this session"}
-                    </div>
-                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                      {installVerify?.last_report_at
-                        ? `Last report at ${formatDateTime(installVerify.last_report_at)}.`
-                        : "Use Review installation after loading the tracked site in a browser."}
-                    </div>
-                  </div>
-                </div>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => void reviewInstallation()}
+                    onClick={() => {
+                      setIsInstallReviewOpen(true);
+                      void reviewInstallation();
+                    }}
                     disabled={installVerifyStatus === "loading"}
                     className="inline-flex border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                     style={fontBody}
                   >
                     {installVerifyStatus === "loading" ? "Checking..." : "Review installation"}
                   </button>
-                  <a
-                    href="#tracking-health"
-                    className="inline-flex border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
-                    style={fontBody}
-                  >
-                    View health
-                  </a>
-                  {installVerifyMessage ? (
-                    <span
-                      className={`text-[11px] ${installVerifyStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`}
-                      role="status"
-                      aria-live="polite"
-                      style={fontBody}
-                    >
-                      {installVerifyMessage}
-                    </span>
-                  ) : null}
+                  <span className="text-[11px] text-gray-500" style={fontBody}>
+                    {installationSummary}
+                  </span>
                 </div>
               </div>
+              {isInstallReviewOpen && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-[#111827]/50 p-4"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Review installation"
+                  onClick={() => setIsInstallReviewOpen(false)}
+                >
+                  <div
+                    className="flex max-h-[90vh] w-full max-w-2xl flex-col border border-gray-200 bg-white shadow-xl"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
+                      <div>
+                        <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                          Review installation
+                        </div>
+                        <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
+                          Check whether this site is installed, receiving data, and ready for reporting.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Close"
+                        onClick={() => setIsInstallReviewOpen(false)}
+                        className="p-1 text-gray-400 transition-colors hover:text-[#1F2937]"
+                      >
+                        <CloseIcon />
+                      </button>
+                    </div>
+                    <div className="overflow-auto px-5 py-4">
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                        <span
+                          className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
+                            installationStatus
+                          )}`}
+                          style={fontBody}
+                        >
+                          {installationStatus}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void reviewInstallation()}
+                          disabled={installVerifyStatus === "loading"}
+                          className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                          style={fontBody}
+                        >
+                          {installVerifyStatus === "loading" ? "Checking..." : "Run review again"}
+                        </button>
+                      </div>
+                      {installVerifyMessage ? (
+                        <div
+                          className={`mb-4 border px-3 py-2 text-[12px] ${
+                            installVerifyStatus === "error"
+                              ? "border-[#FECACA] bg-[#FFF7F7] text-[#8B2635]"
+                              : "border-[var(--color-border-subtle)] bg-[#FCFEFE] text-gray-600"
+                          }`}
+                          role="status"
+                          aria-live="polite"
+                          style={fontBody}
+                        >
+                          {installVerifyMessage}
+                        </div>
+                      ) : null}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {[
+                          {
+                            label: "Script installed",
+                            value: installationHasRecentActivity ? "Receiving data" : "Not verified",
+                            detail: installVerify
+                              ? `${formatNumber(installVerify.recent_reports)} reports in the last ${installVerify.lookback_minutes} minutes`
+                              : "Run the review after loading the tracked site in a browser.",
+                            status: installationHasRecentActivity ? "ok" : "warning",
+                          },
+                          {
+                            label: "Last event",
+                            value: latestInstallReportAt ? formatDateTime(latestInstallReportAt) : "No event recorded",
+                            detail: latestInstallReportAt ? formatRelativeTime(latestInstallReportAt) : "No recent report has reached Valid.",
+                            status: latestInstallReportAt ? "ok" : "warning",
+                          },
+                          {
+                            label: "Detected hostname",
+                            value: health?.detected_hostnames.length ? health.detected_hostnames.join(", ") : "Not detected yet",
+                            detail: "Hostnames come from accepted tracking events.",
+                            status: health?.detected_hostnames.length ? "ok" : "warning",
+                          },
+                          {
+                            label: "Plan",
+                            value: billingPlan,
+                            detail: billingStatusText,
+                            status: billingStatus === "error" ? "error" : "ok",
+                          },
+                          {
+                            label: "Reducer",
+                            value: reducerSummary,
+                            detail: health?.latest_reduced_at ? `Last reduced ${formatRelativeTime(health.latest_reduced_at)}` : "Reducer status updates after aggregate publishing.",
+                            status: health?.latest_reducer_status === "completed" || health?.latest_reducer_status === "ok" ? "ok" : health?.latest_reducer_status ? "warning" : "warning",
+                          },
+                          {
+                            label: "Forecast",
+                            value: forecastSummary,
+                            detail: health?.latest_standard_published_at ? `Latest aggregate ${formatRelativeTime(health.latest_standard_published_at)}` : "Forecasts build after enough completed daily aggregate history.",
+                            status: health?.forecast_metrics_ready.length ? "ok" : "warning",
+                          },
+                          {
+                            label: "Alerts",
+                            value: alertSetupSummary,
+                            detail: alertSettings?.email_delivery_configured || slackWebhookUrlSet ? "Configured destinations can receive anomaly alerts." : "Set Slack or email in Anomaly alerts.",
+                            status: anomalyAlertsEnabled ? "ok" : "warning",
+                          },
+                        ].map((item) => (
+                          <div key={item.label} className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                                {item.label}
+                              </div>
+                              <span
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
+                                  item.status
+                                )}`}
+                                style={fontBody}
+                              >
+                                {item.status}
+                              </span>
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                              {item.value}
+                            </div>
+                            <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                              {item.detail}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {health?.checks.length ? (
+                        <div className="mt-4 border-t border-gray-100 pt-4">
+                          <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                            Detailed checks
+                          </div>
+                          <div className="mt-2 grid gap-2">
+                            {health.checks.map((check) => (
+                              <div key={check.key} className="flex flex-wrap items-start justify-between gap-2 border border-[var(--color-border-subtle)] px-3 py-2">
+                                <div>
+                                  <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
+                                    {check.label}
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-gray-600" style={fontBody}>
+                                    {check.detail}
+                                  </div>
+                                </div>
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
+                                    check.status
+                                  )}`}
+                                  style={fontBody}
+                                >
+                                  {check.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="border border-gray-200 bg-white p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -4695,7 +4896,7 @@ const Settings: React.FC = () => {
                       Enable anomaly alerts
                     </span>
                     <span className="mt-1 block text-[11px] text-gray-500" style={fontBody}>
-                      Alerts are sent after forecast training when the latest data is unusually different from the site's recent pattern.
+                      Alerts are sent after forecast training when the latest completed data is unusually different from the site's recent pattern.
                     </span>
                   </span>
                 </label>
@@ -4896,7 +5097,7 @@ const Settings: React.FC = () => {
                 Plan & billing
               </div>
               <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-                Manage this site's current plan.
+                Manage this site's current plan and forecasting features.
               </div>
               <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
                 <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
@@ -4917,6 +5118,17 @@ const Settings: React.FC = () => {
                 >
                   {billingActionLabel}
                 </button>
+                <div className="mt-4 border-t border-gray-100 pt-3">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Standard adds
+                  </div>
+                  <ul className="mt-2 grid gap-1 text-[11px] text-gray-600" style={fontBody}>
+                    <li>Forecasts with freshness and building-state guardrails</li>
+                    <li>Anomaly detection, Slack/email alerts, notes, and performance targets</li>
+                    <li>Historical data imports for long-range trends and forecast context</li>
+                    <li>Aggregate reporting with short-lived raw processing material</li>
+                  </ul>
+                </div>
               </div>
             </section>
 
@@ -4927,7 +5139,7 @@ const Settings: React.FC = () => {
                     Imports & exports
                   </div>
                   <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-                    Import historical aggregate data for long-range trends and forecasts.
+                    Import historical data for long-range trends and forecasts.
                   </div>
                 </div>
                 <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
@@ -4961,6 +5173,9 @@ const Settings: React.FC = () => {
                       value={importCsvText}
                       onChange={(event) => {
                         setImportCsvText(event.target.value);
+                        setImportPreview(null);
+                        setImportPreviewStatus("idle");
+                        setImportPreviewMessage(null);
                         setImportStatus("idle");
                         setImportMessage(null);
                       }}
@@ -4970,21 +5185,125 @@ const Settings: React.FC = () => {
                       Required columns: day, metric, value. Metrics: pageviews, uniques, sessions, conversions, revenue.
                     </div>
                   </div>
+                  {importPreview || importPreviewMessage ? (
+                    <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                            Preview
+                          </div>
+                          <div className={`mt-1 text-[12px] ${importPreviewStatusClassName}`} style={fontBody}>
+                            {importPreviewMessage ?? "Preview the CSV before importing."}
+                          </div>
+                        </div>
+                        {importPreview ? (
+                          <span
+                            className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
+                              importPreview.valid ? "ok" : "error"
+                            )}`}
+                            style={fontBody}
+                          >
+                            {importPreview.valid ? "Ready" : "Needs review"}
+                          </span>
+                        ) : null}
+                      </div>
+                      {importPreview ? (
+                        <div className="mt-3 grid gap-2 md:grid-cols-3">
+                          <div className="border border-gray-100 bg-white px-2.5 py-2">
+                            <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                              Rows
+                            </div>
+                            <div className="mt-1 metric-number text-lg text-[#1F2937]" style={fontMetric}>
+                              {formatNumber(importPreview.row_count)}
+                            </div>
+                          </div>
+                          <div className="border border-gray-100 bg-white px-2.5 py-2">
+                            <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                              Dates
+                            </div>
+                            <div className="mt-1 text-sm text-[#1F2937]" style={fontBody}>
+                              {importPreview.start_day && importPreview.end_day
+                                ? `${formatShortDate(importPreview.start_day)} - ${formatShortDate(importPreview.end_day)}`
+                                : "-"}
+                            </div>
+                          </div>
+                          <div className="border border-gray-100 bg-white px-2.5 py-2">
+                            <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500" style={fontMeta}>
+                              Metrics
+                            </div>
+                            <div className="mt-1 text-sm text-[#1F2937]" style={fontBody}>
+                              {importPreview.metrics.join(", ") || "-"}
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                      {importPreview?.errors.length ? (
+                        <div className="mt-3 rounded border border-[#FECACA] bg-[#FFF7F7] px-3 py-2 text-[11px] text-[#8B2635]" style={fontBody}>
+                          <div className="font-semibold">Fix these rows before importing:</div>
+                          <ul className="mt-1 list-disc space-y-1 pl-4">
+                            {importPreview.errors.slice(0, 5).map((error) => (
+                              <li key={error}>{error}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {importPreview?.live_overlaps.length ? (
+                        <div className="mt-3 rounded border border-[#FECACA] bg-[#FFF7F7] px-3 py-2 text-[11px] text-[#8B2635]" style={fontBody}>
+                          <div className="font-semibold">This overlaps Valid-collected data.</div>
+                          <div className="mt-1">
+                            Remove these dates from the CSV before importing:{" "}
+                            {importPreview.live_overlaps
+                              .slice(0, 6)
+                              .map((overlap) => `${formatShortDate(overlap.day)} ${overlap.metric}`)
+                              .join(", ")}
+                            {importPreview.live_overlaps.length > 6 ? `, and ${importPreview.live_overlaps.length - 6} more` : ""}.
+                          </div>
+                        </div>
+                      ) : null}
+                      {importPreview?.replaceable_import_overlaps.length ? (
+                        <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800" style={fontBody}>
+                          <div className="font-semibold">Some rows replace a previous import.</div>
+                          <div className="mt-1">
+                            Matching imported rows will be replaced, not double-counted:{" "}
+                            {importPreview.replaceable_import_overlaps
+                              .slice(0, 6)
+                              .map((overlap) => `${formatShortDate(overlap.day)} ${overlap.metric}`)
+                              .join(", ")}
+                            {importPreview.replaceable_import_overlaps.length > 6
+                              ? `, and ${importPreview.replaceable_import_overlaps.length - 6} more`
+                              : ""}.
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       type="button"
-                      onClick={() => void submitHistoricalImport()}
-                      disabled={importStatus === "loading" || !importCsvText.trim()}
+                      onClick={() => void previewHistoricalImport()}
+                      disabled={importPreviewStatus === "loading" || !importCsvText.trim()}
                       className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                       style={fontBody}
                     >
-                      {importStatus === "loading" ? "Importing..." : "Import CSV"}
+                      {importPreviewStatus === "loading" ? "Previewing..." : "Preview import"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void submitHistoricalImport()}
+                      disabled={!canSubmitHistoricalImport}
+                      className="border border-gray-900 bg-gray-900 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-gray-800"
+                      style={fontBody}
+                    >
+                      {importStatus === "loading" ? "Importing..." : "Import historical data"}
                     </button>
                     {importCsvText ? (
                       <button
                         type="button"
                         onClick={() => {
                           setImportCsvText("");
+                          setImportPreview(null);
+                          setImportPreviewStatus("idle");
+                          setImportPreviewMessage(null);
                           setImportStatus("idle");
                           setImportMessage(null);
                         }}

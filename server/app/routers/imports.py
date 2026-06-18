@@ -16,7 +16,10 @@ from ..schemas import (
     HistoricalCsvImportRequest,
     HistoricalImportBatchResponse,
     HistoricalImportHistoryResponse,
+    HistoricalImportPreviewOverlap,
+    HistoricalImportPreviewResponse,
     HistoricalImportRequest,
+    HistoricalImportRow,
     HistoricalImportResponse,
     HistoricalImportRollbackResponse,
 )
@@ -38,6 +41,83 @@ async def _require_standard_import_access(
             detail="Historical imports require the Standard plan",
         )
     return target_plan
+
+
+def _parse_historical_csv(content: str) -> tuple[list[HistoricalImportRow], list[str]]:
+    reader = csv.DictReader(io.StringIO(content))
+    rows: list[HistoricalImportRow] = []
+    errors: list[str] = []
+    if not reader.fieldnames:
+        return rows, ["CSV must include a header row with day, metric, value."]
+
+    required = {"day", "metric", "value"}
+    normalized_fields = {field.strip() for field in reader.fieldnames if field}
+    missing = sorted(required - normalized_fields)
+    if missing:
+        return rows, [f"CSV is missing required column(s): {', '.join(missing)}."]
+
+    seen: set[tuple[dt.date, str]] = set()
+    for idx, row in enumerate(reader, start=2):
+        try:
+            day = dt.date.fromisoformat(str(row.get("day", "")).strip())
+            metric = str(row.get("metric", "")).strip()
+            value = float(row.get("value", 0.0))
+            if metric not in {"uniques", "pageviews", "sessions", "conversions", "revenue"}:
+                raise ValueError("invalid metric")
+            if value < 0:
+                raise ValueError("value must be non-negative")
+            key = (day, metric)
+            if key in seen:
+                errors.append(f"Duplicate import row for {day.isoformat()} {metric}.")
+                continue
+            seen.add(key)
+            rows.append(HistoricalImportRow(day=day, metric=metric, value=value))
+        except Exception as exc:
+            errors.append(f"Invalid CSV row {idx}: {exc}")
+    return rows, errors
+
+
+async def _find_existing_import_overlaps(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    rows_by_key: dict[tuple[dt.date, str], HistoricalImportRow],
+) -> tuple[list[HistoricalImportPreviewOverlap], list[HistoricalImportPreviewOverlap]]:
+    if not rows_by_key:
+        return [], []
+
+    touched_days = {day for day, _metric in rows_by_key}
+    touched_metrics = {metric for _day, metric in rows_by_key}
+    existing_reports = (
+        await session.execute(
+            select(RawReport)
+            .where(
+                RawReport.site_id == site_id,
+                RawReport.day >= min(touched_days),
+                RawReport.day <= max(touched_days),
+                RawReport.kind.in_(touched_metrics),
+            )
+            .order_by(RawReport.day, RawReport.kind, RawReport.id)
+        )
+    ).scalars().all()
+
+    live_counts: dict[tuple[dt.date, str], int] = {}
+    historical_counts: dict[tuple[dt.date, str], int] = {}
+    for report in existing_reports:
+        key = (report.day, report.kind)
+        if key not in rows_by_key:
+            continue
+        report_payload = report.payload if isinstance(report.payload, dict) else {}
+        target = historical_counts if report_payload.get("historical_import") else live_counts
+        target[key] = target.get(key, 0) + 1
+
+    def serialize(counts: dict[tuple[dt.date, str], int], source: str) -> list[HistoricalImportPreviewOverlap]:
+        return [
+            HistoricalImportPreviewOverlap(day=day, metric=metric, source=source, count=count)
+            for (day, metric), count in sorted(counts.items())
+        ]
+
+    return serialize(live_counts, "live"), serialize(historical_counts, "historical_import")
 
 
 async def _import_rows(
@@ -66,30 +146,12 @@ async def _import_rows(
         return HistoricalImportResponse(site_id=payload.site_id, imported_rows=0, reduced_days=0, batch_id=None)
 
     if touched_days:
-        existing_reports = (
-            await session.execute(
-                select(RawReport)
-                .where(
-                    RawReport.site_id == payload.site_id,
-                    RawReport.day >= min(touched_days),
-                    RawReport.day <= max(touched_days),
-                    RawReport.kind.in_(touched_metrics),
-                )
-                .order_by(RawReport.day, RawReport.kind, RawReport.id)
-            )
-        ).scalars().all()
-
-        live_overlap: set[tuple[dt.date, str]] = set()
-        historical_reports_to_replace: list[RawReport] = []
-        for report in existing_reports:
-            key = (report.day, report.kind)
-            if key not in rows_by_key:
-                continue
-            report_payload = report.payload if isinstance(report.payload, dict) else {}
-            if report_payload.get("historical_import"):
-                historical_reports_to_replace.append(report)
-            else:
-                live_overlap.add(key)
+        live_overlaps, _replaceable_import_overlaps = await _find_existing_import_overlaps(
+            session=session,
+            site_id=payload.site_id,
+            rows_by_key=rows_by_key,
+        )
+        live_overlap = {(overlap.day, overlap.metric) for overlap in live_overlaps}
 
         if live_overlap and not payload.allow_live_overlap:
             overlap_preview = ", ".join(
@@ -104,8 +166,22 @@ async def _import_rows(
                 ),
             )
 
+        historical_reports_to_replace = (
+            await session.execute(
+                select(RawReport).where(
+                    RawReport.site_id == payload.site_id,
+                    RawReport.day >= min(touched_days),
+                    RawReport.day <= max(touched_days),
+                    RawReport.kind.in_(touched_metrics),
+                    RawReport.import_batch_id.is_not(None),
+                )
+            )
+        ).scalars().all()
         for report in historical_reports_to_replace:
-            await session.delete(report)
+            if (report.day, report.kind) in rows_by_key:
+                report_payload = report.payload if isinstance(report.payload, dict) else {}
+                if report_payload.get("historical_import"):
+                    await session.delete(report)
 
     actor = _normalize_username(claims.get("sub") if isinstance(claims, dict) else None)
     batch = HistoricalImportBatch(
@@ -183,24 +259,9 @@ async def import_historical_csv(
     auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
-    content = payload.csv_text
-    reader = csv.DictReader(io.StringIO(content))
-    rows = []
-    for idx, row in enumerate(reader, start=2):
-        try:
-            day = dt.date.fromisoformat(str(row.get("day", "")).strip())
-            metric = str(row.get("metric", "")).strip()
-            value = float(row.get("value", 0.0))
-            if metric not in {"uniques", "pageviews", "sessions", "conversions", "revenue"}:
-                raise ValueError("invalid metric")
-            if value < 0:
-                raise ValueError("value must be non-negative")
-            rows.append({"day": day, "metric": metric, "value": value})
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid CSV row {idx}: {exc}",
-            ) from exc
+    rows, errors = _parse_historical_csv(payload.csv_text)
+    if errors:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=errors[0])
 
     parsed_payload = HistoricalImportRequest(
         site_id=payload.site_id,
@@ -209,6 +270,49 @@ async def import_historical_csv(
     )
     target_plan = await _require_standard_import_access(payload.site_id, auth_claims, session)
     return await _import_rows(parsed_payload, session, target_plan=target_plan, claims=auth_claims)
+
+
+@router.post("/import/historical-csv/preview", response_model=HistoricalImportPreviewResponse)
+async def preview_historical_csv(
+    payload: HistoricalCsvImportRequest,
+    auth_claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+) -> HistoricalImportPreviewResponse:
+    await _require_standard_import_access(payload.site_id, auth_claims, session)
+    rows, errors = _parse_historical_csv(payload.csv_text)
+    if not rows and not errors:
+        errors = ["CSV has no import rows."]
+    rows_by_key = {(row.day, row.metric): row for row in rows}
+    live_overlaps, replaceable_import_overlaps = await _find_existing_import_overlaps(
+        session=session,
+        site_id=payload.site_id,
+        rows_by_key=rows_by_key,
+    )
+    touched_days = {row.day for row in rows}
+    metrics = sorted({row.metric for row in rows})
+    warnings: list[str] = []
+    if live_overlaps:
+        warnings.append(
+            "Some rows overlap Valid-collected data. Remove those dates before importing to avoid double-counting."
+        )
+    if replaceable_import_overlaps:
+        warnings.append(
+            "Some rows match a previous historical import. Importing will replace those imported rows."
+        )
+
+    return HistoricalImportPreviewResponse(
+        site_id=payload.site_id,
+        valid=not errors and not live_overlaps and bool(rows),
+        row_count=len(rows),
+        day_count=len(touched_days),
+        start_day=min(touched_days) if touched_days else None,
+        end_day=max(touched_days) if touched_days else None,
+        metrics=metrics,
+        errors=errors,
+        warnings=warnings,
+        live_overlaps=live_overlaps,
+        replaceable_import_overlaps=replaceable_import_overlaps,
+    )
 
 
 @router.get("/import/history", response_model=HistoricalImportHistoryResponse)

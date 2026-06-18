@@ -53,3 +53,25 @@ Instead of:
 
 Say:
 "Get accurate analytics without tracking individual users."
+
+## Product Positioning
+
+Primary launch message:
+
+> Privacy-first web analytics for people who would rather act than dig.
+>
+> Forecasting and anomaly detection that show you what's coming, not just dashboards of what already happened.
+
+Valid should lead with privacy-first analytics, forecasting, anomaly context, and goal pacing. Avoid positioning the product as a generic Google Analytics replacement; that market is crowded and the stronger reason to choose Valid is the decision layer on top of privacy-preserving aggregate analytics.
+
+## Privacy Language
+
+Use precise privacy claims:
+
+- No visitor cookies.
+- No cross-site tracking.
+- Short-lived raw processing material.
+- Aggregate reporting.
+- Differential privacy controls for selected high-volume Standard KPI metrics.
+
+Avoid broad claims such as "no cookies anywhere," "anonymous analytics" without context, or "differential privacy across the whole dashboard." Dashboard authentication uses a first-party `HttpOnly` cookie, and breakdowns currently use aggregate rollups plus suppression thresholds.

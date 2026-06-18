@@ -87,6 +87,27 @@ export interface HistoricalImportResponse {
   batch_id?: number | null;
 }
 
+export interface HistoricalImportPreviewOverlap {
+  day: string;
+  metric: string;
+  source: "live" | "historical_import";
+  count: number;
+}
+
+export interface HistoricalImportPreviewResponse {
+  site_id: string;
+  valid: boolean;
+  row_count: number;
+  day_count: number;
+  start_day?: string | null;
+  end_day?: string | null;
+  metrics: string[];
+  errors: string[];
+  warnings: string[];
+  live_overlaps: HistoricalImportPreviewOverlap[];
+  replaceable_import_overlaps: HistoricalImportPreviewOverlap[];
+}
+
 export interface HistoricalImportBatch {
   id: number;
   site_id: string;
@@ -412,6 +433,23 @@ export async function importHistoricalCsv(
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.post(
     "/api/import/historical-csv",
+    {
+      site_id: resolvedSiteId,
+      csv_text: csvText,
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function previewHistoricalCsv(
+  csvText: string,
+  token?: string,
+  siteId?: string
+): Promise<HistoricalImportPreviewResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/import/historical-csv/preview",
     {
       site_id: resolvedSiteId,
       csv_text: csvText,

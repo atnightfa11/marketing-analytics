@@ -1578,6 +1578,17 @@ async def test_historical_csv_import_is_idempotent_and_rejects_live_overlap(clie
         assert first.status_code == 200
         assert first.json()["imported_rows"] == 1
 
+        replace_preview = client.post(
+            "/api/import/historical-csv/preview",
+            json={"site_id": site_id, "csv_text": csv_text},
+            headers=headers,
+        )
+        assert replace_preview.status_code == 200
+        replace_payload = replace_preview.json()
+        assert replace_payload["valid"] is True
+        assert replace_payload["row_count"] == 1
+        assert replace_payload["replaceable_import_overlaps"][0]["source"] == "historical_import"
+
         second = client.post(
             "/api/import/historical-csv",
             json={"site_id": site_id, "csv_text": csv_text},
@@ -1610,7 +1621,24 @@ async def test_historical_csv_import_is_idempotent_and_rejects_live_overlap(clie
         assert duplicate.status_code == 400
         assert "Duplicate import row" in duplicate.json()["detail"]
 
+        duplicate_preview = client.post(
+            "/api/import/historical-csv/preview",
+            json={"site_id": site_id, "csv_text": f"day,metric,value\n{import_day},sessions,1\n{import_day},sessions,2\n"},
+            headers=headers,
+        )
+        assert duplicate_preview.status_code == 200
+        assert duplicate_preview.json()["valid"] is False
+        assert "Duplicate import row" in duplicate_preview.json()["errors"][0]
+
         await _insert_raw_report(site_id=site_id, kind="pageviews", day=overlap_day_date, payload={})
+        overlap_preview = client.post(
+            "/api/import/historical-csv/preview",
+            json={"site_id": site_id, "csv_text": f"day,metric,value\n{overlap_day},pageviews,25\n"},
+            headers=headers,
+        )
+        assert overlap_preview.status_code == 200
+        assert overlap_preview.json()["valid"] is False
+        assert overlap_preview.json()["live_overlaps"][0]["source"] == "live"
         overlap = client.post(
             "/api/import/historical-csv",
             json={"site_id": site_id, "csv_text": f"day,metric,value\n{overlap_day},pageviews,25\n"},

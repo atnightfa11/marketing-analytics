@@ -169,6 +169,22 @@ Site owners can configure anomaly alert destinations in Dashboard Settings -> An
 - Alert delivery runs from the forecast refresh path. A site/metric/channel is notified at most once per training day for the same anomaly key.
 - Alerts use the same anomaly detector as the forecast chart; they do not add a separate anomaly scoring path.
 
+## Installation review
+
+Dashboard Settings -> General -> Site installation should stay compact. Use the **Review installation** button to open the guided setup review instead of exposing the full tracking script or a large health panel inline.
+
+The review flow should show:
+
+- whether the script is sending recent data
+- last event received
+- detected hostname(s)
+- current plan
+- reducer status
+- forecast status
+- anomaly alert setup
+
+The deeper Tracking health panel can remain lower in Settings for support/admin diagnosis, but the primary customer workflow should be the single Review installation action.
+
 Example per-user beta access config:
 
 ```text
