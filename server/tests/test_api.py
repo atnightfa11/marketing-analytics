@@ -2555,6 +2555,48 @@ async def test_metrics_sums_windows_within_selected_range(client):
 
 
 @pytest.mark.asyncio
+async def test_metrics_surface_fresh_forecast_anomaly_flags(client):
+    site_id = "site-metric-anomaly-flags"
+    now = datetime.now(timezone.utc)
+    window_start = now.replace(second=0, microsecond=0) - timedelta(minutes=30)
+    await _set_site_plan(site_id, "free")
+    for metric in ("pageviews", "revenue", "uniques"):
+        await _insert_dp_window(site_id=site_id, plan="free", metric=metric, value=25.0, window_start=window_start)
+
+    async with async_session_factory() as session:
+        # Fresh + anomalous -> surfaced as True.
+        session.add(
+            Forecast(
+                site_id=site_id, plan="free", metric="pageviews", day=now.date() + timedelta(days=1),
+                yhat=10, yhat_lower=8, yhat_upper=12, mape=0.2, has_anomaly=True, z_score=3.1, trained_at=now, model_id=None,
+            )
+        )
+        # Fresh + normal -> False.
+        session.add(
+            Forecast(
+                site_id=site_id, plan="free", metric="revenue", day=now.date() + timedelta(days=1),
+                yhat=10, yhat_lower=8, yhat_upper=12, mape=0.2, has_anomaly=False, z_score=0.4, trained_at=now, model_id=None,
+            )
+        )
+        # Stale + anomalous -> must NOT surface (failed freshness gate).
+        session.add(
+            Forecast(
+                site_id=site_id, plan="free", metric="uniques", day=now.date() + timedelta(days=1),
+                yhat=10, yhat_lower=8, yhat_upper=12, mape=0.2, has_anomaly=True, z_score=3.1,
+                trained_at=now - timedelta(days=5), model_id=None,
+            )
+        )
+        await session.commit()
+
+    resp = client.get("/api/metrics", params={"site_id": site_id})
+    assert resp.status_code == 200
+    metrics_map = {row["metric"]: row for row in resp.json()["metrics"]}
+    assert metrics_map["pageviews"]["has_anomaly"] is True
+    assert metrics_map["revenue"]["has_anomaly"] is False
+    assert metrics_map["uniques"]["has_anomaly"] is False
+
+
+@pytest.mark.asyncio
 async def test_reducer_uses_revenue_payload_value_for_live_events(client):
     site_id = "site-revenue-live-events"
     base = datetime(2026, 4, 19, 16, 0, tzinfo=timezone.utc)

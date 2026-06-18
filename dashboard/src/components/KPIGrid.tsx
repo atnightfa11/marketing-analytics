@@ -10,6 +10,7 @@ interface Props {
   showDetailedComparison?: boolean;
   selectedMetric?: string;
   onSelectMetric?: (metric: string) => void;
+  error?: string | null;
 }
 
 const fontBody: React.CSSProperties = {
@@ -77,8 +78,14 @@ export const KPIGrid: React.FC<Props> = ({
   showDetailedComparison = false,
   selectedMetric,
   onSelectMetric,
+  error,
 }) => (
   <div className="overflow-hidden rounded-lg border border-[var(--color-border-subtle)] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+    {error && (
+      <div className="border-b border-[#FECACA] bg-[#FFF7F7] px-4 py-2 text-[12px] text-[#8B2635]" style={fontBody}>
+        {error}
+      </div>
+    )}
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8">
       {cards.map((card) => {
         const value = values[card.key];

@@ -27,6 +27,7 @@ import {
   fetchDashboardSites,
   fetchDashboardNotes,
   fetchForecast,
+  fetchMetrics,
   fetchImportHistory,
   fetchSiteAlertSettings,
   fetchSiteIpBlocks,
@@ -542,6 +543,8 @@ interface BreakdownData {
   metricKeys: BreakdownMetricKey[];
 }
 
+type BreakdownErrorMap = Partial<Record<BreakdownDimension, string>>;
+
 interface ComparisonPoint {
   day: string;
   value: number;
@@ -677,6 +680,28 @@ const createEmptyBreakdownData = (
   primaryMetric,
   metricKeys,
 });
+
+const createEmptyBreakdownMap = (): Record<BreakdownDimension, BreakdownData> => ({
+  sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
+  devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+  countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
+  conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
+  hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+});
+
+const breakdownSectionLabels: Record<BreakdownDimension, string> = {
+  sources: "Traffic sources",
+  pages: "Top pages",
+  devices: "Devices",
+  countries: "Countries",
+  conversions: "Goal events",
+  hour_of_day: "Hourly arrivals",
+  day_of_week: "Day-of-week arrivals",
+  hostnames: "Hostnames",
+};
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const isoDayForDateInTimeZone = (value: Date, timeZone: string): string => {
@@ -991,10 +1016,11 @@ const TableBlock: React.FC<{
   primaryMetric: BreakdownMetricKey;
   total?: number;
   emptyState?: string;
+  error?: string | null;
   rowDimension?: string;
   activeFilters?: ActiveFilter[];
   onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
-}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, rowDimension, activeFilters, onToggleFilter }) => {
+}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, error, rowDimension, activeFilters, onToggleFilter }) => {
   const [expanded, setExpanded] = useState(false);
   const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
   const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
@@ -1014,6 +1040,13 @@ const TableBlock: React.FC<{
   }, [expanded]);
 
   const renderRows = (compact: boolean) => {
+    if (error) {
+      return (
+        <div className="py-6 text-xs text-[#8B2635]" style={fontBody}>
+          {error}
+        </div>
+      );
+    }
     if (rows.length === 0) {
       return (
         <div className="py-6 text-xs text-gray-400" style={fontBody}>
@@ -1180,8 +1213,9 @@ const TimePartingHeatmap: React.FC<{
   dayType: TimePartingDayType;
   setDayType: (value: TimePartingDayType) => void;
   emptyState: string;
+  error?: string | null;
   rangeLabel: string;
-}> = ({ hourRows, dayRows, primaryMetric, dayType, setDayType, emptyState, rangeLabel }) => {
+}> = ({ hourRows, dayRows, primaryMetric, dayType, setDayType, emptyState, error, rangeLabel }) => {
   const hourValues = Array.from({ length: 24 }, () => 0);
   const dayValues = Array.from({ length: 7 }, () => 0);
 
@@ -1246,7 +1280,11 @@ const TimePartingHeatmap: React.FC<{
           ))}
         </div>
       </div>
-      {!hasData ? (
+      {error ? (
+        <div className="py-10 text-xs text-[#8B2635]" style={fontBody}>
+          {error}
+        </div>
+      ) : !hasData ? (
         <div className="py-10 text-xs text-gray-400" style={fontBody}>
           {emptyState}
         </div>
@@ -1547,18 +1585,12 @@ const Overview: React.FC = () => {
   const [hoveredNoteMarkerDay, setHoveredNoteMarkerDay] = useState<string | null>(null);
   const [selectedNoteMarkerDay, setSelectedNoteMarkerDay] = useState<string | null>(null);
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
-  const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>({
-    sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-    pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
-    devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
-    countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
-    conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
-    hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-    day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-    hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-  });
+  const [kpiError, setKpiError] = useState<string | null>(null);
+  const [metricAnomalies, setMetricAnomalies] = useState<Record<string, boolean>>({});
+  const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>(() => createEmptyBreakdownMap());
+  const [breakdownErrors, setBreakdownErrors] = useState<BreakdownErrorMap>({});
   const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
-  const [accessError, setAccessError] = useState<string | null>(null);
+  const [hostnameError, setHostnameError] = useState<string | null>(null);
   const [customRange, setCustomRange] = useState<DateRange>(() => ({
     start: searchParams.get("start") ?? "",
     end: searchParams.get("end") ?? "",
@@ -1644,7 +1676,12 @@ const Overview: React.FC = () => {
     }
   }, [siteId]);
   useEffect(() => {
-    if (!canQuery) return;
+    if (!canQuery) {
+      setKpiError(null);
+      return;
+    }
+    let cancelled = false;
+    setKpiError(null);
     const metricsToFetch = [...aggregateMetricKeys];
     Promise.all(
       metricsToFetch.map((metric) =>
@@ -1655,7 +1692,8 @@ const Overview: React.FC = () => {
       )
     )
       .then((results) => {
-        setAccessError(null);
+        if (cancelled) return;
+        setKpiError(null);
         const next: Record<string, AggregateWindow[]> = {};
         results.forEach((item) => {
           next[item.metric] = item.data;
@@ -1664,9 +1702,15 @@ const Overview: React.FC = () => {
       })
       .catch((error) => {
         const message = extractApiErrorMessage(error);
-        if (message) setAccessError(message);
+        if (!cancelled) {
+          setAggregateMap({});
+          setKpiError(message ?? "Unable to load metrics right now.");
+        }
         console.error(error);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [canQuery, token, siteId, hostnameFilter]);
 
   useEffect(() => {
@@ -1692,7 +1736,6 @@ const Overview: React.FC = () => {
     setForecastError(null);
     fetchForecast(token ?? undefined, selectedMetric, siteId)
       .then((data) => {
-        setAccessError(null);
         setForecast(data.forecast);
         setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly, trained_at: data.trained_at ?? null });
       })
@@ -1704,6 +1747,32 @@ const Overview: React.FC = () => {
         console.error(error);
       });
   }, [canQuery, token, selectedMetric, siteId, showSeededBreakdowns]);
+
+  // Per-metric anomaly flags (range-independent) so the Insights card can surface
+  // anomalies on metrics the user isn't currently viewing.
+  useEffect(() => {
+    if (!canQuery || showSeededBreakdowns) {
+      setMetricAnomalies({});
+      return;
+    }
+    let cancelled = false;
+    fetchMetrics(token ?? undefined, siteId)
+      .then((stats) => {
+        if (cancelled) return;
+        const next: Record<string, boolean> = {};
+        stats.forEach((stat) => {
+          next[stat.metric] = Boolean(stat.has_anomaly);
+        });
+        setMetricAnomalies(next);
+      })
+      .catch((error) => {
+        if (!cancelled) setMetricAnomalies({});
+        console.error(error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, showSeededBreakdowns, token, siteId]);
 
   const toDaily = (windows: AggregateWindow[]) => {
     const bucket: Record<string, number> = {};
@@ -1965,13 +2034,15 @@ const Overview: React.FC = () => {
   useEffect(() => {
     if (!canQuery || showSeededBreakdowns) {
       setHostnameOptions([]);
+      setHostnameError(null);
       return;
     }
     const start = breakdownDateRange?.start;
     const end = breakdownDateRange?.end;
+    setHostnameError(null);
     fetchBreakdown("hostnames", token ?? undefined, siteId, start, end, 50)
       .then((response) => {
-        setAccessError(null);
+        setHostnameError(null);
         const options = response.rows
           .map((row) => row.label)
           .filter((label) => label && label !== "Unknown");
@@ -1979,7 +2050,7 @@ const Overview: React.FC = () => {
       })
       .catch((error) => {
         const message = extractApiErrorMessage(error);
-        if (message) setAccessError(message);
+        setHostnameError(message ?? "Unable to load hostname filter options right now.");
         setHostnameOptions([]);
       });
   }, [canQuery, showSeededBreakdowns, token, siteId, breakdownDateRange?.start, breakdownDateRange?.end]);
@@ -1993,23 +2064,16 @@ const Overview: React.FC = () => {
   useEffect(() => {
     if (!canQuery) return;
     if (showSeededBreakdowns) {
-      setBreakdownData({
-        sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-        pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
-        devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
-        countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
-        conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
-        hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-        day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-        hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-      });
+      setBreakdownData(createEmptyBreakdownMap());
+      setBreakdownErrors({});
       return;
     }
 
     let cancelled = false;
     const start = breakdownDateRange?.start;
     const end = breakdownDateRange?.end;
-    Promise.all(
+    setBreakdownErrors({});
+    Promise.allSettled(
       breakdownDimensions.map((dimension) =>
         fetchBreakdown(
           dimension,
@@ -2028,34 +2092,30 @@ const Overview: React.FC = () => {
     )
       .then((results) => {
         if (cancelled) return;
-        setAccessError(null);
-        const next: Record<BreakdownDimension, BreakdownData> = {
-          sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-          pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
-          devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
-          countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
-          conversions: createEmptyBreakdownData("conversions", ["uniques", "sessions", "conversions"]),
-          hour_of_day: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-          day_of_week: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-          hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
-        };
-        results.forEach((result) => {
-          next[result.dimension] = {
-            rows: result.response.rows.map((row: BreakdownRow) => ({
+        const next = createEmptyBreakdownMap();
+        const nextErrors: BreakdownErrorMap = {};
+        results.forEach((result, index) => {
+          const dimension = breakdownDimensions[index];
+          if (result.status === "rejected") {
+            const message = extractApiErrorMessage(result.reason);
+            nextErrors[dimension] = message ?? `Unable to load ${breakdownSectionLabels[dimension].toLowerCase()} right now.`;
+            return;
+          }
+          next[result.value.dimension] = {
+            rows: result.value.response.rows.map((row: BreakdownRow) => ({
               label: row.label,
               metrics: row.metrics ?? {},
             })),
-            total: result.response.total ?? 0,
-            primaryMetric: result.response.primary_metric,
-            metricKeys: result.response.metric_keys ?? [result.response.primary_metric],
+            total: result.value.response.total ?? 0,
+            primaryMetric: result.value.response.primary_metric,
+            metricKeys: result.value.response.metric_keys ?? [result.value.response.primary_metric],
           };
         });
         setBreakdownData(next);
-      })
-      .catch((error) => {
-        const message = extractApiErrorMessage(error);
-        if (message) setAccessError(message);
-        console.error(error);
+        setBreakdownErrors(nextErrors);
+        results.forEach((result) => {
+          if (result.status === "rejected") console.error(result.reason);
+        });
       });
 
     return () => {
@@ -2881,6 +2941,7 @@ const Overview: React.FC = () => {
         title: "Top Pages",
         rows: pageRows,
         empty: "No page data yet for the selected range.",
+        error: showSeededBreakdowns ? null : breakdownErrors.pages ?? null,
         dimension: "page",
         primaryMetric: showSeededBreakdowns ? ("pageviews" as BreakdownMetricKey) : breakdownData.pages.primaryMetric,
         metricKeys: showSeededBreakdowns
@@ -2892,6 +2953,7 @@ const Overview: React.FC = () => {
         title: "Countries",
         rows: countryRows,
         empty: "No country data yet for the selected range.",
+        error: showSeededBreakdowns ? null : breakdownErrors.countries ?? null,
         dimension: "country",
         primaryMetric: showSeededBreakdowns ? ("pageviews" as BreakdownMetricKey) : breakdownData.countries.primaryMetric,
         metricKeys: showSeededBreakdowns
@@ -2903,6 +2965,7 @@ const Overview: React.FC = () => {
         title: "Devices",
         rows: deviceRows,
         empty: "No device data yet for the selected range.",
+        error: showSeededBreakdowns ? null : breakdownErrors.devices ?? null,
         dimension: "device",
         primaryMetric: showSeededBreakdowns ? ("pageviews" as BreakdownMetricKey) : breakdownData.devices.primaryMetric,
         metricKeys: showSeededBreakdowns
@@ -2914,6 +2977,7 @@ const Overview: React.FC = () => {
         title: "Goals",
         rows: goalRows,
         empty: "No goal events yet for the selected range.",
+        error: showSeededBreakdowns ? null : breakdownErrors.conversions ?? null,
         dimension: "goal",
         primaryMetric: showSeededBreakdowns ? ("conversions" as BreakdownMetricKey) : breakdownData.conversions.primaryMetric,
         metricKeys: showSeededBreakdowns
@@ -2930,6 +2994,10 @@ const Overview: React.FC = () => {
     showSeededBreakdowns,
     scaledTotals.pageviews,
     scaledTotals.conversions,
+    breakdownErrors.pages,
+    breakdownErrors.countries,
+    breakdownErrors.devices,
+    breakdownErrors.conversions,
     breakdownData.pages.primaryMetric,
     breakdownData.pages.metricKeys,
     breakdownData.pages.total,
@@ -3221,6 +3289,16 @@ const Overview: React.FC = () => {
         text: `${selectedMetricLabel} was unusually different from the site's recent pattern. Forecasts may be wider while the trend stabilizes.`,
       });
     }
+    const otherAnomalousMetrics = Object.entries(metricAnomalies)
+      .filter(([metric, flagged]) => flagged && metric !== selectedMetric)
+      .map(([metric]) => metricLabels[metric] ?? metric);
+    if (otherAnomalousMetrics.length > 0) {
+      const names = otherAnomalousMetrics.slice(0, 3).join(", ");
+      items.push({
+        label: "Watch",
+        text: `${names} also ${otherAnomalousMetrics.length === 1 ? "looks" : "look"} unusual versus recent trend. Switch metric to inspect.`,
+      });
+    }
     if (topChannelLabel && Number.isFinite(topChannelSharePct ?? Number.NaN)) {
       items.push({
         label: "Contributor",
@@ -3255,6 +3333,7 @@ const Overview: React.FC = () => {
     return items.slice(0, 5);
   }, [
     forecastMeta?.has_anomaly,
+    metricAnomalies,
     selectedMetricLabel,
     topChannelLabel,
     topChannelSharePct,
@@ -3444,6 +3523,21 @@ const Overview: React.FC = () => {
       };
     });
   }, [dailySelected, forecastHorizon]);
+  const timePartingError =
+    [breakdownErrors.hour_of_day, breakdownErrors.day_of_week].filter(Boolean).join(" ") || null;
+  const liveStatusMessage = useMemo(() => {
+    const breakdownMessages = (Object.entries(breakdownErrors) as [BreakdownDimension, string][])
+      .filter(([, message]) => Boolean(message))
+      .map(([dimension, message]) => `${breakdownSectionLabels[dimension]}: ${message}`);
+    return [
+      kpiError ? `Metrics: ${kpiError}` : null,
+      forecastError ? `Forecast: ${forecastError}` : null,
+      hostnameError ? `Hostnames: ${hostnameError}` : null,
+      ...breakdownMessages,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }, [breakdownErrors, forecastError, hostnameError, kpiError]);
   const renderNoteMarkerLabel = (day: string) => (props: { viewBox?: { x?: number; y?: number; height?: number } }) => {
     const viewBox = props.viewBox ?? {};
     const x = Number(viewBox.x ?? 0);
@@ -3668,20 +3762,18 @@ const Overview: React.FC = () => {
             <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
               Metrics · {range}{hostnameFilter ? ` · ${hostnameFilter}` : ""}
             </div>
+            {hostnameError && (
+              <div className="text-[11px] text-[#8B2635]" style={fontBody}>
+                {hostnameError}
+              </div>
+            )}
           </div>
         </div>
       </header>
       <main className="mx-auto max-w-[1180px] space-y-5 px-5 pb-12 pt-0 sm:px-8 print-container">
-        {accessError && (
-          <div
-            className="border-l-2 border-[#8B2635] bg-[#FFF4F5] px-4 py-3 text-sm text-[#6B1F2A]"
-            role="status"
-            aria-live="polite"
-            style={fontBody}
-          >
-            {accessError}
-          </div>
-        )}
+        <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {liveStatusMessage}
+        </div>
         <KPIGrid
           values={scaledTotals}
           comparisonValues={scaledKpiComparisonValues}
@@ -3691,6 +3783,7 @@ const Overview: React.FC = () => {
           showDetailedComparison={compareEnabled}
           selectedMetric={selectedMetric}
           onSelectMetric={setSelectedMetric}
+          error={kpiError}
         />
         {forecastMeta?.has_anomaly &&
           !dismissedAnomalies.has(`${siteId}:${selectedMetric}`) && (
@@ -4147,7 +4240,7 @@ const Overview: React.FC = () => {
             )}
           </div>
           {forecastError && (
-            <div className="mt-3 rounded-md border border-[#FECACA] bg-[#FFF7F7] px-3 py-2 text-[12px] text-[#8B2635]" role="status" style={fontBody}>
+            <div className="mt-3 rounded-md border border-[#FECACA] bg-[#FFF7F7] px-3 py-2 text-[12px] text-[#8B2635]" style={fontBody}>
               {forecastError}
             </div>
           )}
@@ -4443,6 +4536,7 @@ const Overview: React.FC = () => {
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
               emptyState={acquisitionEmptyState}
+              error={showSeededBreakdowns ? null : breakdownErrors.sources ?? null}
             />
             <TableBlock
               title="Top Pages"
@@ -4451,6 +4545,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[0]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[0]?.total}
               emptyState={breakdownCards[0]?.empty}
+              error={breakdownCards[0]?.error}
               rowDimension={breakdownCards[0]?.dimension}
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
@@ -4462,6 +4557,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[1]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[1]?.total}
               emptyState={breakdownCards[1]?.empty}
+              error={breakdownCards[1]?.error}
               rowDimension={breakdownCards[1]?.dimension}
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
@@ -4473,6 +4569,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[2]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[2]?.total}
               emptyState={breakdownCards[2]?.empty}
+              error={breakdownCards[2]?.error}
               rowDimension={breakdownCards[2]?.dimension}
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
@@ -4498,6 +4595,7 @@ const Overview: React.FC = () => {
               dayType={timePartingDayType}
               setDayType={setTimePartingDayType}
               emptyState={timePartingEmptyState}
+              error={timePartingError}
               rangeLabel={currentRangeLabel ?? range}
             />
           </div>

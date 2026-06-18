@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..forecast_freshness import forecast_is_fresh
+from ..forecast_status import latest_forecasts_by_metric
 from ..ldp.rr_decoder import confidence_interval, standard_error
 from ..models import DpWindow, get_session
 from ..schemas import MetricsResponse, MetricStatistic
@@ -74,6 +76,17 @@ async def get_metrics(
         pageviews_metric = metric_map["pageviews"]
         if sessions_metric.value > pageviews_metric.value:
             sessions_metric.value = pageviews_metric.value
+
+    # Surface the per-metric anomaly flag from the latest fresh forecast row so the
+    # dashboard can highlight anomalies across metrics (not just the one being viewed).
+    # Mirrors the freshness gate used by /api/forecast so the two stay consistent.
+    if metric_map:
+        latest_forecasts = await latest_forecasts_by_metric(
+            session, site_id, plan, metric_map.keys()
+        )
+        for metric, forecast_row in latest_forecasts.items():
+            if metric in metric_map and forecast_is_fresh(forecast_row):
+                metric_map[metric].has_anomaly = bool(forecast_row.has_anomaly)
 
     if "conversions" in metric_map and "pageviews" in metric_map and metric_map["pageviews"].value > 0:
         conversions = metric_map["conversions"].value

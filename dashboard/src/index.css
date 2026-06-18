@@ -130,8 +130,20 @@ html[data-theme="dark"] .hover\:bg-\[\#F9FAFB\]:hover {
   background-color: var(--surface-hover);
 }
 
-html[data-theme="dark"] .bg-\[\#FBEFF1\] {
+html[data-theme="dark"] .bg-\[\#FBEFF1\],
+html[data-theme="dark"] .bg-\[\#FFF7F7\],
+html[data-theme="dark"] .bg-\[\#FFF4F5\] {
   background-color: rgba(139, 38, 53, 0.18);
+}
+
+/* Alert/error text + borders need a lighter rose to stay readable on dark surfaces. */
+html[data-theme="dark"] .text-\[\#8B2635\],
+html[data-theme="dark"] .text-\[\#6B1F2A\] {
+  color: #f2a7ae;
+}
+
+html[data-theme="dark"] .border-\[\#FECACA\] {
+  border-color: rgba(242, 167, 174, 0.32);
 }
 
 /* Borders */

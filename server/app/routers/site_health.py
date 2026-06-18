@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import require_site_access
 from ..forecast_freshness import forecast_is_fresh
-from ..models import DpWindow, Forecast, RawReport, ReducerWatermark, SiteApiKey, SitePlan, get_session
+from ..forecast_status import latest_forecasts_by_metric
+from ..models import DpWindow, RawReport, ReducerWatermark, SiteApiKey, SitePlan, get_session
 from ..schemas import SiteHealthCheck, SiteHealthResponse
 
 router = APIRouter(prefix="/site-health", tags=["site-health"])
@@ -97,20 +98,9 @@ async def get_site_health(
         )
     ).scalar_one_or_none()
 
-    forecast_rows = (
-        await session.execute(
-            select(Forecast)
-            .where(
-                Forecast.site_id == site_id,
-                Forecast.plan == plan,
-                Forecast.metric.in_(FORECAST_HEALTH_METRICS),
-            )
-            .order_by(desc(Forecast.day))
-        )
-    ).scalars().all()
-    latest_forecasts: dict[str, Forecast] = {}
-    for forecast in forecast_rows:
-        latest_forecasts.setdefault(forecast.metric, forecast)
+    latest_forecasts = await latest_forecasts_by_metric(
+        session, site_id, plan, FORECAST_HEALTH_METRICS
+    )
     forecast_metrics_ready = sorted(
         metric
         for metric, forecast in latest_forecasts.items()
