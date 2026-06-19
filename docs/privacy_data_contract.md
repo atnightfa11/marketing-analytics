@@ -21,6 +21,7 @@ This contract defines what each analytics table is allowed to contain and how it
 | `historical_import_batches` | Operational accountability | Import batch ID, site, source, status, aggregate row count, date range, metric names, dashboard username, timestamps, error text | Operational retention. This table must not contain imported raw payloads, visitor data, IPs, User-Agent strings, or customer analytics values. |
 | `forecasts` / `model_store` | Durable analytics output | Forecast outputs and model metadata derived from aggregate windows | Business reporting retention. |
 | `dashboard_notes` | Customer-authored context | Site, date, optional metric, note body, dashboard username, timestamps | Customer-controlled business context retention. Notes must not store raw visitor identifiers, raw payloads, IPs, User-Agent strings, or upload token IDs. |
+| `site_goals` | Customer-authored context | Site, metric, target, period, repeat cadence, dashboard usernames, timestamps | Customer-controlled performance target retention. Goals are business settings, not analytics events, and must not store raw visitor identifiers, raw payloads, IPs, User-Agent strings, or upload token IDs. |
 | `dashboard_site_access` | Security/operational data | Site ID, dashboard username, role, creator username, creation timestamp | Retain while access is active; delete when access is revoked. |
 | `upload_tokens` / `token_nonce` | Security/operational data | Token revocation records and replay nonces | Tokens purge after expiry grace; nonces purge after short replay window. Never copy token IDs into analytics rollups. |
 
@@ -32,6 +33,7 @@ This contract defines what each analytics table is allowed to contain and how it
 - Historical import rows are aggregate-only and excluded from dimension rollups.
 - Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
 - Dashboard notes are displayed as annotations only. They must not alter KPI aggregates, breakdown rollups, forecasts, or anomaly scoring.
+- Site goals are displayed as pacing targets only. They must not alter KPI aggregates, breakdown rollups, forecasts, anomaly scoring, or import reduction.
 
 ## Differential Privacy Claim Boundary
 

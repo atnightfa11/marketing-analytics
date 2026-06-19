@@ -87,7 +87,7 @@ Rollback deletes the retained raw import rows for that batch, re-runs the reduce
 
 - CSV rows must be unique by `day + metric`; duplicate rows are rejected instead of summed silently.
 - Re-uploading the same `day + metric` replaces the prior imported aggregate row, so repeat uploads do not double-count.
-- Imports are rejected when the same `day + metric` already has Valid-collected live data. Remove overlapping dates from the CSV before importing historical data.
+- Imports are rejected when the same `day + metric` already has Valid-collected live data. Remove overlapping dates from the CSV before importing historical data; there is no public override for live overlap.
 - Imported rows are aggregate-only and do not create dimension breakdown rows.
 - Each new import is tagged with a batch ID for audit and rollback while retained processing rows are still available.
 

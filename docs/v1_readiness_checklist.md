@@ -17,6 +17,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Plausible-style installation review flow from Settings with one primary Review installation action.
 - [x] Owner-managed dashboard site access for existing dashboard users.
 - [x] Owner-managed anomaly alert settings for Slack and email destinations.
+- [x] Owner-managed performance targets stored server-side for pacing across devices and teammates.
 - [x] Reducer cadence supports hourly operation (`PROD_REDUCER_INTERVAL_MINUTES`, default `60`).
 - [x] Forecast guardrails: fresh forecasts only, non-negative API output, `Building` state when accuracy is not useful.
 - [x] Launch positioning narrowed to privacy-first analytics with forecasting, anomaly context, and goal pacing.
@@ -25,7 +26,7 @@ This checklist reflects what is live in production and what remains before broad
 
 - [ ] Complete one real Standard checkout and verify webhook plan flip (`site_plan.plan=standard`) for the purchased site.
 - [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
-- [ ] Decide final Standard entitlement gates for forecasts, notes, goals, alerts, and longer retention before updating Stripe/product copy.
+- [ ] Decide final Standard entitlement gates for forecasts, notes, alerts, performance targets, and longer retention before updating Stripe/product copy.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
 - [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
 - [ ] Keep Pro/Enterprise local-DP claims hidden until the Pro path is enabled, tested, and supported commercially.

@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import datetime as dt
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
+from ..models import SiteGoal, get_session
+from ..schemas import SiteGoalResponse, SiteGoalsResponse, SiteGoalUpsertRequest
+
+router = APIRouter(prefix="/site-goals", tags=["settings"])
+
+
+def _serialize(row: SiteGoal) -> SiteGoalResponse:
+    return SiteGoalResponse(
+        site_id=row.site_id,
+        metric=row.metric,  # type: ignore[arg-type]
+        target=row.target,
+        period_days=row.period_days,
+        repeat=row.repeat,  # type: ignore[arg-type]
+        created_by=row.created_by,
+        updated_by=row.updated_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _list_goals(session: AsyncSession, site_id: str) -> list[SiteGoal]:
+    return (
+        await session.execute(
+            select(SiteGoal)
+            .where(SiteGoal.site_id == site_id)
+            .order_by(SiteGoal.metric.asc())
+        )
+    ).scalars().all()
+
+
+@router.get("", response_model=SiteGoalsResponse)
+async def list_site_goals(
+    site_id: str,
+    claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+) -> SiteGoalsResponse:
+    await enforce_site_access_with_db(site_id=site_id, claims=claims, session=session)
+    rows = await _list_goals(session, site_id)
+    return SiteGoalsResponse(site_id=site_id, goals=[_serialize(row) for row in rows])
+
+
+@router.put("", response_model=SiteGoalsResponse)
+async def upsert_site_goal(
+    payload: SiteGoalUpsertRequest,
+    claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+) -> SiteGoalsResponse:
+    await require_site_owner_with_db(site_id=payload.site_id, claims=claims, session=session)
+    username = _normalize_username(claims.get("sub") if isinstance(claims, dict) else None)
+    now = dt.datetime.now(dt.timezone.utc)
+    existing = (
+        await session.execute(
+            select(SiteGoal).where(
+                SiteGoal.site_id == payload.site_id,
+                SiteGoal.metric == payload.metric,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.target = payload.target
+        existing.period_days = payload.period_days
+        existing.repeat = payload.repeat
+        existing.updated_by = username
+        existing.updated_at = now
+    else:
+        session.add(
+            SiteGoal(
+                site_id=payload.site_id,
+                metric=payload.metric,
+                target=payload.target,
+                period_days=payload.period_days,
+                repeat=payload.repeat,
+                created_by=username,
+                updated_by=username,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    await session.commit()
+    rows = await _list_goals(session, payload.site_id)
+    return SiteGoalsResponse(site_id=payload.site_id, goals=[_serialize(row) for row in rows])
+
+
+@router.delete("/{metric}", response_model=SiteGoalsResponse)
+async def delete_site_goal(
+    metric: str,
+    site_id: str,
+    claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+) -> SiteGoalsResponse:
+    await require_site_owner_with_db(site_id=site_id, claims=claims, session=session)
+    if metric not in {"revenue", "conversions", "pageviews", "sessions", "uniques"}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Goal not found")
+    existing = (
+        await session.execute(
+            select(SiteGoal).where(
+                SiteGoal.site_id == site_id,
+                SiteGoal.metric == metric,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        await session.delete(existing)
+        await session.commit()
+    rows = await _list_goals(session, site_id)
+    return SiteGoalsResponse(site_id=site_id, goals=[_serialize(row) for row in rows])

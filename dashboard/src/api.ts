@@ -184,6 +184,23 @@ export interface SiteAlertSettingsUpdate {
   email_recipients: string[];
 }
 
+export interface SiteGoal {
+  site_id: string;
+  metric: "revenue" | "conversions" | "pageviews" | "sessions" | "uniques";
+  target: number;
+  period_days: number;
+  repeat: "monthly";
+  created_by?: string | null;
+  updated_by?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SiteGoalsResponse {
+  site_id: string;
+  goals: SiteGoal[];
+}
+
 export interface SiteHealthCheck {
   key: string;
   label: string;
@@ -589,6 +606,50 @@ export async function updateSiteAlertSettings(
     },
     { headers: authHeaders(token) }
   );
+  return response.data;
+}
+
+export async function fetchSiteGoals(token?: string, siteId?: string): Promise<SiteGoalsResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/site-goals", {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
+  return response.data;
+}
+
+export async function upsertSiteGoal(
+  metric: SiteGoal["metric"],
+  target: number,
+  periodDays: number,
+  token?: string,
+  siteId?: string
+): Promise<SiteGoalsResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.put(
+    "/api/site-goals",
+    {
+      site_id: resolvedSiteId,
+      metric,
+      target,
+      period_days: periodDays,
+      repeat: "monthly",
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function deleteSiteGoal(
+  metric: SiteGoal["metric"],
+  token?: string,
+  siteId?: string
+): Promise<SiteGoalsResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.delete(`/api/site-goals/${metric}`, {
+    headers: authHeaders(token),
+    params: { site_id: resolvedSiteId },
+  });
   return response.data;
 }
 

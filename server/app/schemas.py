@@ -164,7 +164,6 @@ class HistoricalImportRow(BaseModel):
 class HistoricalImportRequest(BaseModel):
     site_id: str
     rows: list[HistoricalImportRow]
-    allow_live_overlap: bool = False
 
 
 class HistoricalImportResponse(BaseModel):
@@ -177,7 +176,6 @@ class HistoricalImportResponse(BaseModel):
 class HistoricalCsvImportRequest(BaseModel):
     site_id: str
     csv_text: str
-    allow_live_overlap: bool = False
 
 
 class HistoricalImportPreviewOverlap(BaseModel):
@@ -423,6 +421,31 @@ class SiteAlertSettingsResponse(BaseModel):
     email_recipients: list[str] = Field(default_factory=list)
     email_delivery_configured: bool
     updated_at: dt.datetime | None = None
+
+
+class SiteGoalResponse(BaseModel):
+    site_id: str
+    metric: Literal["revenue", "conversions", "pageviews", "sessions", "uniques"]
+    target: float
+    period_days: int
+    repeat: Literal["monthly"]
+    created_by: str | None = None
+    updated_by: str | None = None
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class SiteGoalsResponse(BaseModel):
+    site_id: str
+    goals: list[SiteGoalResponse]
+
+
+class SiteGoalUpsertRequest(BaseModel):
+    site_id: str
+    metric: Literal["revenue", "conversions", "pageviews", "sessions", "uniques"]
+    target: float = Field(gt=0)
+    period_days: int = Field(default=30, ge=1, le=366)
+    repeat: Literal["monthly"] = "monthly"
 
 
 class HealthResponse(BaseModel):

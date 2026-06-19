@@ -397,6 +397,29 @@ class SiteAlertDelivery(Base):
     sent_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SiteGoal(Base):
+    __tablename__ = "site_goals"
+    __table_args__ = (
+        UniqueConstraint("site_id", "metric", name="uq_site_goals_site_metric"),
+        Index("ix_site_goals_site", "site_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    target: Mapped[float] = mapped_column(Float, nullable=False)
+    period_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    repeat: Mapped[str] = mapped_column(String(32), nullable=False, default="monthly")
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class DashboardNote(Base):
     __tablename__ = "dashboard_notes"
     __table_args__ = (

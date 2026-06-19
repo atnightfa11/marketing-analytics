@@ -153,7 +153,7 @@ async def _import_rows(
         )
         live_overlap = {(overlap.day, overlap.metric) for overlap in live_overlaps}
 
-        if live_overlap and not payload.allow_live_overlap:
+        if live_overlap:
             overlap_preview = ", ".join(
                 f"{day.isoformat()} {metric}" for day, metric in sorted(live_overlap)[:8]
             )
@@ -162,7 +162,7 @@ async def _import_rows(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     "Import overlaps existing Valid-collected data. "
-                    f"Remove those dates from the CSV or re-run with overlap explicitly allowed. Overlap: {overlap_preview}{suffix}"
+                    f"Remove those dates from the CSV before importing. Overlap: {overlap_preview}{suffix}"
                 ),
             )
 
@@ -266,7 +266,6 @@ async def import_historical_csv(
     parsed_payload = HistoricalImportRequest(
         site_id=payload.site_id,
         rows=rows,
-        allow_live_overlap=payload.allow_live_overlap,
     )
     target_plan = await _require_standard_import_access(payload.site_id, auth_claims, session)
     return await _import_rows(parsed_payload, session, target_plan=target_plan, claims=auth_claims)

@@ -1,7 +1,6 @@
 import type { BreakdownDimension, BreakdownMetricKey } from "./api";
 
 export const LAST_SITE_ID_STORAGE_KEY = "valid_last_site_id";
-export const DASHBOARD_GOALS_STORAGE_KEY = "valid_dashboard_metric_goals_v1";
 export const ENABLE_DEMO_MODE = import.meta.env.VITE_ENABLE_DEMO_MODE === "true";
 
 export const metricLabels: Record<string, string> = {

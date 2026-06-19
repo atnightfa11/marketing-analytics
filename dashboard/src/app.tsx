@@ -37,6 +37,7 @@ import {
   ForecastEntry,
   ForecastResponse,
   createSiteIpBlock,
+  deleteSiteGoal,
   grantSiteAccess,
   HistoricalImportBatch,
   HistoricalImportPreviewResponse,
@@ -46,6 +47,8 @@ import {
   previewHistoricalCsv,
   resolveActiveSiteId,
   rollbackImportBatch,
+  fetchSiteGoals,
+  SiteGoal,
   SiteAccessMember,
   SiteAlertSettings,
   SiteHealthResponse,
@@ -53,6 +56,7 @@ import {
   SdkInstallVerifyResponse,
   TimePartingDayType,
   updateSiteAlertSettings,
+  upsertSiteGoal,
   updateSiteTimezone,
   verifySdkInstall,
 } from "./api";
@@ -66,7 +70,6 @@ import { TimePartingHeatmap } from "./components/TimePartingHeatmap";
 import {
   aggregateMetricKeys,
   breakdownDimensions,
-  DASHBOARD_GOALS_STORAGE_KEY,
   dayOfWeekLabels,
   ENABLE_DEMO_MODE,
   forecastOptions,
@@ -97,8 +100,6 @@ import type {
   DateRange,
   ForecastOption,
   GoalMetric,
-  GoalRepeat,
-  GoalStore,
   MetricGoal,
   RangeOption,
   SiteGoalsMap,
@@ -117,18 +118,17 @@ import { aggregateRowsByLabel, getBreakdownMetricValue, renderBreakdownLabel, re
 import { buildSourceMediumLabel, classifyChannelLabel, normalizeSourceLabel } from "./utils/sourceAttribution";
 import en from "./locales/en.json";
 
-const readGoalStore = (): GoalStore => {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(DASHBOARD_GOALS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed as GoalStore;
-  } catch {
-    return {};
-  }
-};
+const mapServerGoals = (goals: SiteGoal[] = []): SiteGoalsMap =>
+  goals.reduce<SiteGoalsMap>((acc, goal) => {
+    acc[goal.metric] = {
+      metric: goal.metric,
+      target: goal.target,
+      periodDays: goal.period_days,
+      repeat: goal.repeat,
+      updatedAt: goal.updated_at,
+    };
+    return acc;
+  }, {});
 
 const extractApiErrorMessage = (error: unknown): string | null => {
   if (!error || typeof error !== "object") return null;
@@ -245,44 +245,6 @@ const DashboardLoadingSkeleton: React.FC<{ label?: string }> = ({ label = "Loadi
     <span className="sr-only">{label}</span>
   </div>
 );
-
-const writeGoalStore = (store: GoalStore) => {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(DASHBOARD_GOALS_STORAGE_KEY, JSON.stringify(store));
-};
-
-const loadGoalsForSite = (siteId: string): SiteGoalsMap => {
-  const store = readGoalStore();
-  return store[siteId] ?? {};
-};
-
-const upsertGoalForSite = (
-  siteId: string,
-  goal: { metric: GoalMetric; target: number; periodDays?: number; repeat?: GoalRepeat }
-): SiteGoalsMap => {
-  const store = readGoalStore();
-  const current = store[siteId] ?? {};
-  const nextGoal: MetricGoal = {
-    metric: goal.metric,
-    target: Math.max(0, goal.target),
-    periodDays: goal.periodDays ?? 30,
-    repeat: goal.repeat ?? "monthly",
-    updatedAt: new Date().toISOString(),
-  };
-  const next = { ...current, [goal.metric]: nextGoal };
-  store[siteId] = next;
-  writeGoalStore(store);
-  return next;
-};
-
-const removeGoalForSite = (siteId: string, metric: GoalMetric): SiteGoalsMap => {
-  const store = readGoalStore();
-  const current = { ...(store[siteId] ?? {}) };
-  delete current[metric];
-  store[siteId] = current;
-  writeGoalStore(store);
-  return current;
-};
 
 const metricSupportsGoals = (metric: string): metric is GoalMetric =>
   (goalEligibleMetrics as readonly string[]).includes(metric);
@@ -794,8 +756,22 @@ const Overview: React.FC = () => {
   }, [canQuery, showSeededBreakdowns, token, siteId]);
 
   useEffect(() => {
-    setSiteGoals(loadGoalsForSite(siteId));
-  }, [siteId]);
+    if (!canQuery) {
+      setSiteGoals({});
+      return;
+    }
+    let cancelled = false;
+    fetchSiteGoals(token ?? undefined, siteId)
+      .then((result) => {
+        if (!cancelled) setSiteGoals(mapServerGoals(result.goals));
+      })
+      .catch(() => {
+        if (!cancelled) setSiteGoals({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, siteId, token]);
 
   const previousSiteIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -3801,9 +3777,24 @@ const Settings: React.FC = () => {
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
   const [goalStatus, setGoalStatus] = useState<string | null>(null);
 
+  const refreshSiteGoals = useCallback(async () => {
+    if (!canQuery) {
+      setGoals({});
+      return;
+    }
+    try {
+      const result = await fetchSiteGoals(token ?? undefined, siteId);
+      setGoals(mapServerGoals(result.goals));
+      setGoalStatus(null);
+    } catch (error) {
+      setGoals({});
+      setGoalStatus(extractApiErrorMessage(error) ?? "Unable to load performance targets right now.");
+    }
+  }, [canQuery, siteId, token]);
+
   useEffect(() => {
-    setGoals(loadGoalsForSite(siteId));
-  }, [siteId]);
+    void refreshSiteGoals();
+  }, [refreshSiteGoals]);
 
   useEffect(() => {
     if (!canQuery) return;
@@ -4331,28 +4322,33 @@ const Settings: React.FC = () => {
   const timezoneStatusClassName = timezoneStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
 
 
-  const submitGoal = (event: React.FormEvent<HTMLFormElement>) => {
+  const submitGoal = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const target = Number(goalTargetInput);
     if (!Number.isFinite(target) || target <= 0) {
       setGoalStatus("Enter a valid target greater than zero.");
       return;
     }
-    const nextGoals = upsertGoalForSite(siteId, {
-      metric: goalMetric,
-      target,
-      periodDays: 30,
-      repeat: "monthly",
-    });
-    setGoals(nextGoals);
-    setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} goal saved.`);
+    setGoalStatus("Saving target...");
+    try {
+      const result = await upsertSiteGoal(goalMetric, target, 30, token ?? undefined, siteId);
+      setGoals(mapServerGoals(result.goals));
+      setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} target saved.`);
+    } catch (error) {
+      setGoalStatus(extractApiErrorMessage(error) ?? "Unable to save that target right now.");
+    }
   };
 
-  const clearGoal = () => {
-    const nextGoals = removeGoalForSite(siteId, goalMetric);
-    setGoals(nextGoals);
-    setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} goal removed.`);
-    setGoalTargetInput("");
+  const clearGoal = async () => {
+    setGoalStatus("Removing target...");
+    try {
+      const result = await deleteSiteGoal(goalMetric, token ?? undefined, siteId);
+      setGoals(mapServerGoals(result.goals));
+      setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} target removed.`);
+      setGoalTargetInput("");
+    } catch (error) {
+      setGoalStatus(extractApiErrorMessage(error) ?? "Unable to remove that target right now.");
+    }
   };
 
   return (
@@ -4821,7 +4817,7 @@ const Settings: React.FC = () => {
                 </button>
                 <button
                   type="button"
-                  onClick={clearGoal}
+                  onClick={() => void clearGoal()}
                   className="self-end border border-gray-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
                   style={fontBody}
                   disabled={!existingGoal}

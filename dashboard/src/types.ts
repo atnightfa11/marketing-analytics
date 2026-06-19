@@ -13,7 +13,6 @@ export interface MetricGoal {
 }
 
 export type SiteGoalsMap = Partial<Record<GoalMetric, MetricGoal>>;
-export type GoalStore = Record<string, SiteGoalsMap>;
 
 export type ChartGranularity = "day" | "week" | "month";
 export type ForecastOption = (typeof forecastOptions)[number];

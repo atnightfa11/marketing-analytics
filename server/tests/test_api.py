@@ -45,7 +45,7 @@ from sqlalchemy import select  # noqa: E402
 from argon2 import PasswordHasher  # noqa: E402
 
 from app.config import Settings  # noqa: E402
-from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteAlertSettings, SiteApiKey, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteAlertSettings, SiteApiKey, SiteGoal, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
@@ -268,8 +268,8 @@ async def test_shuffle_rejects_tampered_upload_token(client):
     assert token_resp.status_code == 200
     token = token_resp.json()["token"]
     serialized, signature = token.split(".", 1)
-    replacement = "A" if signature[-1] != "A" else "B"
-    tampered = f"{serialized}.{signature[:-1]}{replacement}"
+    replacement = "A" if signature[0] != "A" else "B"
+    tampered = f"{serialized}.{replacement}{signature[1:]}"
 
     shuffle = client.post(
         "/api/shuffle",
@@ -721,6 +721,66 @@ async def test_site_alert_settings_store_destinations_without_echoing_slack_secr
                 await session.execute(select(SiteAlertSettings).where(SiteAlertSettings.site_id == site_id))
             ).scalar_one()
             assert row.slack_webhook_url == "https://hooks.slack.com/services/T000/B000/secret"
+    finally:
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = original_auth_enabled
+
+
+@pytest.mark.asyncio
+async def test_site_goals_are_owner_managed_and_update_in_place(client):
+    site_id = "site-goals"
+    owner = "goals-owner"
+    original_auth_enabled = dashboard_auth_settings.DASHBOARD_AUTH_ENABLED
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = False
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="goals-owner@example.com",
+                password_hash="hash",
+            )
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username=owner,
+                site_name="Goals Site",
+                allowed_origin="https://goals.example.com",
+            )
+        )
+        await session.commit()
+
+    try:
+        empty = client.get("/api/site-goals", params={"site_id": site_id})
+        assert empty.status_code == 200
+        assert empty.json()["goals"] == []
+
+        saved = client.put(
+            "/api/site-goals",
+            json={"site_id": site_id, "metric": "revenue", "target": 5000, "period_days": 30},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["goals"][0]["metric"] == "revenue"
+        assert saved.json()["goals"][0]["target"] == 5000
+
+        updated = client.put(
+            "/api/site-goals",
+            json={"site_id": site_id, "metric": "revenue", "target": 7500, "period_days": 30},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["goals"][0]["target"] == 7500
+
+        async with async_session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(SiteGoal).where(SiteGoal.site_id == site_id, SiteGoal.metric == "revenue")
+                )
+            ).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].target == 7500
+
+        deleted = client.delete("/api/site-goals/revenue", params={"site_id": site_id})
+        assert deleted.status_code == 200
+        assert deleted.json()["goals"] == []
     finally:
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = original_auth_enabled
 
@@ -1641,7 +1701,11 @@ async def test_historical_csv_import_is_idempotent_and_rejects_live_overlap(clie
         assert overlap_preview.json()["live_overlaps"][0]["source"] == "live"
         overlap = client.post(
             "/api/import/historical-csv",
-            json={"site_id": site_id, "csv_text": f"day,metric,value\n{overlap_day},pageviews,25\n"},
+            json={
+                "site_id": site_id,
+                "csv_text": f"day,metric,value\n{overlap_day},pageviews,25\n",
+                "allow_live_overlap": True,
+            },
             headers=headers,
         )
         assert overlap.status_code == 409
