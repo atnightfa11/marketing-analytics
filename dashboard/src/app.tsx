@@ -77,7 +77,6 @@ import {
   hourOfDayLabels,
   LAST_SITE_ID_STORAGE_KEY,
   metricLabels,
-  metricOptions,
   MS_PER_DAY,
   rangeOptions,
   timezoneOptions,
@@ -105,7 +104,6 @@ import type {
   TrendChartPoint,
 } from "./types";
 import {
-  formatCurrency,
   formatDailyPace,
   formatDuration,
   formatMetricValue,
@@ -284,11 +282,6 @@ const formatCompactCurrency = (value: number) => {
   if (absValue >= 1_000) return `${sign}$${format(absValue / 1_000)}k`;
   return `${sign}$${Math.round(absValue)}`;
 };
-
-const formatAxisDate = (value: string) =>
-  new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-const formatTooltipDate = (value: string) =>
-  new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
 // Returns the ISO date (YYYY-MM-DD) marking the start of the bucket that contains `day`.
 // Weeks start on Monday so partial weeks line up with common analytics conventions.
@@ -1056,8 +1049,6 @@ const Overview: React.FC = () => {
     () => maybeFillMissingDailyZeros("revenue", filterByRange(revenueAll, range, customRange), range, customRange),
     [revenueAll, range, customRange, observedCountDayList]
   );
-  const dailyDuration = useMemo(() => filterByRange(durationAll, range, customRange), [durationAll, range, customRange]);
-
   const avgPagesPerVisitAll = useMemo(() => {
     const pageviewsMap = mapByDay(pageviewsAll);
     const sessionsMap = mapByDay(sessionsAll);
@@ -4593,7 +4584,7 @@ const Settings: React.FC = () => {
                             label: "Reducer",
                             value: reducerSummary,
                             detail: health?.latest_reduced_at ? `Last reduced ${formatRelativeTime(health.latest_reduced_at)}` : "Reducer status updates after aggregate publishing.",
-                            status: health?.latest_reducer_status === "completed" || health?.latest_reducer_status === "ok" ? "ok" : health?.latest_reducer_status ? "warning" : "warning",
+                            status: ["success", "completed", "ok"].includes(health?.latest_reducer_status ?? "") ? "ok" : health?.latest_reducer_status ? "warning" : "warning",
                           },
                           {
                             label: "Forecast",
