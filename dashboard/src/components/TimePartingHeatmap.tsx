@@ -94,10 +94,9 @@ export const TimePartingHeatmap: FC<{
     const share = total > 0 ? value / total : 0;
     const width = max > 0 ? Math.max(3, (value / max) * 100) : 0;
     return (
-      <tr key={label} className={isPeak ? "bg-[#F8F9FF]" : undefined}>
-        <td className="py-2.5 pr-3 text-[12px] text-[#374151]" style={fontBody}>
+      <tr key={label} className={isPeak ? "bg-[#F8F9FF]" : undefined} title={isPeak ? "Highest value in this group" : undefined}>
+        <td className={`py-2.5 pr-3 text-[12px] ${isPeak ? "font-semibold text-[#111827]" : "text-[#374151]"}`} style={fontBody}>
           {label}
-          {isPeak ? <span className="ml-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#4F46E5]">Peak</span> : null}
         </td>
         <td className="py-2.5 pr-3 text-right text-[12px] text-[#111827] metric-number" style={fontMetric}>
           {formatMetricValue(primaryMetric, value)}
