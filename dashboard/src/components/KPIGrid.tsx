@@ -15,12 +15,12 @@ interface Props {
 }
 
 const cards = [
-  { key: "pageviews", label: "Pageviews", tier: "primary" as const },
   { key: "uniques", label: "Unique Visitors", tier: "primary" as const },
   { key: "sessions", label: "Sessions", tier: "primary" as const },
   { key: "conversions", label: "Conversions", tier: "primary" as const },
   { key: "revenue", label: "Revenue", tier: "primary" as const },
   { key: "avg_pages_per_visit", label: "Pages per Visit", tier: "secondary" as const },
+  { key: "pageviews", label: "Pageviews", tier: "primary" as const },
   { key: "visit_duration", label: "Visit Duration", tier: "secondary" as const },
   { key: "bounce_rate", label: "Bounce Rate", tier: "secondary" as const },
 ];

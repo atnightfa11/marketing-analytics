@@ -97,5 +97,4 @@ export const forecastOptions = [
   { key: "q4", label: "Q4", kind: "quarter", quarter: 4 },
 ] as const;
 
-export const MAX_PUBLISHED_FORECAST_ACCURACY_MAPE = 0.5;
 export const MS_PER_DAY = 86_400_000;

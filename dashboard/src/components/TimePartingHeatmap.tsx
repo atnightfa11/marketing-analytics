@@ -1,15 +1,13 @@
-import { Fragment, type FC } from "react";
+import type { FC } from "react";
 
 import type { BreakdownMetricKey, TimePartingDayType } from "../api";
 import { dayOfWeekLabels, hourOfDayLabels } from "../constants";
-import { fontBody, fontMeta } from "../styles/typography";
+import { fontBody, fontMeta, fontMetric } from "../styles/typography";
 import type { BreakdownTableRow } from "../types";
 import { getBreakdownMetricValue } from "../utils/breakdowns";
+import { formatMetricValue, formatPercent } from "../utils/format";
 
 const shortDayOfWeekLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
-const hourTickIndexes = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22] as const;
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 const getHourIndexFromLabel = (label: string): number => {
   const numeric = Number(label);
@@ -29,6 +27,12 @@ const getDayIndexFromLabel = (label: string): number => {
   const numeric = Number(label);
   if (Number.isFinite(numeric) && numeric >= 0 && numeric <= 6) return numeric;
   return -1;
+};
+
+const formatHourRange = (hourIndex: number): string => {
+  const start = hourOfDayLabels[hourIndex] ?? `${hourIndex}:00`;
+  const end = hourOfDayLabels[(hourIndex + 1) % 24] ?? `${(hourIndex + 1) % 24}:00`;
+  return `${start} - ${end}`;
 };
 
 export const TimePartingHeatmap: FC<{
@@ -57,32 +61,69 @@ export const TimePartingHeatmap: FC<{
     dayType === "weekday" ? [0, 1, 2, 3, 4] : dayType === "weekend" ? [5, 6] : [0, 1, 2, 3, 4, 5, 6];
   const maxHour = Math.max(...hourValues, 0);
   const maxDay = Math.max(...dayValues, 0);
+  const totalHour = hourValues.reduce((sum, value) => sum + value, 0);
+  const totalDay = visibleDayIndexes.reduce((sum, dayIndex) => sum + dayValues[dayIndex], 0);
   const hasData = maxHour > 0 || maxDay > 0;
-  let peakLabel = "No peak yet";
-  let peakValue = 0;
+  const peakHourIndex = hourValues.reduce((best, value, index) => (value > hourValues[best] ? index : best), 0);
+  const peakDayIndex = visibleDayIndexes.reduce(
+    (best, dayIndex) => (dayValues[dayIndex] > dayValues[best] ? dayIndex : best),
+    visibleDayIndexes[0] ?? 0
+  );
+  const topHourIndexes = hourValues
+    .map((value, index) => ({ index, value }))
+    .sort((a, b) => b.value - a.value || a.index - b.index)
+    .slice(0, 8)
+    .map((item) => item.index);
+  const tableHourIndexes = Array.from(new Set([...topHourIndexes, peakHourIndex])).sort(
+    (a, b) => hourValues[b] - hourValues[a] || a - b
+  );
 
-  const getIntensity = (dayIndex: number, hourIndex: number) => {
-    const hourShare = maxHour > 0 ? hourValues[hourIndex] / maxHour : 0;
-    const dayShare = maxDay > 0 ? dayValues[dayIndex] / maxDay : 0;
-    if (!hasData) return 0;
-    return clamp(hourShare * 0.72 + dayShare * 0.28, 0.08, 1);
+  const renderMetricRow = ({
+    label,
+    value,
+    total,
+    max,
+    isPeak,
+  }: {
+    label: string;
+    value: number;
+    total: number;
+    max: number;
+    isPeak: boolean;
+  }) => {
+    const share = total > 0 ? value / total : 0;
+    const width = max > 0 ? Math.max(3, (value / max) * 100) : 0;
+    return (
+      <tr key={label} className={isPeak ? "bg-[#F8F9FF]" : undefined}>
+        <td className="py-2.5 pr-3 text-[12px] text-[#374151]" style={fontBody}>
+          {label}
+          {isPeak ? <span className="ml-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#4F46E5]">Peak</span> : null}
+        </td>
+        <td className="py-2.5 pr-3 text-right text-[12px] text-[#111827] metric-number" style={fontMetric}>
+          {formatMetricValue(primaryMetric, value)}
+        </td>
+        <td className="py-2.5 text-right text-[12px] text-[#6B7280] metric-number" style={fontMetric}>
+          {formatPercent(share)}
+        </td>
+        <td className="hidden py-2.5 pl-3 sm:table-cell">
+          <div className="h-1.5 rounded-full bg-[#EEF2F7]">
+            <div className="h-1.5 rounded-full bg-[#6B63FF]" style={{ width: `${width}%` }} />
+          </div>
+        </td>
+      </tr>
+    );
   };
-
-  visibleDayIndexes.forEach((dayIndex) => {
-    hourValues.forEach((_, hourIndex) => {
-      const intensity = getIntensity(dayIndex, hourIndex);
-      if (intensity > peakValue) {
-        peakValue = intensity;
-        peakLabel = `${shortDayOfWeekLabels[dayIndex]} \u00b7 ${hourOfDayLabels[hourIndex]}`;
-      }
-    });
-  });
 
   return (
     <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
-          When visitors arrive
+        <div>
+          <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
+            When visitors arrive
+          </div>
+          <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
+            {rangeLabel} · {metricLabel(primaryMetric)}
+          </div>
         </div>
         <div className="flex items-center gap-1 rounded-md bg-[#F1F3F6] p-0.5 text-[11px]" style={fontBody}>
           {([
@@ -115,46 +156,67 @@ export const TimePartingHeatmap: FC<{
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-[38px_1fr] gap-x-2 gap-y-1">
-            <div />
-            <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1 text-[10px] text-[#9CA3AF]" style={fontMeta}>
-              {hourTickIndexes.map((hour) => (
-                <div key={hour} className="col-span-2 text-center">
-                  {hour}
-                </div>
-              ))}
+          <div className="grid gap-5 lg:grid-cols-[1.35fr_1fr]">
+            <div>
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontMeta}>
+                Top hours
+              </div>
+              <table className="w-full table-fixed border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--color-border-subtle)] text-[10px] uppercase tracking-[0.14em] text-[#9CA3AF]" style={fontMeta}>
+                    <th className="py-2 pr-3 text-left font-semibold">Hour</th>
+                    <th className="py-2 pr-3 text-right font-semibold">Count</th>
+                    <th className="py-2 text-right font-semibold">Share</th>
+                    <th className="hidden py-2 pl-3 text-left font-semibold sm:table-cell">Relative</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--color-border-subtle)]">
+                  {tableHourIndexes.map((hourIndex) =>
+                    renderMetricRow({
+                      label: formatHourRange(hourIndex),
+                      value: hourValues[hourIndex],
+                      total: totalHour,
+                      max: maxHour,
+                      isPeak: hourIndex === peakHourIndex,
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
-            {visibleDayIndexes.map((dayIndex) => (
-              <Fragment key={dayIndex}>
-                <div className="flex h-4 items-center text-[11px] text-[#6B7280]" style={fontBody}>
-                  {shortDayOfWeekLabels[dayIndex]}
-                </div>
-                <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] gap-1">
-                  {hourValues.map((_, hourIndex) => {
-                    const intensity = getIntensity(dayIndex, hourIndex);
-                    const alpha = 0.1 + intensity * 0.68;
-                    return (
-                      <div
-                        key={`${dayIndex}-${hourIndex}`}
-                        className="h-4 rounded-[2px]"
-                        title={`${dayOfWeekLabels[dayIndex]} ${hourOfDayLabels[hourIndex]}`}
-                        style={{ backgroundColor: `rgba(79, 70, 229, ${alpha})` }}
-                      />
-                    );
-                  })}
-                </div>
-              </Fragment>
-            ))}
-          </div>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#7B8190]" style={fontBody}>
-            <span>
-              {"Peak \u00b7 "}
-              <span className="font-semibold text-[#4B5563]">{peakLabel}</span>
-            </span>
-            <span>{"Period \u00b7 "}{rangeLabel}</span>
+            <div>
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontMeta}>
+                By day
+              </div>
+              <table className="w-full table-fixed border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--color-border-subtle)] text-[10px] uppercase tracking-[0.14em] text-[#9CA3AF]" style={fontMeta}>
+                    <th className="py-2 pr-3 text-left font-semibold">Day</th>
+                    <th className="py-2 pr-3 text-right font-semibold">Count</th>
+                    <th className="py-2 text-right font-semibold">Share</th>
+                    <th className="hidden py-2 pl-3 text-left font-semibold sm:table-cell">Relative</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--color-border-subtle)]">
+                  {visibleDayIndexes.map((dayIndex) =>
+                    renderMetricRow({
+                      label: dayOfWeekLabels[dayIndex],
+                      value: dayValues[dayIndex],
+                      total: totalDay,
+                      max: maxDay,
+                      isPeak: dayIndex === peakDayIndex,
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </>
       )}
     </div>
   );
+};
+
+const metricLabel = (metric: BreakdownMetricKey): string => {
+  if (metric === "uniques") return "Visitors";
+  return metric.slice(0, 1).toUpperCase() + metric.slice(1);
 };

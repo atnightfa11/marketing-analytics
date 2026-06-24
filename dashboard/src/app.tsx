@@ -76,7 +76,6 @@ import {
   goalEligibleMetrics,
   hourOfDayLabels,
   LAST_SITE_ID_STORAGE_KEY,
-  MAX_PUBLISHED_FORECAST_ACCURACY_MAPE,
   metricLabels,
   metricOptions,
   MS_PER_DAY,
@@ -129,6 +128,32 @@ const mapServerGoals = (goals: SiteGoal[] = []): SiteGoalsMap =>
     };
     return acc;
   }, {});
+
+const titleCaseSiteName = (value: string): string =>
+  value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => {
+      if (/^[A-Z0-9]{2,}$/.test(part)) return part;
+      return `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}`;
+    })
+    .join(" ");
+
+const fallbackSiteDisplayName = (siteId: string): string => {
+  const cleaned = siteId
+    .replace(/^live[-_]/i, "")
+    .replace(/[-_](com|org|net|io|co|app|dev)$/i, "")
+    .replace(/\.(com|org|net|io|co|app|dev)$/i, "")
+    .replace(/[-_.]+/g, " ")
+    .trim();
+  return cleaned ? titleCaseSiteName(cleaned) : siteId;
+};
+
+const dashboardSiteDisplayName = (siteId: string, siteName?: string | null): string => {
+  const trimmed = siteName?.trim();
+  if (trimmed && trimmed !== siteId) return titleCaseSiteName(trimmed);
+  return fallbackSiteDisplayName(siteId);
+};
 
 const extractApiErrorMessage = (error: unknown): string | null => {
   if (!error || typeof error !== "object") return null;
@@ -668,7 +693,7 @@ const Overview: React.FC = () => {
       : "30d";
   });
   const [forecast, setForecast] = useState<ForecastEntry[]>([]);
-  const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "mape" | "has_anomaly" | "trained_at"> | null>(
+  const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "has_anomaly" | "trained_at"> | null>(
     null
   );
   const [forecastError, setForecastError] = useState<string | null>(null);
@@ -739,6 +764,8 @@ const Overview: React.FC = () => {
   const chartAxisTick = isDark ? "rgba(249,250,251,0.55)" : "#6B7280";
   const chartReferenceStroke = isDark ? "rgba(249,250,251,0.25)" : "#D1D5DB";
   const hostnameFilter = !showSeededBreakdowns && selectedHostname !== "all" ? selectedHostname : undefined;
+  const [siteName, setSiteName] = useState<string | null>(null);
+  const siteDisplayName = useMemo(() => dashboardSiteDisplayName(siteId, siteName), [siteId, siteName]);
 
   useEffect(() => {
     if (!canQuery || showSeededBreakdowns) return;
@@ -754,6 +781,25 @@ const Overview: React.FC = () => {
       cancelled = true;
     };
   }, [canQuery, showSeededBreakdowns, token, siteId]);
+
+  useEffect(() => {
+    if (!canQuery || showSeededBreakdowns) {
+      setSiteName(null);
+      return;
+    }
+    let cancelled = false;
+    fetchDashboardSites(token ?? undefined)
+      .then((sites) => {
+        if (cancelled) return;
+        setSiteName(sites.find((site) => site.site_id === siteId)?.site_name ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSiteName(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, showSeededBreakdowns, siteId, token]);
 
   useEffect(() => {
     if (!canQuery) {
@@ -838,7 +884,7 @@ const Overview: React.FC = () => {
       else if (selectedMetric === "conversions") seededMetricSeries = seededSeries.conversions;
       else if (selectedMetric === "revenue") seededMetricSeries = seededSeries.revenue;
       setForecast(buildSeededForecast(seededMetricSeries, 120));
-      setForecastMeta({ mape: 0.08, has_anomaly: false, trained_at: new Date().toISOString() });
+      setForecastMeta({ has_anomaly: false, trained_at: new Date().toISOString() });
       setForecastError(null);
       return;
     }
@@ -847,12 +893,12 @@ const Overview: React.FC = () => {
     fetchForecast(token ?? undefined, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
-        setForecastMeta({ mape: data.mape, has_anomaly: data.has_anomaly, trained_at: data.trained_at ?? null });
+        setForecastMeta({ has_anomaly: data.has_anomaly, trained_at: data.trained_at ?? null });
       })
       .catch((error) => {
         const message = extractApiErrorMessage(error);
         setForecast([]);
-        setForecastMeta({ mape: Number.NaN, has_anomaly: false, trained_at: null });
+        setForecastMeta({ has_anomaly: false, trained_at: null });
         setForecastError(message ?? "Unable to load the current forecast.");
         console.error(error);
       });
@@ -2289,19 +2335,6 @@ const Overview: React.FC = () => {
     scaledTotals.sessions,
   ]);
 
-  const mapeValue = forecastMeta?.mape ?? Number.NaN;
-  const canPublishForecastAccuracy =
-    Number.isFinite(mapeValue) && mapeValue >= 0 && mapeValue <= MAX_PUBLISHED_FORECAST_ACCURACY_MAPE;
-  const forecastAccuracy = canPublishForecastAccuracy
-    ? `${clamp((1 - mapeValue) * 100, 0, 100).toFixed(0)}%`
-    : "Building";
-  const forecastAccuracyClass = canPublishForecastAccuracy
-    ? mapeValue <= 0.1
-      ? "text-emerald-600"
-      : "text-amber-600"
-    : "text-gray-400";
-  const showForecastBuildingInfo =
-    forecastAccuracy === "Building" && (selectedMetric === "conversions" || selectedMetric === "revenue");
   const selectedMetricLabel = metricLabels[selectedMetric] ?? selectedMetric;
   const selectedMetricLower = selectedMetricLabel.toLowerCase();
   const selectedMetricCurrentValue = (scaledTotals as Record<string, number>)[selectedMetric] ?? Number.NaN;
@@ -2693,184 +2726,181 @@ const Overview: React.FC = () => {
               Valid
             </div>
             <div className="mt-4 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-              Site · {siteId}
+              {siteDisplayName}
             </div>
           </div>
           <div className="flex max-w-full flex-col items-end gap-2">
-            <div className="flex max-w-full items-center gap-2 overflow-x-auto whitespace-nowrap">
-            <select
-              aria-label="Date range"
-              className={`${dashboardControlClass} border-[#6B63FF] text-[#5b55ff]`}
-              style={fontBody}
-              value={range}
-              onChange={(event) => setRange(event.target.value as RangeOption)}
-            >
-              {rangeOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-            {!showSeededBreakdowns && (
+            <div className="flex max-w-full flex-wrap items-center justify-end gap-2">
               <select
-                aria-label="Hostname filter"
-                className={`${dashboardControlClass} w-[190px]`}
+                aria-label="Date range"
+                className={`${dashboardControlClass} border-[#6B63FF] text-[#5b55ff]`}
                 style={fontBody}
-                value={selectedHostname}
-                onChange={(event) => setSelectedHostname(event.target.value)}
-                title={selectedHostname === "all" ? "All hostnames" : selectedHostname}
+                value={range}
+                onChange={(event) => setRange(event.target.value as RangeOption)}
               >
-                <option value="all">All hostnames</option>
-                {hostnameOptions.map((host) => (
-                  <option key={host} value={host}>
-                    {host}
+                {rangeOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
                   </option>
                 ))}
               </select>
-            )}
-            {range === "Custom" && (
-              <div className="flex items-center gap-1">
-                <input
-                  type="date"
-                  aria-label="Custom range start date"
-                  className={dashboardControlClass}
-                  style={fontBody}
-                  min={availableBounds?.min}
-                  max={availableBounds?.max}
-                  value={customRange.start}
-                  autoFocus={range === "Custom" && !customRange.start}
-                  onChange={(event) =>
-                    setCustomRange((prev) => {
-                      const nextStart = event.target.value;
-                      const nextEnd = prev.end && prev.end < nextStart ? nextStart : prev.end;
-                      return { start: nextStart, end: nextEnd };
-                    })
-                  }
-                />
-                <span className="text-[10px] text-gray-400" style={fontBody}>
-                  to
-                </span>
-                <input
-                  type="date"
-                  aria-label="Custom range end date"
-                  className={dashboardControlClass}
-                  style={fontBody}
-                  min={availableBounds?.min}
-                  max={availableBounds?.max}
-                  value={customRange.end}
-                  onChange={(event) =>
-                    setCustomRange((prev) => {
-                      const nextEnd = event.target.value;
-                      const nextStart = prev.start && prev.start > nextEnd ? nextEnd : prev.start;
-                      return { start: nextStart, end: nextEnd };
-                    })
-                  }
-                />
-              </div>
-            )}
-            <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#DDE4EC] bg-white px-3 text-[11px] font-semibold text-[#5F6673] shadow-sm">
-              <input
-                type="checkbox"
-                checked={compareEnabled}
-                onChange={(event) => setCompareEnabled(event.target.checked)}
-              />
-              <span style={fontBody}>Compare</span>
-            </label>
-            {compareEnabled && (
-              <>
+              {!showSeededBreakdowns && (
                 <select
-                  aria-label="Comparison period"
-                  className={dashboardControlClass}
+                  aria-label="Hostname filter"
+                  className={`${dashboardControlClass} w-[190px]`}
                   style={fontBody}
-                  value={compareMode}
-                  onChange={(event) => setCompareMode(event.target.value as "previous" | "custom")}
+                  value={selectedHostname}
+                  onChange={(event) => setSelectedHostname(event.target.value)}
+                  title={selectedHostname === "all" ? "All hostnames" : selectedHostname}
                 >
-                  <option value="previous">Previous period</option>
-                  <option value="custom">Custom range</option>
+                  <option value="all">All hostnames</option>
+                  {hostnameOptions.map((host) => (
+                    <option key={host} value={host}>
+                      {host}
+                    </option>
+                  ))}
                 </select>
-                {compareMode === "custom" && (
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="date"
-                      aria-label="Comparison start date"
-                      className={dashboardControlClass}
-                      style={fontBody}
-                      min={availableBounds?.min}
-                      max={availableBounds?.max}
-                      value={compareRange.start}
-                      onChange={(event) =>
-                        setCompareRange((prev) => {
-                          const nextStart = event.target.value;
-                          const nextEnd = prev.end && prev.end < nextStart ? nextStart : prev.end;
-                          return { start: nextStart, end: nextEnd };
-                        })
-                      }
-                    />
-                    <span className="text-[10px] text-gray-400" style={fontBody}>
-                      to
-                    </span>
-                    <input
-                      type="date"
-                      aria-label="Comparison end date"
-                      className={dashboardControlClass}
-                      style={fontBody}
-                      min={availableBounds?.min}
-                      max={availableBounds?.max}
-                      value={compareRange.end}
-                      onChange={(event) =>
-                        setCompareRange((prev) => {
-                          const nextEnd = event.target.value;
-                          const nextStart = prev.start && prev.start > nextEnd ? nextEnd : prev.start;
-                          return { start: nextStart, end: nextEnd };
-                        })
-                      }
-                    />
-                  </div>
-                )}
-              </>
-            )}
-            <select
-              aria-label="Export format"
-              className={dashboardControlClass}
-              style={fontBody}
-              value={exportFormat}
-              onChange={(event) => setExportFormat(event.target.value as "csv" | "pdf")}
-            >
-              <option value="csv">CSV</option>
-              <option value="pdf">PDF</option>
-            </select>
-            {exportFormat === "csv" && (
+              )}
+              {range === "Custom" && (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    aria-label="Custom range start date"
+                    className={dashboardControlClass}
+                    style={fontBody}
+                    min={availableBounds?.min}
+                    max={availableBounds?.max}
+                    value={customRange.start}
+                    autoFocus={range === "Custom" && !customRange.start}
+                    onChange={(event) =>
+                      setCustomRange((prev) => {
+                        const nextStart = event.target.value;
+                        const nextEnd = prev.end && prev.end < nextStart ? nextStart : prev.end;
+                        return { start: nextStart, end: nextEnd };
+                      })
+                    }
+                  />
+                  <span className="text-[10px] text-gray-400" style={fontBody}>
+                    to
+                  </span>
+                  <input
+                    type="date"
+                    aria-label="Custom range end date"
+                    className={dashboardControlClass}
+                    style={fontBody}
+                    min={availableBounds?.min}
+                    max={availableBounds?.max}
+                    value={customRange.end}
+                    onChange={(event) =>
+                      setCustomRange((prev) => {
+                        const nextEnd = event.target.value;
+                        const nextStart = prev.start && prev.start > nextEnd ? nextEnd : prev.start;
+                        return { start: nextStart, end: nextEnd };
+                      })
+                    }
+                  />
+                </div>
+              )}
+              <label className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#DDE4EC] bg-white px-3 text-[11px] font-semibold text-[#5F6673] shadow-sm">
+                <input
+                  type="checkbox"
+                  checked={compareEnabled}
+                  onChange={(event) => setCompareEnabled(event.target.checked)}
+                />
+                <span style={fontBody}>Compare</span>
+              </label>
+              {compareEnabled && (
+                <>
+                  <select
+                    aria-label="Comparison period"
+                    className={dashboardControlClass}
+                    style={fontBody}
+                    value={compareMode}
+                    onChange={(event) => setCompareMode(event.target.value as "previous" | "custom")}
+                  >
+                    <option value="previous">Previous period</option>
+                    <option value="custom">Custom range</option>
+                  </select>
+                  {compareMode === "custom" && (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="date"
+                        aria-label="Comparison start date"
+                        className={dashboardControlClass}
+                        style={fontBody}
+                        min={availableBounds?.min}
+                        max={availableBounds?.max}
+                        value={compareRange.start}
+                        onChange={(event) =>
+                          setCompareRange((prev) => {
+                            const nextStart = event.target.value;
+                            const nextEnd = prev.end && prev.end < nextStart ? nextStart : prev.end;
+                            return { start: nextStart, end: nextEnd };
+                          })
+                        }
+                      />
+                      <span className="text-[10px] text-gray-400" style={fontBody}>
+                        to
+                      </span>
+                      <input
+                        type="date"
+                        aria-label="Comparison end date"
+                        className={dashboardControlClass}
+                        style={fontBody}
+                        min={availableBounds?.min}
+                        max={availableBounds?.max}
+                        value={compareRange.end}
+                        onChange={(event) =>
+                          setCompareRange((prev) => {
+                            const nextEnd = event.target.value;
+                            const nextStart = prev.start && prev.start > nextEnd ? nextEnd : prev.start;
+                            return { start: nextStart, end: nextEnd };
+                          })
+                        }
+                      />
+                    </div>
+                  )}
+                </>
+              )}
               <select
-                aria-label="CSV export scope"
-                className={`${dashboardControlClass} w-[150px]`}
+                aria-label="Export format"
+                className={dashboardControlClass}
                 style={fontBody}
-                value={exportMode}
-                onChange={(event) => setExportMode(event.target.value as "current" | "all")}
+                value={exportFormat}
+                onChange={(event) => setExportFormat(event.target.value as "csv" | "pdf")}
               >
-                <option value="current">Selected metric</option>
-                <option value="all">All metrics</option>
+                <option value="csv">CSV</option>
+                <option value="pdf">PDF</option>
               </select>
-            )}
-            <button
-              type="button"
-              onClick={() => void handleExportAction()}
-              className={dashboardActionClass}
-              style={fontBody}
-            >
-              Export
-            </button>
-            <a
-              href={`/site/${encodeURIComponent(siteId)}/settings`}
-              className={dashboardActionClass}
-              style={fontBody}
-            >
-              Settings
-            </a>
-            <ThemeToggle />
-            <LogoutButton className={dashboardActionClass} />
-            </div>
-            <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-              Metrics · {range}{hostnameFilter ? ` · ${hostnameFilter}` : ""}
+              {exportFormat === "csv" && (
+                <select
+                  aria-label="CSV export scope"
+                  className={`${dashboardControlClass} w-[150px]`}
+                  style={fontBody}
+                  value={exportMode}
+                  onChange={(event) => setExportMode(event.target.value as "current" | "all")}
+                >
+                  <option value="current">Selected metric</option>
+                  <option value="all">All metrics</option>
+                </select>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleExportAction()}
+                className={dashboardActionClass}
+                style={fontBody}
+              >
+                Export
+              </button>
+              <a
+                href={`/site/${encodeURIComponent(siteId)}/settings`}
+                className={dashboardActionClass}
+                style={fontBody}
+              >
+                Settings
+              </a>
+              <ThemeToggle />
+              <LogoutButton className={dashboardActionClass} />
             </div>
             {hostnameError && (
               <div className="text-[11px] text-[#8B2635]" style={fontBody}>
@@ -2989,20 +3019,6 @@ const Overview: React.FC = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-                Forecast horizon
-              </span>
-              <span
-                className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${
-                  hasForecast
-                    ? "border-emerald-100 bg-emerald-50 text-emerald-700"
-                    : "border-[#E5E7EB] bg-[#F7F8FA] text-[#7B8190]"
-                }`}
-                title={forecastFreshnessDetail}
-                style={fontBody}
-              >
-                {forecastFreshnessText}
-              </span>
               <select
                 aria-label="Forecast horizon"
                 className={dashboardControlClass}
@@ -3408,33 +3424,6 @@ const Overview: React.FC = () => {
             >
               Forecast status <span className="metric-number text-[#6B7280]" style={fontMetric}>{forecastFreshnessText}</span>
             </span>
-            {hasForecast && (
-              <span
-                className="flex items-center gap-1.5 text-[11px] text-[#4B5563]"
-                style={fontBody}
-              >
-                Forecast accuracy <span className={`metric-number ${forecastAccuracyClass}`} style={fontMetric}>{forecastAccuracy}</span>
-                {showForecastBuildingInfo && (
-                  <span className="group relative inline-flex">
-                    <span
-                      tabIndex={0}
-                      aria-label="Why forecast accuracy is building"
-                      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-[#DDE4EC] bg-white text-[10px] font-semibold text-[#7B8190] outline-none transition-colors hover:border-[#B9C3D0] hover:text-[#4B5563] focus:border-[#6B63FF] focus:text-[#4B5563]"
-                      style={fontBody}
-                    >
-                      i
-                    </span>
-                    <span
-                      role="tooltip"
-                      className="pointer-events-none absolute bottom-full right-0 z-20 mb-2 hidden w-[240px] rounded-md border border-[#DDE4EC] bg-white px-3 py-2 text-left text-[11px] leading-4 text-[#4B5563] shadow-lg group-hover:block group-focus-within:block"
-                      style={fontBody}
-                    >
-                      {selectedMetricLabel} can take longer to reach a statistically useful forecast accuracy because it often has fewer completed daily data points.
-                    </span>
-                  </span>
-                )}
-              </span>
-            )}
           </div>
           {!showSeededBreakdowns && (
             <div className="mt-2">
@@ -3547,7 +3536,7 @@ const Overview: React.FC = () => {
         </section>
         <section>
           <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-            Insights · {insightItems.length} things to know about this period
+            Insights
           </div>
           <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="space-y-4">
