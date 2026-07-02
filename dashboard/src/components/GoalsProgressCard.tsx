@@ -61,7 +61,7 @@ export const GoalsProgressCard: FC<{
                     {goalDisplayLabel(goal)}
                   </div>
                   <div className="mt-0.5 text-[11px] text-[#7B8190]" style={fontBody}>
-                    {"Target \u00b7 "}{formatMetricValue(goal.metric, targetForWindow)}
+                    {"Target for selected period \u00b7 "}{formatMetricValue(goal.metric, targetForWindow)}
                   </div>
                 </div>
                 <div className="text-right">

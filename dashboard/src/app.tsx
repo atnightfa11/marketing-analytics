@@ -4943,7 +4943,7 @@ const Settings: React.FC = () => {
                 Performance targets
               </div>
               <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-                Set dashboard targets for the metrics you want to pace against.
+                Set monthly targets for the metrics you want to pace against.
               </div>
               <form
                 className={`mt-4 grid gap-3 ${
@@ -4988,14 +4988,11 @@ const Settings: React.FC = () => {
                         </option>
                       ))}
                     </select>
-                    <div className="mt-1 text-[10px] text-gray-500" style={fontBody}>
-                      Specific types appear after conversion events arrive.
-                    </div>
                   </div>
                 ) : null}
                 <div>
                   <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                    Target
+                    Monthly target
                   </label>
                   <input
                     type="number"
@@ -5046,6 +5043,9 @@ const Settings: React.FC = () => {
                         </div>
                         <div className="text-sm metric-number text-[#1F2937]" style={fontMetric}>
                           {formatMetricValue(goal.metric, goal.target)}
+                          <span className="ml-1 text-[11px] font-normal text-[#7B8190]" style={fontBody}>
+                            per month
+                          </span>
                         </div>
                       </div>
                     ))}
