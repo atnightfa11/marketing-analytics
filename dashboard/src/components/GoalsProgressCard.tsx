@@ -23,7 +23,7 @@ export const GoalsProgressCard: FC<{
   <div className="min-h-[280px] rounded-lg border border-[var(--color-border-subtle)] bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
     <div className="mb-4 flex items-start justify-between gap-2">
       <div className="text-[15px] font-semibold text-[#1F2937]" style={fontBody}>
-        Goals
+        Goal pacing
       </div>
       <a
         href={`/site/${encodeURIComponent(siteId)}/settings`}

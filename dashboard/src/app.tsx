@@ -3727,18 +3727,6 @@ const Overview: React.FC = () => {
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />
-            <TableBlock
-              title="Goal events"
-              rows={breakdownCards[3]?.rows ?? []}
-              metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
-              primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
-              total={breakdownCards[3]?.total}
-              emptyState={breakdownCards[3]?.empty}
-              error={breakdownCards[3]?.error}
-              rowDimension={breakdownCards[3]?.dimension}
-              activeFilters={activeFilters}
-              onToggleFilter={toggleFilter}
-            />
           </div>
         </section>
         <section>
@@ -3753,16 +3741,30 @@ const Overview: React.FC = () => {
               rangeLabel={currentRangeLabel ?? range}
               siteId={siteId}
             />
-            <TimePartingHeatmap
-              hourRows={showSeededBreakdowns ? seededHourRows : breakdownData.hour_of_day.rows}
-              dayRows={showSeededBreakdowns ? seededDayRows : breakdownData.day_of_week.rows}
-              primaryMetric={timePartingPrimaryMetric}
-              dayType={timePartingDayType}
-              setDayType={setTimePartingDayType}
-              emptyState={timePartingEmptyState}
-              error={timePartingError}
-              rangeLabel={currentRangeLabel ?? range}
+            <TableBlock
+              title="Goal events"
+              rows={breakdownCards[3]?.rows ?? []}
+              metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
+              primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
+              total={breakdownCards[3]?.total}
+              emptyState={breakdownCards[3]?.empty}
+              error={breakdownCards[3]?.error}
+              rowDimension={breakdownCards[3]?.dimension}
+              activeFilters={activeFilters}
+              onToggleFilter={toggleFilter}
             />
+            <div className="md:col-span-2">
+              <TimePartingHeatmap
+                hourRows={showSeededBreakdowns ? seededHourRows : breakdownData.hour_of_day.rows}
+                dayRows={showSeededBreakdowns ? seededDayRows : breakdownData.day_of_week.rows}
+                primaryMetric={timePartingPrimaryMetric}
+                dayType={timePartingDayType}
+                setDayType={setTimePartingDayType}
+                emptyState={timePartingEmptyState}
+                error={timePartingError}
+                rangeLabel={currentRangeLabel ?? range}
+              />
+            </div>
           </div>
         </section>
       </main>
@@ -4946,10 +4948,10 @@ const Settings: React.FC = () => {
                 Set monthly targets for the metrics you want to pace against.
               </div>
               <form
-                className={`mt-4 grid gap-3 ${
+                className={`mt-4 grid items-end gap-3 ${
                   goalMetric === "conversions"
-                    ? "md:grid-cols-[1fr_1fr_1fr_auto_auto]"
-                    : "md:grid-cols-[1fr_1fr_auto_auto]"
+                    ? "md:grid-cols-[minmax(0,220px)_minmax(0,240px)_140px_auto_auto]"
+                    : "md:grid-cols-[minmax(0,220px)_140px_auto_auto]"
                 }`}
                 onSubmit={submitGoal}
               >
@@ -4958,7 +4960,7 @@ const Settings: React.FC = () => {
                     Metric
                   </label>
                   <select
-                    className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
                     style={fontBody}
                     value={goalMetric}
                     onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}
@@ -4976,7 +4978,7 @@ const Settings: React.FC = () => {
                       Conversion type
                     </label>
                     <select
-                      className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                      className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
                       style={fontBody}
                       value={goalConversionType}
                       onChange={(event) => setGoalConversionType(event.target.value)}
@@ -4995,10 +4997,10 @@ const Settings: React.FC = () => {
                     Monthly target
                   </label>
                   <input
-                    type="number"
-                    min={0}
-                    step={goalMetric === "revenue" ? "1" : "0.1"}
-                    className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                    type="text"
+                    inputMode={goalMetric === "revenue" ? "numeric" : "decimal"}
+                    autoComplete="off"
+                    className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
                     style={fontBody}
                     value={goalTargetInput}
                     onChange={(event) => setGoalTargetInput(event.target.value)}
@@ -5007,7 +5009,7 @@ const Settings: React.FC = () => {
                 </div>
                 <button
                   type="submit"
-                  className="self-end border border-[#4f46e5] bg-[#4f46e5] px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
+                  className="h-10 whitespace-nowrap border border-[#4f46e5] bg-[#4f46e5] px-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
                   style={fontBody}
                 >
                   Save target
@@ -5015,7 +5017,7 @@ const Settings: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void clearGoal()}
-                  className="self-end border border-gray-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
+                  className="h-10 whitespace-nowrap border border-gray-300 bg-white px-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
                   style={fontBody}
                   disabled={!existingGoal}
                 >
