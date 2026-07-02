@@ -197,6 +197,7 @@ export interface SiteAlertSettingsUpdate {
 export interface SiteGoal {
   site_id: string;
   metric: "revenue" | "conversions" | "pageviews" | "sessions" | "uniques";
+  conversion_type?: string | null;
   target: number;
   period_days: number;
   repeat: "monthly";
@@ -634,6 +635,7 @@ export async function upsertSiteGoal(
   metric: SiteGoal["metric"],
   target: number,
   periodDays: number,
+  conversionType?: string | null,
   token?: string,
   siteId?: string
 ): Promise<SiteGoalsResponse> {
@@ -643,6 +645,7 @@ export async function upsertSiteGoal(
     {
       site_id: resolvedSiteId,
       metric,
+      conversion_type: conversionType || null,
       target,
       period_days: periodDays,
       repeat: "monthly",
@@ -654,13 +657,14 @@ export async function upsertSiteGoal(
 
 export async function deleteSiteGoal(
   metric: SiteGoal["metric"],
+  conversionType?: string | null,
   token?: string,
   siteId?: string
 ): Promise<SiteGoalsResponse> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.delete(`/api/site-goals/${metric}`, {
     headers: authHeaders(token),
-    params: { site_id: resolvedSiteId },
+    params: { site_id: resolvedSiteId, conversion_type: conversionType || undefined },
   });
   return response.data;
 }

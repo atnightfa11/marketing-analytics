@@ -801,6 +801,57 @@ async def test_site_goals_are_owner_managed_and_update_in_place(client):
         assert updated.status_code == 200
         assert updated.json()["goals"][0]["target"] == 7500
 
+        conversion_all = client.put(
+            "/api/site-goals",
+            json={"site_id": site_id, "metric": "conversions", "target": 100, "period_days": 30},
+        )
+        assert conversion_all.status_code == 200
+        conversion_specific = client.put(
+            "/api/site-goals",
+            json={
+                "site_id": site_id,
+                "metric": "conversions",
+                "conversion_type": "demo_request",
+                "target": 25,
+                "period_days": 30,
+            },
+        )
+        assert conversion_specific.status_code == 200
+        conversion_type_goals = [
+            goal for goal in conversion_specific.json()["goals"] if goal["metric"] == "conversions"
+        ]
+        assert any(goal["conversion_type"] is None and goal["target"] == 100 for goal in conversion_type_goals)
+        assert any(goal["conversion_type"] == "Demo Request" and goal["target"] == 25 for goal in conversion_type_goals)
+
+        conversion_specific_update = client.put(
+            "/api/site-goals",
+            json={
+                "site_id": site_id,
+                "metric": "conversions",
+                "conversion_type": "demo-request",
+                "target": 40,
+                "period_days": 30,
+            },
+        )
+        assert conversion_specific_update.status_code == 200
+        conversion_type_goals = [
+            goal for goal in conversion_specific_update.json()["goals"] if goal["metric"] == "conversions"
+        ]
+        assert sum(1 for goal in conversion_type_goals if goal["conversion_type"] == "Demo Request") == 1
+        assert any(goal["conversion_type"] == "Demo Request" and goal["target"] == 40 for goal in conversion_type_goals)
+
+        invalid_scope = client.put(
+            "/api/site-goals",
+            json={
+                "site_id": site_id,
+                "metric": "revenue",
+                "conversion_type": "purchase",
+                "target": 500,
+                "period_days": 30,
+            },
+        )
+        assert invalid_scope.status_code == 400
+
         async with async_session_factory() as session:
             rows = (
                 await session.execute(
@@ -810,9 +861,17 @@ async def test_site_goals_are_owner_managed_and_update_in_place(client):
             assert len(rows) == 1
             assert rows[0].target == 7500
 
+        deleted_specific = client.delete(
+            "/api/site-goals/conversions",
+            params={"site_id": site_id, "conversion_type": "demo_request"},
+        )
+        assert deleted_specific.status_code == 200
+        assert all(goal["conversion_type"] != "Demo Request" for goal in deleted_specific.json()["goals"])
+        assert any(goal["metric"] == "conversions" and goal["conversion_type"] is None for goal in deleted_specific.json()["goals"])
+
         deleted = client.delete("/api/site-goals/revenue", params={"site_id": site_id})
         assert deleted.status_code == 200
-        assert deleted.json()["goals"] == []
+        assert all(goal["metric"] != "revenue" for goal in deleted.json()["goals"])
     finally:
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = original_auth_enabled
 

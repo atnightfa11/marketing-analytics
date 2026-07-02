@@ -436,6 +436,7 @@ class SiteAlertSettingsResponse(BaseModel):
 class SiteGoalResponse(BaseModel):
     site_id: str
     metric: Literal["revenue", "conversions", "pageviews", "sessions", "uniques"]
+    conversion_type: str | None = None
     target: float
     period_days: int
     repeat: Literal["monthly"]
@@ -453,6 +454,7 @@ class SiteGoalsResponse(BaseModel):
 class SiteGoalUpsertRequest(BaseModel):
     site_id: str
     metric: Literal["revenue", "conversions", "pageviews", "sessions", "uniques"]
+    conversion_type: str | None = Field(default=None, max_length=120)
     target: float = Field(gt=0)
     period_days: int = Field(default=30, ge=1, le=366)
     repeat: Literal["monthly"] = "monthly"

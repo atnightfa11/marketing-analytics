@@ -6,6 +6,12 @@ import type { MetricGoal } from "../types";
 import { formatMetricValue } from "../utils/format";
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const goalValueKey = (goal: Pick<MetricGoal, "metric" | "conversionType">) =>
+  goal.metric === "conversions" && goal.conversionType ? `conversions:${goal.conversionType}` : goal.metric;
+const goalDisplayLabel = (goal: Pick<MetricGoal, "metric" | "conversionType">) =>
+  goal.metric === "conversions" && goal.conversionType
+    ? `Conversions · ${goal.conversionType}`
+    : metricLabels[goal.metric] ?? goal.metric;
 
 export const GoalsProgressCard: FC<{
   goals: MetricGoal[];
@@ -34,7 +40,7 @@ export const GoalsProgressCard: FC<{
     ) : (
       <div className="space-y-4">
         {goals.slice(0, 4).map((goal) => {
-          const currentValue = values[goal.metric] ?? Number.NaN;
+          const currentValue = values[goalValueKey(goal)] ?? Number.NaN;
           const targetForWindow = goal.target * (Math.max(1, dayCount) / Math.max(1, goal.periodDays));
           const progressPct =
             Number.isFinite(currentValue) && Number.isFinite(targetForWindow) && targetForWindow > 0
@@ -48,11 +54,11 @@ export const GoalsProgressCard: FC<{
               : "Behind"
             : "Needs data";
           return (
-            <div key={goal.metric}>
+            <div key={goalValueKey(goal)}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate text-[13px] font-semibold text-[#374151]" style={fontBody}>
-                    {metricLabels[goal.metric] ?? goal.metric}
+                    {goalDisplayLabel(goal)}
                   </div>
                   <div className="mt-0.5 text-[11px] text-[#7B8190]" style={fontBody}>
                     {"Target \u00b7 "}{formatMetricValue(goal.metric, targetForWindow)}

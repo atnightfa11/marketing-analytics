@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..breakdown_logic import normalize_conversion_event
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
 from ..models import SiteGoal, get_session
 from ..schemas import SiteGoalResponse, SiteGoalsResponse, SiteGoalUpsertRequest
@@ -17,6 +18,7 @@ def _serialize(row: SiteGoal) -> SiteGoalResponse:
     return SiteGoalResponse(
         site_id=row.site_id,
         metric=row.metric,  # type: ignore[arg-type]
+        conversion_type=row.conversion_type,
         target=row.target,
         period_days=row.period_days,
         repeat=row.repeat,  # type: ignore[arg-type]
@@ -32,9 +34,31 @@ async def _list_goals(session: AsyncSession, site_id: str) -> list[SiteGoal]:
         await session.execute(
             select(SiteGoal)
             .where(SiteGoal.site_id == site_id)
-            .order_by(SiteGoal.metric.asc())
+            .order_by(SiteGoal.metric.asc(), SiteGoal.conversion_type.asc().nullsfirst())
         )
     ).scalars().all()
+
+
+def _normalize_goal_conversion_type(metric: str, raw_value: str | None) -> str | None:
+    if metric != "conversions":
+        if raw_value and raw_value.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="conversion_type can only be set for conversion goals",
+            )
+        return None
+    if raw_value is None or not raw_value.strip():
+        return None
+    return normalize_conversion_event(raw_value)
+
+
+def _goal_match(site_id: str, metric: str, conversion_type: str | None):
+    filters = [SiteGoal.site_id == site_id, SiteGoal.metric == metric]
+    if conversion_type is None:
+        filters.append(SiteGoal.conversion_type.is_(None))
+    else:
+        filters.append(SiteGoal.conversion_type == conversion_type)
+    return filters
 
 
 @router.get("", response_model=SiteGoalsResponse)
@@ -57,11 +81,11 @@ async def upsert_site_goal(
     await require_site_owner_with_db(site_id=payload.site_id, claims=claims, session=session)
     username = _normalize_username(claims.get("sub") if isinstance(claims, dict) else None)
     now = dt.datetime.now(dt.timezone.utc)
+    conversion_type = _normalize_goal_conversion_type(payload.metric, payload.conversion_type)
     existing = (
         await session.execute(
             select(SiteGoal).where(
-                SiteGoal.site_id == payload.site_id,
-                SiteGoal.metric == payload.metric,
+                *_goal_match(payload.site_id, payload.metric, conversion_type),
             )
         )
     ).scalar_one_or_none()
@@ -76,6 +100,7 @@ async def upsert_site_goal(
             SiteGoal(
                 site_id=payload.site_id,
                 metric=payload.metric,
+                conversion_type=conversion_type,
                 target=payload.target,
                 period_days=payload.period_days,
                 repeat=payload.repeat,
@@ -94,17 +119,18 @@ async def upsert_site_goal(
 async def delete_site_goal(
     metric: str,
     site_id: str,
+    conversion_type: str | None = None,
     claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ) -> SiteGoalsResponse:
     await require_site_owner_with_db(site_id=site_id, claims=claims, session=session)
     if metric not in {"revenue", "conversions", "pageviews", "sessions", "uniques"}:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Goal not found")
+    normalized_conversion_type = _normalize_goal_conversion_type(metric, conversion_type)
     existing = (
         await session.execute(
             select(SiteGoal).where(
-                SiteGoal.site_id == site_id,
-                SiteGoal.metric == metric,
+                *_goal_match(site_id, metric, normalized_conversion_type),
             )
         )
     ).scalar_one_or_none()

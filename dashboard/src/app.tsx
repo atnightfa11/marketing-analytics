@@ -118,8 +118,10 @@ import en from "./locales/en.json";
 
 const mapServerGoals = (goals: SiteGoal[] = []): SiteGoalsMap =>
   goals.reduce<SiteGoalsMap>((acc, goal) => {
-    acc[goal.metric] = {
+    const conversionType = goal.metric === "conversions" ? goal.conversion_type ?? null : null;
+    acc[goalKey(goal.metric, conversionType)] = {
       metric: goal.metric,
+      conversionType,
       target: goal.target,
       periodDays: goal.period_days,
       repeat: goal.repeat,
@@ -127,6 +129,14 @@ const mapServerGoals = (goals: SiteGoal[] = []): SiteGoalsMap =>
     };
     return acc;
   }, {});
+
+const goalKey = (metric: GoalMetric | SiteGoal["metric"], conversionType?: string | null): string =>
+  metric === "conversions" && conversionType ? `conversions:${conversionType}` : metric;
+
+const goalLabel = (goal: Pick<MetricGoal, "metric" | "conversionType">): string =>
+  goal.metric === "conversions" && goal.conversionType
+    ? `Conversions · ${goal.conversionType}`
+    : metricLabels[goal.metric] ?? goal.metric;
 
 const titleCaseSiteName = (value: string): string =>
   value
@@ -2384,7 +2394,7 @@ const Overview: React.FC = () => {
     Math.abs(selectedMetricComparisonValue) > 0
       ? (selectedMetricCurrentValue - selectedMetricComparisonValue) / selectedMetricComparisonValue
       : Number.NaN;
-  const selectedMetricGoal = metricSupportsGoals(selectedMetric) ? siteGoals[selectedMetric] ?? null : null;
+  const selectedMetricGoal = metricSupportsGoals(selectedMetric) ? siteGoals[goalKey(selectedMetric)] ?? null : null;
   const forecastDayCount = forecastCandidates.length;
   const goalTargetForWindow =
     selectedMetricGoal && forecastDayCount > 0
@@ -2461,6 +2471,13 @@ const Overview: React.FC = () => {
         ? `Next ${selectedForecast.days} days · total`
         : `${forecastLabel} · total`;
   const dashboardGoals = Object.values(siteGoals).filter((goal): goal is MetricGoal => Boolean(goal));
+  const goalCurrentValues = useMemo(() => {
+    const values: Record<string, number> = { ...(scaledTotals as Record<string, number>) };
+    goalRows.forEach((row) => {
+      values[goalKey("conversions", row.label)] = getBreakdownMetricValue(row, "conversions");
+    });
+    return values;
+  }, [goalRows, scaledTotals]);
   const insightItems = useMemo(() => {
     const items: { label: string; text: string }[] = [];
     if (forecastMeta?.has_anomaly) {
@@ -3731,7 +3748,7 @@ const Overview: React.FC = () => {
           <div className="grid gap-4 md:grid-cols-2">
             <GoalsProgressCard
               goals={dashboardGoals}
-              values={scaledTotals as Record<string, number>}
+              values={goalCurrentValues}
               dayCount={selectedRangeDayCount}
               rangeLabel={currentRangeLabel ?? range}
               siteId={siteId}
@@ -3813,6 +3830,8 @@ const Settings: React.FC = () => {
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [goals, setGoals] = useState<SiteGoalsMap>({});
   const [goalMetric, setGoalMetric] = useState<GoalMetric>("revenue");
+  const [goalConversionType, setGoalConversionType] = useState<string>("");
+  const [goalConversionTypes, setGoalConversionTypes] = useState<string[]>([]);
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
   const [goalStatus, setGoalStatus] = useState<string | null>(null);
 
@@ -3834,6 +3853,35 @@ const Settings: React.FC = () => {
   useEffect(() => {
     void refreshSiteGoals();
   }, [refreshSiteGoals]);
+
+  useEffect(() => {
+    if (!canQuery) {
+      setGoalConversionTypes([]);
+      return;
+    }
+    let cancelled = false;
+    fetchBreakdown("conversions", token ?? undefined, siteId, undefined, undefined, 50)
+      .then((result) => {
+        if (cancelled) return;
+        setGoalConversionTypes(
+          Array.from(new Set((result.rows ?? []).map((row) => row.label).filter(Boolean))).sort((a, b) =>
+            a.localeCompare(b)
+          )
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setGoalConversionTypes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canQuery, siteId, token]);
+
+  useEffect(() => {
+    if (goalMetric !== "conversions") {
+      setGoalConversionType("");
+    }
+  }, [goalMetric]);
 
   useEffect(() => {
     if (!canQuery) return;
@@ -4034,17 +4082,33 @@ const Settings: React.FC = () => {
     void refreshAlertSettings();
   }, [refreshAlertSettings]);
 
-  const existingGoal = goals[goalMetric];
+  const selectedGoalConversionType = goalMetric === "conversions" ? goalConversionType || null : null;
+  const selectedGoalKey = goalKey(goalMetric, selectedGoalConversionType);
+  const existingGoal = goals[selectedGoalKey];
   useEffect(() => {
     setGoalTargetInput(existingGoal ? String(existingGoal.target) : "");
-  }, [goalMetric, existingGoal?.target]);
+  }, [selectedGoalKey, existingGoal?.target]);
 
   const sortedGoals = useMemo(
     () =>
-      goalEligibleMetrics
-        .map((metric) => goals[metric])
-        .filter((goal): goal is MetricGoal => Boolean(goal)),
+      Object.values(goals).sort((a, b) => {
+        const metricOrder = goalEligibleMetrics.indexOf(a.metric) - goalEligibleMetrics.indexOf(b.metric);
+        if (metricOrder !== 0) return metricOrder;
+        return (a.conversionType ?? "").localeCompare(b.conversionType ?? "");
+      }),
     [goals]
+  );
+  const conversionGoalOptions = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...goalConversionTypes,
+          ...Object.values(goals)
+            .map((goal) => (goal.metric === "conversions" ? goal.conversionType ?? "" : ""))
+            .filter(Boolean),
+        ])
+      ).sort((a, b) => a.localeCompare(b)),
+    [goalConversionTypes, goals]
   );
 
   const saveTimezone = async () => {
@@ -4409,9 +4473,9 @@ const Settings: React.FC = () => {
     }
     setGoalStatus("Saving target...");
     try {
-      const result = await upsertSiteGoal(goalMetric, target, 30, token ?? undefined, siteId);
+      const result = await upsertSiteGoal(goalMetric, target, 30, selectedGoalConversionType, token ?? undefined, siteId);
       setGoals(mapServerGoals(result.goals));
-      setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} target saved.`);
+      setGoalStatus(`${goalLabel({ metric: goalMetric, conversionType: selectedGoalConversionType })} target saved.`);
     } catch (error) {
       setGoalStatus(extractApiErrorMessage(error) ?? "Unable to save that target right now.");
     }
@@ -4420,9 +4484,9 @@ const Settings: React.FC = () => {
   const clearGoal = async () => {
     setGoalStatus("Removing target...");
     try {
-      const result = await deleteSiteGoal(goalMetric, token ?? undefined, siteId);
+      const result = await deleteSiteGoal(goalMetric, selectedGoalConversionType, token ?? undefined, siteId);
       setGoals(mapServerGoals(result.goals));
-      setGoalStatus(`${metricLabels[goalMetric] ?? goalMetric} target removed.`);
+      setGoalStatus(`${goalLabel({ metric: goalMetric, conversionType: selectedGoalConversionType })} target removed.`);
       setGoalTargetInput("");
     } catch (error) {
       setGoalStatus(extractApiErrorMessage(error) ?? "Unable to remove that target right now.");
@@ -4881,7 +4945,14 @@ const Settings: React.FC = () => {
               <div className="mt-1 text-sm text-gray-500" style={fontBody}>
                 Set dashboard targets for the metrics you want to pace against.
               </div>
-              <form className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto_auto]" onSubmit={submitGoal}>
+              <form
+                className={`mt-4 grid gap-3 ${
+                  goalMetric === "conversions"
+                    ? "md:grid-cols-[1fr_1fr_1fr_auto_auto]"
+                    : "md:grid-cols-[1fr_1fr_auto_auto]"
+                }`}
+                onSubmit={submitGoal}
+              >
                 <div>
                   <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
                     Metric
@@ -4899,6 +4970,29 @@ const Settings: React.FC = () => {
                     ))}
                   </select>
                 </div>
+                {goalMetric === "conversions" ? (
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Conversion type
+                    </label>
+                    <select
+                      className="mt-1 w-full border border-gray-200 bg-white px-2.5 py-2 text-sm text-[#1F2937]"
+                      style={fontBody}
+                      value={goalConversionType}
+                      onChange={(event) => setGoalConversionType(event.target.value)}
+                    >
+                      <option value="">All conversions</option>
+                      {conversionGoalOptions.map((conversionType) => (
+                        <option key={conversionType} value={conversionType}>
+                          {conversionType}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-1 text-[10px] text-gray-500" style={fontBody}>
+                      Specific types appear after conversion events arrive.
+                    </div>
+                  </div>
+                ) : null}
                 <div>
                   <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
                     Target
@@ -4944,11 +5038,11 @@ const Settings: React.FC = () => {
                   <div className="mt-2 space-y-2">
                     {sortedGoals.map((goal) => (
                       <div
-                        key={goal.metric}
+                        key={goalKey(goal.metric, goal.conversionType)}
                         className="flex items-center justify-between border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2"
                       >
                         <div className="text-sm text-[#1F2937]" style={fontBody}>
-                          {metricLabels[goal.metric] ?? goal.metric}
+                          {goalLabel(goal)}
                         </div>
                         <div className="text-sm metric-number text-[#1F2937]" style={fontMetric}>
                           {formatMetricValue(goal.metric, goal.target)}

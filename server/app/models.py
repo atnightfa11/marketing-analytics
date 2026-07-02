@@ -400,13 +400,30 @@ class SiteAlertDelivery(Base):
 class SiteGoal(Base):
     __tablename__ = "site_goals"
     __table_args__ = (
-        UniqueConstraint("site_id", "metric", name="uq_site_goals_site_metric"),
         Index("ix_site_goals_site", "site_id"),
+        Index(
+            "uq_site_goals_site_metric_default",
+            "site_id",
+            "metric",
+            unique=True,
+            postgresql_where=text("conversion_type IS NULL"),
+            sqlite_where=text("conversion_type IS NULL"),
+        ),
+        Index(
+            "uq_site_goals_site_metric_conversion_type",
+            "site_id",
+            "metric",
+            "conversion_type",
+            unique=True,
+            postgresql_where=text("conversion_type IS NOT NULL"),
+            sqlite_where=text("conversion_type IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     site_id: Mapped[str] = mapped_column(String, nullable=False)
     metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversion_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     target: Mapped[float] = mapped_column(Float, nullable=False)
     period_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     repeat: Mapped[str] = mapped_column(String(32), nullable=False, default="monthly")

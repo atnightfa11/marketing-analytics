@@ -6,13 +6,14 @@ export type GoalRepeat = "monthly";
 
 export interface MetricGoal {
   metric: GoalMetric;
+  conversionType?: string | null;
   target: number;
   periodDays: number;
   repeat: GoalRepeat;
   updatedAt: string;
 }
 
-export type SiteGoalsMap = Partial<Record<GoalMetric, MetricGoal>>;
+export type SiteGoalsMap = Record<string, MetricGoal>;
 
 export type ChartGranularity = "day" | "week" | "month";
 export type ForecastOption = (typeof forecastOptions)[number];
