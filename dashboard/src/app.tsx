@@ -2464,12 +2464,16 @@ const Overview: React.FC = () => {
     ? `${selectedMetricDeltaPct >= 0 ? "↑" : "↓"} ${Math.abs(selectedMetricDeltaPct * 100).toFixed(0)}%`
     : "N/A";
   const periodDeltaNote = kpiComparisonLabel ?? "vs previous period";
+  const showTodayProjection = showTodayLine && Number.isFinite(todayProjectionValue);
   const forecastTileHeading =
     forecastDayCount > 0
       ? `Next ${forecastDayCount} days · total`
       : selectedForecast.kind === "days"
         ? `Next ${selectedForecast.days} days · total`
         : `${forecastLabel} · total`;
+  const forecastSummaryGridClass = showTodayProjection
+    ? "sm:grid-cols-3"
+    : "sm:grid-cols-2";
   const dashboardGoals = Object.values(siteGoals).filter((goal): goal is MetricGoal => Boolean(goal));
   const goalCurrentValues = useMemo(() => {
     const values: Record<string, number> = { ...(scaledTotals as Record<string, number>) };
@@ -3545,36 +3549,40 @@ const Overview: React.FC = () => {
               )}
             </div>
           )}
-          <div className="mt-4 border-t border-[var(--color-border-subtle)] pt-4">
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B8190]" style={fontBody}>
-                  Today projected
+          <div className="mt-4 border-t border-[var(--color-border-subtle)] pt-3">
+            <div
+              className={`grid gap-y-3 divide-y divide-[var(--color-border-subtle)] ${forecastSummaryGridClass} sm:divide-x sm:divide-y-0`}
+            >
+              {showTodayProjection ? (
+                <div className="py-2 sm:pr-5">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
+                    Projected today
+                  </div>
+                  <div className="mt-1 metric-number text-[18px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
+                    {formatMetricValue(selectedMetric, todayProjectionValue)}
+                  </div>
+                  <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
+                    {todayProgressNote}
+                  </div>
                 </div>
-                <div className="mt-1 metric-number text-[21px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
-                  {formatMetricValue(selectedMetric, todayProjectionValue)}
-                </div>
-                <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
-                  {todayProgressNote}
-                </div>
-              </div>
-              <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B8190]" style={fontBody}>
+              ) : null}
+              <div className={`py-2 ${showTodayProjection ? "sm:px-5" : "sm:pr-5"}`}>
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
                   {forecastTileHeading}
                 </div>
-                <div className="mt-1 metric-number text-[21px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
+                <div className="mt-1 metric-number text-[22px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
                   {forecastSummary ? formatMetricValue(selectedMetric, forecastSummary.total) : "N/A"}
                 </div>
                 <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
                   {forecastSummary ? `Avg ${formatDailyPace(selectedMetric, forecastSummary.average)}` : forecastMutedNote}
                 </div>
               </div>
-              <div className="rounded-md border border-[var(--color-border-subtle)] bg-[#FBFCFE] px-4 py-3">
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#7B8190]" style={fontBody}>
-                  Vs prior period
+              <div className="py-2 sm:pl-5">
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
+                  Pace vs prior period
                 </div>
                 <div
-                  className={`mt-1 metric-number text-[21px] font-semibold leading-tight ${
+                  className={`mt-1 metric-number text-[18px] font-semibold leading-tight ${
                     Number.isFinite(selectedMetricDeltaPct) && selectedMetricDeltaPct < 0 ? "text-[#8B2635]" : "text-[#111827]"
                   }`}
                   style={fontMetric}
