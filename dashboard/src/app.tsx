@@ -2167,7 +2167,7 @@ const Overview: React.FC = () => {
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.devices.total,
       },
       {
-        title: "Goals",
+        title: "Goal events",
         rows: goalRows,
         empty: "No goal events yet for the selected range.",
         error: showSeededBreakdowns ? null : breakdownErrors.conversions ?? null,
@@ -3707,6 +3707,18 @@ const Overview: React.FC = () => {
               emptyState={breakdownCards[2]?.empty}
               error={breakdownCards[2]?.error}
               rowDimension={breakdownCards[2]?.dimension}
+              activeFilters={activeFilters}
+              onToggleFilter={toggleFilter}
+            />
+            <TableBlock
+              title="Goal events"
+              rows={breakdownCards[3]?.rows ?? []}
+              metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
+              primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
+              total={breakdownCards[3]?.total}
+              emptyState={breakdownCards[3]?.empty}
+              error={breakdownCards[3]?.error}
+              rowDimension={breakdownCards[3]?.dimension}
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
             />

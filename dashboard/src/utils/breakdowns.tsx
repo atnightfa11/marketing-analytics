@@ -43,7 +43,7 @@ const filterDimensionLabels: Record<string, string> = {
   page: "Page",
   country: "Country",
   device: "Device",
-  goal: "Goal",
+  goal: "Conversion type",
   hour_of_day: "Hour",
   day_of_week: "Day",
 };
@@ -60,7 +60,8 @@ const breakdownFallbackDimensionLabels: Record<string, string> = {
   "top pages": "Page",
   countries: "Country",
   devices: "Device",
-  goals: "Goal",
+  goals: "Conversion type",
+  "goal events": "Conversion type",
   "time parting": "Time",
 };
 
