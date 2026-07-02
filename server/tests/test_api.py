@@ -2617,6 +2617,73 @@ async def test_missing_site_plan_defaults_to_free_for_serving(client):
 
 
 @pytest.mark.asyncio
+async def test_aggregate_respects_requested_date_window(client):
+    site_id = "site-aggregate-date-window"
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=11.0,
+        window_start=datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc),
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=22.0,
+        window_start=datetime(2026, 4, 11, 12, 0, tzinfo=timezone.utc),
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=33.0,
+        window_start=datetime(2026, 4, 12, 12, 0, tzinfo=timezone.utc),
+    )
+
+    aggregate_resp = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "start": "2026-04-11",
+            "end": "2026-04-11",
+        },
+    )
+    assert aggregate_resp.status_code == 200
+    windows = aggregate_resp.json()["windows"]
+    assert len(windows) == 1
+    assert windows[0]["value"] == 22.0
+
+    reversed_resp = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "start": "2026-04-12",
+            "end": "2026-04-11",
+        },
+    )
+    assert reversed_resp.status_code == 200
+    assert sum(row["value"] for row in reversed_resp.json()["windows"]) == 55.0
+
+    too_wide_resp = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "start": "2024-01-01",
+            "end": "2026-12-31",
+        },
+    )
+    assert too_wide_resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_metrics_sums_windows_within_selected_range(client):
     site_id = "site-metrics-sum"
     start = datetime(2026, 4, 18, 12, 0, tzinfo=timezone.utc)
@@ -2759,6 +2826,13 @@ async def test_hostname_filter_scopes_free_aggregate_and_breakdown(client):
         )
         await _insert_raw_report(
             site_id=site_id,
+            kind="pageviews",
+            payload={"url": "/old", "_hostname": "app.neurotypicaltranslator.com"},
+            day=date(2026, 4, 19),
+            server_received_at=datetime(2026, 4, 19, 9, 30, tzinfo=timezone.utc),
+        )
+        await _insert_raw_report(
+            site_id=site_id,
             kind="sessions",
             payload={
                 "_hostname": "app.neurotypicaltranslator.com",
@@ -2850,6 +2924,8 @@ async def test_hostname_filter_scopes_free_aggregate_and_breakdown(client):
                     "metric": "pageviews",
                     "window": "standard",
                     "hostname": "app.neurotypicaltranslator.com",
+                    "start": "2026-04-20",
+                    "end": "2026-04-20",
                 },
             )
             assert agg_resp.status_code == 200

@@ -759,6 +759,46 @@ const Overview: React.FC = () => {
   const hostnameFilter = !showSeededBreakdowns && selectedHostname !== "all" ? selectedHostname : undefined;
   const [siteName, setSiteName] = useState<string | null>(null);
   const siteDisplayName = useMemo(() => dashboardSiteDisplayName(siteId, siteName), [siteId, siteName]);
+  const selectedRangeBounds = useMemo(
+    () => resolveRangeBounds(range, customRange, siteTimezone),
+    [range, customRange.start, customRange.end, siteTimezone]
+  );
+  const aggregateFetchBounds = useMemo(() => {
+    const primary = selectedRangeBounds ?? resolveRangeBounds("Last 30", { start: "", end: "" }, siteTimezone);
+    if (!primary) return null;
+
+    const ranges: DateRange[] = [primary];
+    const primaryStart = parseDay(primary.start);
+    const primaryEnd = parseDay(primary.end);
+    const diffDays = Math.max(1, Math.round(Math.abs(primaryEnd.getTime() - primaryStart.getTime()) / MS_PER_DAY) + 1);
+    const previousEnd = new Date(primaryStart);
+    previousEnd.setDate(previousEnd.getDate() - 1);
+    const previousStart = new Date(previousEnd);
+    previousStart.setDate(previousStart.getDate() - (diffDays - 1));
+    ranges.push({ start: formatIsoDate(previousStart), end: formatIsoDate(previousEnd) });
+
+    if (compareEnabled && compareMode === "custom" && compareRange.start && compareRange.end) {
+      const compareStart = parseDay(compareRange.start);
+      const compareEnd = parseDay(compareRange.end);
+      ranges.push(
+        compareStart <= compareEnd
+          ? { start: compareRange.start, end: compareRange.end }
+          : { start: compareRange.end, end: compareRange.start }
+      );
+    }
+
+    return {
+      start: ranges.reduce((min, item) => (item.start < min ? item.start : min), ranges[0].start),
+      end: ranges.reduce((max, item) => (item.end > max ? item.end : max), ranges[0].end),
+    };
+  }, [
+    selectedRangeBounds,
+    siteTimezone,
+    compareEnabled,
+    compareMode,
+    compareRange.start,
+    compareRange.end,
+  ]);
 
   useEffect(() => {
     if (!canQuery || showSeededBreakdowns) return;
@@ -825,8 +865,9 @@ const Overview: React.FC = () => {
     }
   }, [siteId]);
   useEffect(() => {
-    if (!canQuery) {
+    if (!canQuery || !aggregateFetchBounds) {
       setKpiError(null);
+      setAggregateMap({});
       return;
     }
     let cancelled = false;
@@ -834,7 +875,15 @@ const Overview: React.FC = () => {
     const metricsToFetch = [...aggregateMetricKeys];
     Promise.all(
       metricsToFetch.map((metric) =>
-        fetchAggregate(metric, "standard", token ?? undefined, siteId, hostnameFilter).then((data) => ({
+        fetchAggregate(
+          metric,
+          "standard",
+          token ?? undefined,
+          siteId,
+          hostnameFilter,
+          aggregateFetchBounds.start,
+          aggregateFetchBounds.end
+        ).then((data) => ({
           metric,
           data,
         }))
@@ -860,7 +909,7 @@ const Overview: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [canQuery, token, siteId, hostnameFilter]);
+  }, [canQuery, token, siteId, hostnameFilter, aggregateFetchBounds?.start, aggregateFetchBounds?.end]);
 
   useEffect(() => {
     if (!aggregateMetricKeys.includes(selectedMetric as (typeof aggregateMetricKeys)[number])) {
@@ -1397,10 +1446,6 @@ const Overview: React.FC = () => {
     });
   }, [availableBounds, compareMode, compareRange.start, compareRange.end]);
 
-  const selectedRangeBounds = useMemo(
-    () => resolveRangeBounds(range, customRange, siteTimezone),
-    [range, customRange.start, customRange.end, siteTimezone]
-  );
   const todayKey = useMemo(() => isoDayForDateInTimeZone(new Date(), siteTimezone), [siteTimezone]);
   const lastActualDay = dailySelected.length > 0 ? dailySelected[dailySelected.length - 1].day : null;
   const hasTodayActual = dailySelected.some((entry) => entry.day === todayKey);

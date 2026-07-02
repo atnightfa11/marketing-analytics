@@ -18,6 +18,33 @@ from ..schemas import AggregateResponse, WindowAggregate
 router = APIRouter(tags=["metrics"])
 settings = get_settings()
 
+DEFAULT_AGGREGATE_DAYS = 90
+MAX_AGGREGATE_DAYS = 730
+
+
+def _day_start(day: dt.date) -> dt.datetime:
+    return dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc)
+
+
+def _resolve_date_window(start: dt.date | None, end: dt.date | None) -> tuple[dt.date, dt.date]:
+    if start and end:
+        start_day, end_day = (start, end) if start <= end else (end, start)
+    elif start:
+        start_day = end_day = start
+    elif end:
+        start_day = end_day = end
+    else:
+        end_day = dt.datetime.now(dt.timezone.utc).date()
+        start_day = end_day - dt.timedelta(days=DEFAULT_AGGREGATE_DAYS - 1)
+
+    days = (end_day - start_day).days + 1
+    if days > MAX_AGGREGATE_DAYS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"aggregate range cannot exceed {MAX_AGGREGATE_DAYS} days",
+        )
+    return start_day, end_day
+
 
 def _raw_report_value(report: RawReport) -> float:
     payload = report.payload if isinstance(report.payload, dict) else {}
@@ -59,10 +86,17 @@ async def _aggregate_free_hostname(
     metric: str,
     hostname_filter: str,
     window: str,
+    start_day: dt.date,
+    end_day: dt.date,
 ) -> list[WindowAggregate]:
     stmt = (
         select(RawReport)
-        .where(RawReport.site_id == site_id, RawReport.kind == metric)
+        .where(
+            RawReport.site_id == site_id,
+            RawReport.kind == metric,
+            RawReport.day >= start_day,
+            RawReport.day <= end_day,
+        )
         .order_by(RawReport.server_received_at, RawReport.id)
     )
     reports = (await session.execute(stmt)).scalars().all()
@@ -137,11 +171,14 @@ async def aggregate(
     metric: str,
     window: str = Query(default="standard", pattern="^(live|standard)$"),
     hostname: str | None = None,
+    start: dt.date | None = None,
+    end: dt.date | None = None,
     _auth_claims: dict | None = Depends(require_dashboard_auth),
     _site_access: None = Depends(require_site_access),
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
+    start_day, end_day = _resolve_date_window(start, end)
     if hostname is not None:
         hostname_filter = normalize_hostname(hostname)
         if not hostname_filter:
@@ -160,10 +197,16 @@ async def aggregate(
             metric=metric,
             hostname_filter=hostname_filter,
             window=window,
+            start_day=start_day,
+            end_day=end_day,
         )
         return AggregateResponse(site_id=site_id, metric=metric, windows=windows)
 
     stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.metric == metric, DpWindow.plan == plan)
+    stmt = stmt.where(
+        DpWindow.window_start >= _day_start(start_day),
+        DpWindow.window_start < _day_start(end_day + dt.timedelta(days=1)),
+    )
     if window == "live":
         cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=3)
         stmt = stmt.where(DpWindow.window_start >= cutoff)

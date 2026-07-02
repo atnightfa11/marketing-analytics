@@ -7,6 +7,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 - Serving plan is resolved from `site_plan.site_id`.
 - If no `site_plan` row exists, serving defaults to `free`.
 - `/api/metrics`, `/api/aggregate`, and `/api/forecast` use the resolved plan.
+- `/api/aggregate` accepts optional `start` and `end` ISO dates. If omitted, it defaults to a recent bounded window; requests over 730 days are rejected to avoid expensive unbounded reads.
 
 ## Metric formulas
 

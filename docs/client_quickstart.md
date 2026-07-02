@@ -54,8 +54,9 @@ Optional attribution controls:
 4. Open `https://app.validanalytics.io/site/live-validanalytics-io` and verify metrics populate.
 5. Optional aggregate API check:
    ```bash
-   curl -s 'https://api.validanalytics.io/api/aggregate?site_id=live-validanalytics-io&metric=pageviews&window=standard'
+   curl -s 'https://api.validanalytics.io/api/aggregate?site_id=live-validanalytics-io&metric=pageviews&window=standard&start=2026-06-01&end=2026-06-30'
    ```
+   `start` and `end` are ISO dates. If omitted, aggregate reads default to a recent bounded window.
 
 ## 5) Track ecommerce purchases (explicit)
 

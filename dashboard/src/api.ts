@@ -332,12 +332,14 @@ export async function fetchAggregate(
   window: "live" | "standard",
   token?: string,
   siteId?: string,
-  hostname?: string
+  hostname?: string,
+  start?: string,
+  end?: string
 ): Promise<AggregateWindow[]> {
   const resolvedSiteId = resolveActiveSiteId(siteId);
   const response = await api.get("/api/aggregate", {
     headers: authHeaders(token),
-    params: { site_id: resolvedSiteId, metric, window, hostname },
+    params: { site_id: resolvedSiteId, metric, window, hostname, start, end },
   });
   return response.data.windows ?? [];
 }
