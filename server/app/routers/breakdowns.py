@@ -15,12 +15,13 @@ from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..hostnames import hostname_from_payload, normalize_hostname
-from ..models import BreakdownRollup, DashboardSite, RawReport, get_session
+from ..models import BreakdownRollup, DashboardSite, RawReport, ReducerWatermark, get_session
+from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import BreakdownResponse, BreakdownRow
 
 router = APIRouter(tags=["metrics"])
 BreakdownDimension = Literal["pages", "sources", "devices", "countries", "conversions", "hour_of_day", "day_of_week", "hostnames"]
-BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions"]
+BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions", "revenue"]
 TimePartingDayType = Literal["all", "weekday", "weekend"]
 settings = get_settings()
 
@@ -62,7 +63,7 @@ BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = 
     "conversions": ("uniques", "sessions", "conversions"),
     "hour_of_day": ("uniques", "sessions", "pageviews", "conversions"),
     "day_of_week": ("uniques", "sessions", "pageviews", "conversions"),
-    "hostnames": ("uniques", "sessions", "pageviews", "conversions"),
+    "hostnames": ("uniques", "sessions", "pageviews", "conversions", "revenue"),
 }
 BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "pages": "pageviews",
@@ -82,7 +83,7 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "conversions": ("conversions",),
     "hour_of_day": ("sessions", "pageviews", "conversions"),
     "day_of_week": ("sessions", "pageviews", "conversions"),
-    "hostnames": ("sessions", "pageviews", "conversions"),
+    "hostnames": ("sessions", "pageviews", "conversions", "revenue"),
 }
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
 TIME_PARTING_MIN_DAYS = 7
@@ -166,6 +167,14 @@ def _increment_metric(
 ):
     buckets[label][metric] += 1.0
     totals[metric] += 1.0
+
+
+def _raw_report_value(report: RawReport) -> float:
+    payload = report.payload if isinstance(report.payload, dict) else {}
+    try:
+        return max(0.0, float(payload.get("value", 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _normalize_page_path(raw_value: object) -> str:
@@ -327,6 +336,10 @@ def _window_days(start_day: dt.date, end_day: dt.date) -> int:
     return (end_day - start_day).days + 1
 
 
+def _enumerate_days(start_day: dt.date, end_day: dt.date) -> list[dt.date]:
+    return [start_day + dt.timedelta(days=offset) for offset in range(_window_days(start_day, end_day))]
+
+
 def _matches_time_parting_day_type(timestamp: dt.datetime, day_type: TimePartingDayType) -> bool:
     if day_type == "all":
         return True
@@ -377,18 +390,43 @@ def _empty_breakdown_response(
     )
 
 
-async def _breakdown_from_rollups(
+async def _successful_reduced_days(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    start_day: dt.date,
+    end_day: dt.date,
+) -> set[dt.date]:
+    rows = (
+        await session.execute(
+            select(ReducerWatermark.day).where(
+                ReducerWatermark.site_id == site_id,
+                ReducerWatermark.plan == plan,
+                ReducerWatermark.reducer_version == REDUCER_VERSION,
+                ReducerWatermark.status == "success",
+                ReducerWatermark.day >= start_day,
+                ReducerWatermark.day <= end_day,
+            )
+        )
+    ).all()
+    return {row[0] for row in rows}
+
+
+async def _breakdown_buckets_from_rollups(
     *,
     session: AsyncSession,
     site_id: str,
     plan: str,
     dimension: BreakdownDimension,
-    limit: int,
     start_day: dt.date,
     end_day: dt.date,
+    reduced_days: set[dt.date],
     hostname_filter: str | None,
     day_type: TimePartingDayType,
-) -> BreakdownResponse | None:
+) -> dict[str, dict[str, float]]:
+    if not reduced_days:
+        return {}
     metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
     stmt = (
         select(BreakdownRollup)
@@ -398,6 +436,7 @@ async def _breakdown_from_rollups(
             BreakdownRollup.dimension == dimension,
             BreakdownRollup.day >= start_day,
             BreakdownRollup.day <= end_day,
+            BreakdownRollup.day.in_(reduced_days),
             BreakdownRollup.hostname == (hostname_filter or ""),
         )
         .order_by(BreakdownRollup.day, BreakdownRollup.label, BreakdownRollup.metric)
@@ -408,21 +447,22 @@ async def _breakdown_from_rollups(
         stmt = stmt.where(BreakdownRollup.day_type == "all")
 
     rollups = (await session.execute(stmt)).scalars().all()
-    if not rollups:
-        return None
-
     buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: _blank_metric_map(metric_keys))
     for rollup in rollups:
         if rollup.metric not in metric_keys:
             continue
         buckets[rollup.label][rollup.metric] += rollup.value
+    return dict(buckets)
 
-    return breakdown_logic.build_breakdown_response_from_buckets(
-        site_id=site_id,
-        dimension=dimension,
-        buckets=dict(buckets),
-        limit=limit,
-    )
+
+def _merge_buckets(
+    target: defaultdict[str, dict[str, float]],
+    source: dict[str, dict[str, float]],
+    metric_keys: tuple[BreakdownMetric, ...],
+) -> None:
+    for label, metrics in source.items():
+        for metric in metric_keys:
+            target[label][metric] += metrics.get(metric, 0.0)
 
 
 @router.get("/breakdown", response_model=BreakdownResponse)
@@ -466,19 +506,36 @@ async def breakdown(
             metric_keys=metric_keys,
         )
 
-    rollup_response = await _breakdown_from_rollups(
+    all_days = set(_enumerate_days(start_day, end_day))
+    reduced_days = await _successful_reduced_days(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        start_day=start_day,
+        end_day=end_day,
+    )
+    unreduced_days = all_days - reduced_days
+
+    buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: _blank_metric_map(metric_keys))
+    rollup_buckets = await _breakdown_buckets_from_rollups(
         session=session,
         site_id=site_id,
         plan=plan,
         dimension=dimension,
-        limit=limit,
         start_day=start_day,
         end_day=end_day,
+        reduced_days=reduced_days,
         hostname_filter=hostname_filter,
         day_type=day_type,
     )
-    if rollup_response is not None:
-        return rollup_response
+    _merge_buckets(buckets, rollup_buckets, metric_keys)
+    if not unreduced_days:
+        return breakdown_logic.build_breakdown_response_from_buckets(
+            site_id=site_id,
+            dimension=dimension,
+            buckets=dict(buckets),
+            limit=limit,
+        )
 
     site = await session.get(DashboardSite, site_id)
     site_timezone = site.timezone if site and site.timezone else "UTC"
@@ -486,12 +543,11 @@ async def breakdown(
     stmt = (
         select(RawReport)
         .where(RawReport.site_id == site_id, RawReport.kind.in_(report_kinds))
-        .where(RawReport.day >= start_day, RawReport.day <= end_day)
+        .where(RawReport.day.in_(unreduced_days))
         .order_by(RawReport.server_received_at, RawReport.id)
     )
     reports = (await session.execute(stmt)).scalars().all()
 
-    buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: _blank_metric_map(metric_keys))
     totals = _blank_metric_map(metric_keys)
     seen_sessions_by_label: defaultdict[str, set[tuple[dt.datetime, str]]] = defaultdict(set)
     seen_visitors_by_label: defaultdict[str, set[tuple[dt.date, str]]] = defaultdict(set)
@@ -578,6 +634,11 @@ async def breakdown(
                         _increment_metric(buckets, totals, label, "sessions")
                 else:
                     _increment_metric(buckets, totals, label, "sessions")
+        elif report.kind == "revenue" and dimension == "hostnames":
+            value = _raw_report_value(report)
+            if value > 0:
+                buckets[label]["revenue"] += value
+                totals["revenue"] += value
         if visitor_marker and visitor_marker not in seen_visitors_by_label[label]:
             seen_visitors_by_label[label].add(visitor_marker)
             _increment_metric(buckets, totals, label, "uniques")

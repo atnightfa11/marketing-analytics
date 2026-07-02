@@ -65,6 +65,7 @@ class Settings(BaseSettings):
   PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
   PROD_REDUCER_INTERVAL_MINUTES: int = Field(default=60)
   RAW_REPORT_PURGE_ENABLED: bool = Field(default=True)
+  FREE_RAW_PURGE_ENABLED: bool = Field(default=False)
   RAW_REPORT_RETENTION_HOURS: int = Field(default=72)
   MODEL_ARTIFACT_BUCKET: str | None = None
   SHUFFLE_MAX_DELAY_SECONDS: int = Field(default=120)

@@ -19,6 +19,7 @@ export const breakdownMetricInlineLabels: Record<BreakdownMetricKey, string> = {
   sessions: "Sessions",
   pageviews: "Pageviews",
   conversions: "Conversions",
+  revenue: "Revenue",
 };
 
 export const hourOfDayLabels = [

@@ -20,7 +20,7 @@ BreakdownDimension = Literal[
     "day_of_week",
     "hostnames",
 ]
-BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions"]
+BreakdownMetric = Literal["uniques", "sessions", "pageviews", "conversions", "revenue"]
 TimePartingDayType = Literal["all", "weekday", "weekend"]
 
 settings = get_settings()
@@ -63,7 +63,7 @@ BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = 
     "conversions": ("uniques", "sessions", "conversions"),
     "hour_of_day": ("uniques", "sessions", "pageviews", "conversions"),
     "day_of_week": ("uniques", "sessions", "pageviews", "conversions"),
-    "hostnames": ("uniques", "sessions", "pageviews", "conversions"),
+    "hostnames": ("uniques", "sessions", "pageviews", "conversions", "revenue"),
 }
 BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "pages": "pageviews",
@@ -83,7 +83,7 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "conversions": ("conversions",),
     "hour_of_day": ("sessions", "pageviews", "conversions"),
     "day_of_week": ("sessions", "pageviews", "conversions"),
-    "hostnames": ("sessions", "pageviews", "conversions"),
+    "hostnames": ("sessions", "pageviews", "conversions", "revenue"),
 }
 BREAKDOWN_DIMENSIONS: tuple[BreakdownDimension, ...] = tuple(BREAKDOWN_METRIC_ORDER.keys())
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
@@ -143,6 +143,14 @@ def increment_metric(
 ) -> None:
     buckets[label][metric] += 1.0
     totals[metric] += 1.0
+
+
+def raw_report_value(report) -> float:
+    payload = report.payload if isinstance(report.payload, dict) else {}
+    try:
+        return max(0.0, float(payload.get("value", 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def normalize_page_path(raw_value: object) -> str:
@@ -452,6 +460,11 @@ def aggregate_reports_for_breakdown(
                         increment_metric(buckets, totals, label, "sessions")
                 else:
                     increment_metric(buckets, totals, label, "sessions")
+        elif report.kind == "revenue" and dimension == "hostnames":
+            value = raw_report_value(report)
+            if value > 0:
+                buckets[label]["revenue"] += value
+                totals["revenue"] += value
         if report_visitor_marker and report_visitor_marker not in seen_visitors_by_label[label]:
             seen_visitors_by_label[label].add(report_visitor_marker)
             increment_metric(buckets, totals, label, "uniques")

@@ -9,7 +9,7 @@
   - Free: raw aggregates computed from non-identifying payloads (no local DP).
   - Standard: aggregate-noise DP controls are applied server-side to selected high-volume KPI releases where added noise still preserves useful reporting. Breakdown panels use rollups and suppression thresholds unless a dimension-level DP mechanism is added.
   - Pro: local DP randomized response is applied client-side when the Pro path is enabled; only privatized bits reach the backend.
-- **Storage & Retention**: Reports are stored in Postgres. Standard raw batches are processing material and are purged after successful reducer watermarks plus the configured retention window (`RAW_REPORT_RETENTION_HOURS`, default 72). KPI aggregates, breakdown rollups, and forecast outputs are durable analytics output retained per business requirements.
+- **Storage & Retention**: Reports are stored in Postgres. Raw batches are processing material and are purged after successful reducer watermarks plus the configured retention window (`RAW_REPORT_RETENTION_HOURS`, default 72). Free raw purge is controlled by `FREE_RAW_PURGE_ENABLED` until verified in production. KPI aggregates, breakdown rollups, and forecast outputs are durable analytics output retained per business requirements.
 - **Security Controls**:
   - Short-lived HMAC-signed upload tokens (900s default) with registered `jti` revocation records.
   - Replay protection via nonce (`jti`) tracking.

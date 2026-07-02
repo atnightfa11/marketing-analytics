@@ -53,7 +53,7 @@ from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
-from app.scheduler.nightly_reduce import reduce_reports, settings as reduce_settings  # noqa: E402
+from app.scheduler.nightly_reduce import purge_reduced_raw_reports, reduce_reports, settings as reduce_settings  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
@@ -1412,6 +1412,288 @@ async def test_reducer_rollups_watermark_and_raw_purge_keep_breakdowns_available
     assert response.json()["rows"] == [
         {"label": "/rollup", "value": 3.0, "metrics": {"uniques": 3.0, "sessions": 3.0, "pageviews": 3.0}}
     ]
+
+
+@pytest.mark.asyncio
+async def test_free_raw_purge_keeps_rollup_backed_dashboard_paths_available(client):
+    site_id = "site-free-rollup-purge"
+    target_day = date(2026, 5, 7)
+    await _set_site_plan(site_id, "free")
+
+    for index, session_id in enumerate(("free-sess-a", "free-sess-b", "free-sess-c")):
+        timestamp = datetime(2026, 5, 7, 15, index, tzinfo=timezone.utc)
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={
+                "url": "/free-rollup",
+                "_device_bucket": "desktop",
+                "_country_code": "US",
+                "_session_hmac": session_id,
+                "_visitor_day_hmac": f"free-visitor-{index}",
+                "_hostname": "example.com",
+            },
+            day=target_day,
+            server_received_at=timestamp,
+        )
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={
+                "referrer_bucket": "direct",
+                "_device_bucket": "desktop",
+                "_country_code": "US",
+                "_session_hmac": session_id,
+                "_visitor_day_hmac": f"free-visitor-{index}",
+                "_hostname": "example.com",
+            },
+            day=target_day,
+            server_received_at=timestamp,
+        )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="revenue",
+        payload={"value": 42.5, "_hostname": "example.com"},
+        day=target_day,
+        server_received_at=datetime(2026, 5, 7, 15, 30, tzinfo=timezone.utc),
+    )
+
+    original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+    original_retention = reduce_settings.RAW_REPORT_RETENTION_HOURS
+    original_free_purge = reduce_settings.FREE_RAW_PURGE_ENABLED
+    reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+    reduce_settings.RAW_REPORT_RETENTION_HOURS = 0
+    reduce_settings.FREE_RAW_PURGE_ENABLED = True
+    try:
+        async with async_session_factory() as session:
+            await reduce_reports(session, start_day=target_day, end_day=target_day)
+    finally:
+        reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+        reduce_settings.RAW_REPORT_RETENTION_HOURS = original_retention
+        reduce_settings.FREE_RAW_PURGE_ENABLED = original_free_purge
+
+    async with async_session_factory() as session:
+        raw_rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        watermark = (
+            await session.execute(select(ReducerWatermark).where(ReducerWatermark.site_id == site_id))
+        ).scalars().first()
+        assert watermark is not None
+        assert watermark.plan == "free"
+        assert watermark.status == "success"
+        assert watermark.dp_window_count > 0
+        assert watermark.breakdown_rollup_count > 0
+        assert watermark.raw_purged_at is not None
+    assert raw_rows == []
+
+    breakdown_resp = client.get(
+        "/api/breakdown",
+        params={
+            "site_id": site_id,
+            "dimension": "pages",
+            "start": target_day.isoformat(),
+            "end": target_day.isoformat(),
+            "limit": 10,
+        },
+    )
+    assert breakdown_resp.status_code == 200
+    assert breakdown_resp.json()["rows"] == [
+        {"label": "/free-rollup", "value": 3.0, "metrics": {"uniques": 3.0, "sessions": 3.0, "pageviews": 3.0}}
+    ]
+
+    aggregate_resp = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "start": target_day.isoformat(),
+            "end": target_day.isoformat(),
+        },
+    )
+    assert aggregate_resp.status_code == 200
+    assert sum(row["value"] for row in aggregate_resp.json()["windows"]) == pytest.approx(3.0)
+
+    hostname_resp = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "hostname": "example.com",
+            "start": target_day.isoformat(),
+            "end": target_day.isoformat(),
+        },
+    )
+    assert hostname_resp.status_code == 200
+    assert sum(row["value"] for row in hostname_resp.json()["windows"]) == pytest.approx(3.0)
+
+    hostname_revenue_resp = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "revenue",
+            "window": "standard",
+            "hostname": "example.com",
+            "start": target_day.isoformat(),
+            "end": target_day.isoformat(),
+        },
+    )
+    assert hostname_revenue_resp.status_code == 200
+    assert sum(row["value"] for row in hostname_revenue_resp.json()["windows"]) == pytest.approx(42.5)
+
+
+@pytest.mark.asyncio
+async def test_breakdown_mixes_reduced_rollups_with_unreduced_raw_fallback(client):
+    site_id = "site-breakdown-mixed-fallback"
+    reduced_day = date(2026, 5, 8)
+    unreduced_day = date(2026, 5, 9)
+    await _set_site_plan(site_id, "free")
+
+    for index in range(2):
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={"url": "/reduced", "_hostname": "example.com"},
+            day=reduced_day,
+            server_received_at=datetime(2026, 5, 8, 12, index, tzinfo=timezone.utc),
+        )
+    for index in range(2):
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={"url": "/unreduced", "_hostname": "example.com"},
+            day=unreduced_day,
+            server_received_at=datetime(2026, 5, 9, 12, index, tzinfo=timezone.utc),
+        )
+
+    original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+    reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+    try:
+        async with async_session_factory() as session:
+            await reduce_reports(session, start_day=reduced_day, end_day=reduced_day)
+    finally:
+        reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+
+    response = client.get(
+        "/api/breakdown",
+        params={
+            "site_id": site_id,
+            "dimension": "pages",
+            "start": reduced_day.isoformat(),
+            "end": unreduced_day.isoformat(),
+            "limit": 10,
+        },
+    )
+    assert response.status_code == 200
+    rows = {row["label"]: row for row in response.json()["rows"]}
+    assert rows["/reduced"]["value"] == 2.0
+    assert rows["/unreduced"]["value"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_raw_purge_requires_output_counts(client):
+    site_id = "site-purge-requires-output-counts"
+    day = date(2026, 5, 10)
+    reduced_at = datetime(2026, 5, 10, 23, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "standard")
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/keep"},
+        day=day,
+        server_received_at=datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc),
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ReducerWatermark(
+                site_id=site_id,
+                plan="standard",
+                day=day,
+                reducer_version="rollups-v1",
+                status="success",
+                raw_report_count=1,
+                dp_window_count=0,
+                breakdown_rollup_count=1,
+                reduced_at=reduced_at,
+                raw_purged_at=None,
+                error=None,
+            )
+        )
+        await session.commit()
+
+    original_retention = reduce_settings.RAW_REPORT_RETENTION_HOURS
+    reduce_settings.RAW_REPORT_RETENTION_HOURS = 0
+    try:
+        async with async_session_factory() as session:
+            deleted = await purge_reduced_raw_reports(session, now=reduced_at + timedelta(hours=1))
+            await session.commit()
+    finally:
+        reduce_settings.RAW_REPORT_RETENTION_HOURS = original_retention
+
+    async with async_session_factory() as session:
+        raw_rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        watermark = (
+            await session.execute(select(ReducerWatermark).where(ReducerWatermark.site_id == site_id))
+        ).scalars().first()
+    assert deleted == 0
+    assert len(raw_rows) == 1
+    assert watermark is not None
+    assert watermark.raw_purged_at is None
+
+
+@pytest.mark.asyncio
+async def test_raw_purge_skips_watermark_when_site_plan_changed(client):
+    site_id = "site-purge-plan-change"
+    day = date(2026, 5, 11)
+    reduced_at = datetime(2026, 5, 11, 23, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "free")
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/keep-plan-change"},
+        day=day,
+        server_received_at=datetime(2026, 5, 11, 12, 0, tzinfo=timezone.utc),
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ReducerWatermark(
+                site_id=site_id,
+                plan="free",
+                day=day,
+                reducer_version="rollups-v1",
+                status="success",
+                raw_report_count=1,
+                dp_window_count=1,
+                breakdown_rollup_count=1,
+                reduced_at=reduced_at,
+                raw_purged_at=None,
+                error=None,
+            )
+        )
+        await session.commit()
+    await _set_site_plan(site_id, "standard")
+
+    original_retention = reduce_settings.RAW_REPORT_RETENTION_HOURS
+    original_free_purge = reduce_settings.FREE_RAW_PURGE_ENABLED
+    reduce_settings.RAW_REPORT_RETENTION_HOURS = 0
+    reduce_settings.FREE_RAW_PURGE_ENABLED = True
+    try:
+        async with async_session_factory() as session:
+            deleted = await purge_reduced_raw_reports(session, now=reduced_at + timedelta(hours=1))
+            await session.commit()
+    finally:
+        reduce_settings.RAW_REPORT_RETENTION_HOURS = original_retention
+        reduce_settings.FREE_RAW_PURGE_ENABLED = original_free_purge
+
+    async with async_session_factory() as session:
+        raw_rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        watermark = (
+            await session.execute(select(ReducerWatermark).where(ReducerWatermark.site_id == site_id))
+        ).scalars().first()
+    assert deleted == 0
+    assert len(raw_rows) == 1
+    assert watermark is not None
+    assert watermark.raw_purged_at is None
 
 
 @pytest.mark.asyncio

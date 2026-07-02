@@ -12,7 +12,8 @@ from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..ldp.rr_decoder import confidence_interval, standard_error
-from ..models import DpWindow, RawReport, get_session
+from ..models import BreakdownRollup, DpWindow, RawReport, ReducerWatermark, get_session
+from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import AggregateResponse, WindowAggregate
 
 router = APIRouter(tags=["metrics"])
@@ -44,6 +45,10 @@ def _resolve_date_window(start: dt.date | None, end: dt.date | None) -> tuple[dt
             detail=f"aggregate range cannot exceed {MAX_AGGREGATE_DAYS} days",
         )
     return start_day, end_day
+
+
+def _enumerate_days(start_day: dt.date, end_day: dt.date) -> list[dt.date]:
+    return [start_day + dt.timedelta(days=offset) for offset in range((end_day - start_day).days + 1)]
 
 
 def _raw_report_value(report: RawReport) -> float:
@@ -86,16 +91,16 @@ async def _aggregate_free_hostname(
     metric: str,
     hostname_filter: str,
     window: str,
-    start_day: dt.date,
-    end_day: dt.date,
+    raw_days: set[dt.date],
 ) -> list[WindowAggregate]:
+    if not raw_days:
+        return []
     stmt = (
         select(RawReport)
         .where(
             RawReport.site_id == site_id,
             RawReport.kind == metric,
-            RawReport.day >= start_day,
-            RawReport.day <= end_day,
+            RawReport.day.in_(raw_days),
         )
         .order_by(RawReport.server_received_at, RawReport.id)
     )
@@ -165,6 +170,75 @@ async def _aggregate_free_hostname(
     return windows
 
 
+async def _successful_reduced_days(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    start_day: dt.date,
+    end_day: dt.date,
+) -> set[dt.date]:
+    rows = (
+        await session.execute(
+            select(ReducerWatermark.day).where(
+                ReducerWatermark.site_id == site_id,
+                ReducerWatermark.plan == plan,
+                ReducerWatermark.reducer_version == REDUCER_VERSION,
+                ReducerWatermark.status == "success",
+                ReducerWatermark.day >= start_day,
+                ReducerWatermark.day <= end_day,
+            )
+        )
+    ).all()
+    return {row[0] for row in rows}
+
+
+async def _aggregate_hostname_rollups(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    metric: str,
+    hostname_filter: str,
+    reduced_days: set[dt.date],
+) -> list[WindowAggregate]:
+    if not reduced_days:
+        return []
+    rollups = (
+        await session.execute(
+            select(BreakdownRollup).where(
+                BreakdownRollup.site_id == site_id,
+                BreakdownRollup.plan == plan,
+                BreakdownRollup.dimension == "hostnames",
+                BreakdownRollup.hostname == "",
+                BreakdownRollup.day_type == "all",
+                BreakdownRollup.label == hostname_filter,
+                BreakdownRollup.metric == metric,
+                BreakdownRollup.day.in_(reduced_days),
+            )
+        )
+    ).scalars().all()
+    windows: list[WindowAggregate] = []
+    for rollup in sorted(rollups, key=lambda row: row.day):
+        value = max(0.0, rollup.value)
+        variance = max(1.0, value)
+        se = standard_error(variance)
+        ci80_low, ci80_high = confidence_interval(value, se, 1.2816)
+        ci95_low, ci95_high = confidence_interval(value, se, 1.9599)
+        window_start = _day_start(rollup.day)
+        windows.append(
+            WindowAggregate(
+                window_start=window_start,
+                window_end=window_start + dt.timedelta(days=1),
+                value=value,
+                variance=variance,
+                ci80={"low": max(0.0, ci80_low), "high": max(0.0, ci80_high)},
+                ci95={"low": max(0.0, ci95_low), "high": max(0.0, ci95_high)},
+            )
+        )
+    return windows
+
+
 @router.get("/aggregate", response_model=AggregateResponse)
 async def aggregate(
     site_id: str,
@@ -191,15 +265,36 @@ async def aggregate(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="hostname filter is currently available for free plan sites",
             )
-        windows = await _aggregate_free_hostname(
+        all_days = set(_enumerate_days(start_day, end_day))
+        if window == "live":
+            reduced_days: set[dt.date] = set()
+            raw_days = {dt.datetime.now(dt.timezone.utc).date()}
+        else:
+            reduced_days = await _successful_reduced_days(
+                session=session,
+                site_id=site_id,
+                plan=plan,
+                start_day=start_day,
+                end_day=end_day,
+            )
+            raw_days = all_days - reduced_days
+        windows = await _aggregate_hostname_rollups(
+            session=session,
+            site_id=site_id,
+            plan=plan,
+            metric=metric,
+            hostname_filter=hostname_filter,
+            reduced_days=reduced_days,
+        )
+        windows.extend(await _aggregate_free_hostname(
             session=session,
             site_id=site_id,
             metric=metric,
             hostname_filter=hostname_filter,
             window=window,
-            start_day=start_day,
-            end_day=end_day,
-        )
+            raw_days=raw_days,
+        ))
+        windows.sort(key=lambda entry: entry.window_start)
         return AggregateResponse(site_id=site_id, metric=metric, windows=windows)
 
     stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.metric == metric, DpWindow.plan == plan)

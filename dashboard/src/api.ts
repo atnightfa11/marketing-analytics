@@ -40,7 +40,7 @@ export interface BreakdownRow {
   metrics: Record<string, number>;
 }
 
-export type BreakdownMetricKey = "uniques" | "sessions" | "pageviews" | "conversions";
+export type BreakdownMetricKey = "uniques" | "sessions" | "pageviews" | "conversions" | "revenue";
 
 export interface BreakdownResponse {
   site_id: string;

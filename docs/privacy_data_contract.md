@@ -13,7 +13,7 @@ This contract defines what each analytics table is allowed to contain and how it
 
 | Table | Class | Allowed contents | Retention target |
 |---|---|---|---|
-| `raw_reports` | Processing material | Site, metric kind, event day, coarse payload fields, rotating session/day HMACs, device bucket, country code, timezone hint, hostname, normalized page/source/conversion fields | Standard rows purge after successful reducer watermark and retention window. Default primary retention is 72 hours after reduction. Free raw purge should wait until all remaining raw-backed Free views are rollup-backed. |
+| `raw_reports` | Processing material | Site, metric kind, event day, coarse payload fields, rotating session/day HMACs, device bucket, country code, timezone hint, hostname, normalized page/source/conversion fields | Rows purge after successful reducer watermark and retention window. Default primary retention is 72 hours after reduction. Free raw purge is guarded by `FREE_RAW_PURGE_ENABLED` until verified in production. |
 | `ldp_reports` | Processing material | Local-DP randomized-response payloads for Pro when enabled | Retention policy to be finalized before Pro public claims. |
 | `dp_windows` | Durable analytics output | Daily/windowed KPI aggregates, variance, confidence intervals, plan, metric | Business reporting retention. |
 | `breakdown_rollups` | Durable analytics output | Low-dimensional aggregate rows by site, plan, day, dimension, hostname scope, day type, label, metric, value | Business reporting retention. This table must not contain raw payloads, IPs, User-Agent strings, visitor IDs, session IDs, upload token IDs, full referrer URLs, or full query strings. |
@@ -28,7 +28,7 @@ This contract defines what each analytics table is allowed to contain and how it
 ## Dashboard Output Rules
 
 - KPI trend endpoints read from `dp_windows`.
-- Breakdown endpoints should read from `breakdown_rollups` once reducer output exists, falling back to `raw_reports` only for unreduced windows.
+- Breakdown endpoints read from `breakdown_rollups` for days with successful reducer watermarks, falling back to bounded `raw_reports` only for unreduced days.
 - Sparse breakdown output remains threshold-gated before response.
 - Historical import rows are aggregate-only and excluded from dimension rollups.
 - Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
@@ -43,11 +43,12 @@ Current breakdown outputs use aggregation and suppression thresholds. They shoul
 
 ## Purge Invariant
 
-Standard `raw_reports` may be purged only when:
+`raw_reports` may be purged only when:
 
 1. A successful `reducer_watermarks` row exists for the same `site_id`, `plan`, `day`, and reducer version.
 2. The reducer wrote KPI windows and breakdown rollups for that day.
 3. The retention window has elapsed.
 4. Only rows received at or before the successful reduction time are deleted.
+5. The site's current plan still matches the watermark plan.
 
 This prevents late-arriving rows from being deleted before a later reducer pass can include them.

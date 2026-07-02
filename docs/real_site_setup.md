@@ -55,6 +55,7 @@ Set these environment variables on the backend service:
 - `GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS=20` (optional; startup download timeout)
 - `AGGREGATE_DP_NOISE_SECRET=<strong-random-secret>` (recommended for stable central-DP noise in Standard)
 - `RAW_REPORT_RETENTION_HOURS=72` (default; raw reports purge after successful reducer watermarks and this retention window)
+- `FREE_RAW_PURGE_ENABLED=false` initially; set to `true` only after verifying Free/Solo rollup-backed dashboard reads in production
 - `ADMIN_API_TOKEN=<strong-random-secret>` (required for privileged admin/token endpoints)
 - `COLLECT_ENDPOINT_TOKEN=<strong-random-secret>` (required for `/api/collect`; mock-shuffle must send `X-Collect-Token`)
 - `SESSION_WINDOW_MINUTES=30`

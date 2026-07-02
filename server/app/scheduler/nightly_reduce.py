@@ -311,15 +311,27 @@ async def purge_reduced_raw_reports(
             select(ReducerWatermark).where(
                 ReducerWatermark.reducer_version == REDUCER_VERSION,
                 ReducerWatermark.status == "success",
-                ReducerWatermark.plan == "standard",
                 ReducerWatermark.raw_purged_at.is_(None),
+                ReducerWatermark.dp_window_count > 0,
+                ReducerWatermark.breakdown_rollup_count > 0,
                 ReducerWatermark.reduced_at <= cutoff,
             )
         )
     ).scalars().all()
+    if not settings.FREE_RAW_PURGE_ENABLED:
+        watermarks = [watermark for watermark in watermarks if watermark.plan == "standard"]
+
+    plan_map = {
+        rec.site_id: rec.plan
+        for rec in (await session.execute(select(SitePlan))).scalars().all()
+    }
 
     deleted_total = 0
     for watermark in watermarks:
+        if watermark.plan == "pro":
+            continue
+        if plan_map.get(watermark.site_id, "free") != watermark.plan:
+            continue
         result = await session.execute(
             delete(RawReport).where(
                 RawReport.site_id == watermark.site_id,
