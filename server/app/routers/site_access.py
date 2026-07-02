@@ -5,10 +5,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
-from ..models import DashboardSite, DashboardSiteAccess, DashboardUser, get_session
+from ..entitlements import require_team_access
+from ..models import DashboardSite, DashboardSiteAccess, DashboardUser, SitePlan, get_session
 from ..schemas import SiteAccessGrantRequest, SiteAccessListResponse, SiteAccessMemberResponse
 
 router = APIRouter(prefix="/site-access", tags=["site-access"])
+
+
+async def _require_standard_site_access_management(session: AsyncSession, site_id: str) -> None:
+    plan_record = await session.get(SitePlan, site_id)
+    require_team_access(plan_record.plan if plan_record else "free")
 
 
 @router.get("", response_model=SiteAccessListResponse)
@@ -56,6 +62,7 @@ async def grant_site_access(
     session: AsyncSession = Depends(get_session),
 ) -> SiteAccessListResponse:
     site = await require_site_owner_with_db(site_id=payload.site_id, claims=claims, session=session)
+    await _require_standard_site_access_management(session, payload.site_id)
     username = _normalize_username(payload.username)
     if not username:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username is required")
@@ -98,6 +105,7 @@ async def revoke_site_access(
     session: AsyncSession = Depends(get_session),
 ) -> SiteAccessListResponse:
     site = await require_site_owner_with_db(site_id=site_id, claims=claims, session=session)
+    await _require_standard_site_access_management(session, site_id)
     normalized_username = _normalize_username(username)
     if not normalized_username:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username is required")

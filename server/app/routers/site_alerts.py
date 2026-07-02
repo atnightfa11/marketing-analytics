@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
-from ..models import SiteAlertSettings, get_session
+from ..entitlements import require_anomaly_alerts
+from ..models import SiteAlertSettings, SitePlan, get_session
 from ..schemas import SiteAlertSettingsResponse, SiteAlertSettingsUpdateRequest
 
 router = APIRouter(prefix="/site-alerts", tags=["settings"])
@@ -71,6 +72,11 @@ async def _get_settings_row(session: AsyncSession, site_id: str) -> SiteAlertSet
     ).scalar_one_or_none()
 
 
+async def _require_standard_alert_access(session: AsyncSession, site_id: str) -> None:
+    plan_record = await session.get(SitePlan, site_id)
+    require_anomaly_alerts(plan_record.plan if plan_record else "free")
+
+
 @router.get("", response_model=SiteAlertSettingsResponse, dependencies=[Depends(require_dashboard_auth)])
 async def get_site_alert_settings(
     site_id: str,
@@ -78,6 +84,7 @@ async def get_site_alert_settings(
     session: AsyncSession = Depends(get_session),
 ) -> SiteAlertSettingsResponse:
     await enforce_site_access_with_db(site_id=site_id, claims=claims, session=session)
+    await _require_standard_alert_access(session, site_id)
     row = await _get_settings_row(session, site_id)
     return _serialize(row, site_id)
 
@@ -89,6 +96,7 @@ async def update_site_alert_settings(
     session: AsyncSession = Depends(get_session),
 ) -> SiteAlertSettingsResponse:
     await require_site_owner_with_db(site_id=payload.site_id, claims=claims, session=session)
+    await _require_standard_alert_access(session, payload.site_id)
 
     recipients = _normalize_recipients(payload.email_recipients)
     webhook_in_payload = "slack_webhook_url" in payload.model_fields_set

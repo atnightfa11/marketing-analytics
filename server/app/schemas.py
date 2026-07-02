@@ -12,7 +12,7 @@ class UploadTokenRequest(BaseModel):
     epsilon_budget: float = Field(gt=0)
     sampling_rate: float = Field(ge=0, le=1)
     ttl_seconds: int | None = Field(default=None, ge=60, le=3600)
-    plan: Literal["free", "standard", "pro"] = "free"
+    plan: Literal["free", "solo", "standard", "pro"] = "free"
 
 
 class UploadTokenResponse(BaseModel):
@@ -51,7 +51,17 @@ class CheckoutSessionResponse(BaseModel):
 class BillingStatusResponse(BaseModel):
     site_id: str
     plan: Literal["free", "standard", "pro"]
+    display_plan: str = "Solo"
     has_subscription: bool
+    included_sites: int = 1
+    owned_site_count: int = 1
+    additional_site_count: int = 0
+    extra_site_price_usd: int | None = None
+    aggregate_retention_days: int | None = 365
+    can_import_historical_data: bool = False
+    can_manage_anomaly_alerts: bool = False
+    can_manage_site_access: bool = False
+    forecast_metrics: list[str] = Field(default_factory=list)
 
 
 class SdkBootstrapRequest(BaseModel):
@@ -118,7 +128,7 @@ class PublicSignupRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     site_name: str = Field(min_length=1, max_length=255)
     site_domain: str = Field(min_length=3, max_length=255)
-    plan: Literal["free", "standard"] = "free"
+    plan: Literal["free", "solo", "standard"] = "free"
 
 
 class PublicSignupResponse(BaseModel):

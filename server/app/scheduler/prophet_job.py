@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..alert_delivery import notify_anomaly_if_needed
 from ..config import get_settings
+from ..entitlements import forecast_metric_allowed
 from ..models import DpWindow, Forecast, ModelStore
 from .ewma import ewma
 
@@ -436,6 +437,11 @@ async def refresh_site_metric_forecast(
     must remove any previously published rows so the dashboard never serves a forecast
     that silently stopped updating. Use this wrapper from every scheduled/refresh caller.
     """
+    if not forecast_metric_allowed(plan, metric):
+        await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)
+        await session.commit()
+        return None
+
     forecasts = await train_prophet(session, site_id=site_id, metric=metric, plan=plan)
     if forecasts is None:
         await _replace_metric_forecasts(session, site_id=site_id, metric=metric, plan=plan)

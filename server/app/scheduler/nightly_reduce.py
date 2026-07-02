@@ -385,7 +385,7 @@ async def reduce_reports(
             )
         )
 
-    # Free + Standard raw path
+    # Solo/internal free + Standard raw path
     raw_reports = (
         await session.execute(
             select(RawReport)

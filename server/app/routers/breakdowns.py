@@ -14,6 +14,7 @@ from .. import breakdown_logic
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..models import BreakdownRollup, DashboardSite, RawReport, ReducerWatermark, get_session
 from ..scheduler.nightly_reduce import REDUCER_VERSION
@@ -492,6 +493,7 @@ async def breakdown(
         )
 
     start_day, end_day = _resolve_window(start, end)
+    enforce_aggregate_retention(plan, start_day, end_day)
     hostname_filter = normalize_hostname(hostname) if hostname is not None else None
     if hostname is not None and not hostname_filter:
         raise HTTPException(

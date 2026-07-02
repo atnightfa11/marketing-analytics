@@ -13,7 +13,7 @@ This contract defines what each analytics table is allowed to contain and how it
 
 | Table | Class | Allowed contents | Retention target |
 |---|---|---|---|
-| `raw_reports` | Processing material | Site, metric kind, event day, coarse payload fields, rotating session/day HMACs, device bucket, country code, timezone hint, hostname, normalized page/source/conversion fields | Rows purge after successful reducer watermark and retention window. Default primary retention is 72 hours after reduction. Free raw purge is guarded by `FREE_RAW_PURGE_ENABLED` until verified in production. |
+| `raw_reports` | Processing material | Site, metric kind, event day, coarse payload fields, rotating session/day HMACs, device bucket, country code, timezone hint, hostname, normalized page/source/conversion fields | Rows purge after successful reducer watermark and retention window. Default primary retention is 72 hours after reduction. Solo/internal `free` raw purge is guarded by `FREE_RAW_PURGE_ENABLED` until verified in production. |
 | `ldp_reports` | Processing material | Local-DP randomized-response payloads for Pro when enabled | Retention policy to be finalized before Pro public claims. |
 | `dp_windows` | Durable analytics output | Daily/windowed KPI aggregates, variance, confidence intervals, plan, metric | Business reporting retention. |
 | `breakdown_rollups` | Durable analytics output | Low-dimensional aggregate rows by site, plan, day, dimension, hostname scope, day type, label, metric, value | Business reporting retention. This table must not contain raw payloads, IPs, User-Agent strings, visitor IDs, session IDs, upload token IDs, full referrer URLs, or full query strings. |
@@ -34,6 +34,10 @@ This contract defines what each analytics table is allowed to contain and how it
 - Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
 - Dashboard notes are displayed as annotations only. They must not alter KPI aggregates, breakdown rollups, forecasts, or anomaly scoring.
 - Site goals are displayed as pacing targets only. They must not alter KPI aggregates, breakdown rollups, forecasts, anomaly scoring, or import reduction.
+
+## Plan Retention Boundary
+
+Solo serves 12 months of durable aggregate analytics history. Standard is intended for forever aggregate retention. The current database value `free` is the internal Solo representation.
 
 ## Differential Privacy Claim Boundary
 

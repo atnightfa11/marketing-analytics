@@ -549,6 +549,37 @@ async def test_forecast_response_hides_stale_or_untrained_forecasts(client):
     assert stale.status_code == 204
 
 
+@pytest.mark.asyncio
+async def test_solo_blocks_advanced_forecast_metrics(client):
+    site_id = "site-solo-forecast-gate"
+    await _set_site_plan(site_id, "free")
+
+    async with async_session_factory() as session:
+        session.add(
+            Forecast(
+                site_id=site_id,
+                plan="free",
+                metric="revenue",
+                day=date.today() + timedelta(days=1),
+                yhat=25.0,
+                yhat_lower=20.0,
+                yhat_upper=30.0,
+                mape=0.1,
+                has_anomaly=False,
+                z_score=0.0,
+                trained_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    blocked = client.get("/api/forecast/revenue", params={"site_id": site_id})
+    assert blocked.status_code == 403
+    assert "Upgrade to Standard" in blocked.json()["detail"]
+
+    allowed = client.get("/api/forecast/pageviews", params={"site_id": site_id})
+    assert allowed.status_code == 204
+
+
 def test_non_negative_forecast_interval_preserves_valid_bounds():
     assert _non_negative_forecast_interval(12.0, -8.0, 20.0) == (12.0, 0.0, 20.0)
     assert _non_negative_forecast_interval(-5.0, -10.0, -1.0) == (0.0, 0.0, 0.0)
@@ -676,6 +707,7 @@ async def test_site_alert_settings_store_destinations_without_echoing_slack_secr
                 allowed_origin="https://alerts.example.com",
             )
         )
+        session.add(SitePlan(site_id=site_id, plan="standard"))
         await session.commit()
 
     try:
@@ -2152,6 +2184,7 @@ async def test_site_access_membership_grants_dashboard_access(client):
                 timezone="UTC",
             )
         )
+        session.add(SitePlan(site_id=site_id, plan="standard"))
         await session.commit()
 
     original = (
@@ -2963,6 +2996,54 @@ async def test_aggregate_respects_requested_date_window(client):
         },
     )
     assert too_wide_resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_solo_aggregate_history_is_limited_to_12_months(client):
+    site_id = "site-solo-retention"
+    old_start = (datetime.now(timezone.utc) - timedelta(days=400)).replace(hour=12, minute=0, second=0, microsecond=0)
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="pageviews",
+        value=9.0,
+        window_start=old_start,
+    )
+
+    blocked = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "start": old_start.date().isoformat(),
+            "end": old_start.date().isoformat(),
+        },
+    )
+    assert blocked.status_code == 403
+    assert "12 months" in blocked.json()["detail"]
+
+    await _set_site_plan(site_id, "standard")
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="pageviews",
+        value=9.0,
+        window_start=old_start,
+    )
+    allowed = client.get(
+        "/api/aggregate",
+        params={
+            "site_id": site_id,
+            "metric": "pageviews",
+            "window": "standard",
+            "start": old_start.date().isoformat(),
+            "end": old_start.date().isoformat(),
+        },
+    )
+    assert allowed.status_code == 200
+    assert sum(row["value"] for row in allowed.json()["windows"]) == 9.0
 
 
 @pytest.mark.asyncio
@@ -3787,6 +3868,13 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
         billing_body = authorized_billing.json()
         assert billing_body["site_id"] == site_id
         assert billing_body["plan"] == "free"
+        assert billing_body["display_plan"] == "Solo"
+        assert billing_body["included_sites"] == 1
+        assert billing_body["aggregate_retention_days"] == 365
+        assert billing_body["can_import_historical_data"] is False
+        assert billing_body["can_manage_anomaly_alerts"] is False
+        assert billing_body["can_manage_site_access"] is False
+        assert set(billing_body["forecast_metrics"]) == {"pageviews", "sessions", "uniques"}
 
         forbidden_metrics = client.get(
             "/api/metrics",
@@ -3934,6 +4022,45 @@ async def test_dashboard_auth_multi_user_site_isolation(client):
             dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
             dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
         ) = original
+
+
+@pytest.mark.asyncio
+async def test_standard_billing_status_reports_site_entitlements(client):
+    owner = "standard-owner"
+    site_ids = [f"standard-owned-{idx}" for idx in range(1, 5)]
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="standard-owner@example.com",
+                password_hash=PasswordHasher().hash("standard-owner-pass"),
+            )
+        )
+        for site_id in site_ids:
+            session.add(
+                DashboardSite(
+                    site_id=site_id,
+                    owner_username=owner,
+                    site_name=site_id,
+                    allowed_origin=f"https://{site_id}.example.com",
+                )
+            )
+            session.add(SitePlan(site_id=site_id, plan="standard"))
+        await session.commit()
+
+    response = client.get("/api/billing/status", params={"site_id": site_ids[0]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["display_plan"] == "Standard"
+    assert body["included_sites"] == 3
+    assert body["owned_site_count"] == 4
+    assert body["additional_site_count"] == 1
+    assert body["extra_site_price_usd"] == 5
+    assert body["aggregate_retention_days"] is None
+    assert body["can_import_historical_data"] is True
+    assert body["can_manage_anomaly_alerts"] is True
+    assert body["can_manage_site_access"] is True
+    assert set(body["forecast_metrics"]) == {"pageviews", "sessions", "uniques", "conversions", "revenue"}
 
 
 @pytest.mark.asyncio

@@ -72,7 +72,17 @@ export interface SiteSettings {
 export interface BillingStatus {
   site_id: string;
   plan: "free" | "standard" | "pro";
+  display_plan: string;
   has_subscription: boolean;
+  included_sites: number;
+  owned_site_count: number;
+  additional_site_count: number;
+  extra_site_price_usd?: number | null;
+  aggregate_retention_days?: number | null;
+  can_import_historical_data: boolean;
+  can_manage_anomaly_alerts: boolean;
+  can_manage_site_access: boolean;
+  forecast_metrics: string[];
 }
 
 export interface CheckoutSessionResponse {

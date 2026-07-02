@@ -6,7 +6,7 @@ This checklist reflects what is live in production and what remains before broad
 
 - [x] Plan-aware ingestion and serving (`free`, `standard`; `pro` behind flag).
 - [x] Central-DP reducer path for Standard.
-- [x] Public signup endpoint (`POST /api/public/signup`) for Free + Standard.
+- [x] Public signup endpoint (`POST /api/public/signup`) for Solo/internal `free` + Standard.
 - [x] Stripe live checkout session creation for Standard (`/api/checkout/session` and signup checkout URL flow).
 - [x] Stripe webhook endpoint live and signature-validated (`/api/stripe/webhook`).
 - [x] Dashboard auth defaults to enabled and site-access authorization hooks present.
@@ -26,7 +26,8 @@ This checklist reflects what is live in production and what remains before broad
 
 - [ ] Complete one real Standard checkout and verify webhook plan flip (`site_plan.plan=standard`) for the purchased site.
 - [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
-- [ ] Decide final Standard entitlement gates for forecasts, notes, alerts, performance targets, and longer retention before updating Stripe/product copy.
+- [x] Decide and encode launch entitlements: Solo ($10) for one site/basic forecasts/12-month aggregate history; Standard ($29) for 3 sites, imports, alerts, all forecast metrics, team/site access, and forever aggregate retention.
+- [ ] Update Stripe/account billing for Solo, Standard, and $5/additional Standard sites after gates are verified.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
 - [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
 - [ ] Keep Pro/Enterprise local-DP claims hidden until the Pro path is enabled, tested, and supported commercially.

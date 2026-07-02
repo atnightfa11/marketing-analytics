@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
 from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth
-from ..models import SitePlan, get_session
+from ..entitlements import additional_site_count, entitlements_for_plan, normalize_plan, owned_site_count
+from ..models import DashboardSite, SitePlan, get_session
 from ..schemas import BillingStatusResponse, CheckoutSessionRequest, CheckoutSessionResponse
 
 router = APIRouter(tags=["billing"])
@@ -95,8 +96,8 @@ def _normalize_plan(raw: str | None) -> str | None:
     if not raw:
         return None
     plan = raw.strip().lower()
-    if plan in {"free", "standard", "pro"}:
-        return plan
+    if plan in {"free", "solo", "standard", "pro"}:
+        return normalize_plan(plan)
     return None
 
 
@@ -188,8 +189,25 @@ async def billing_status(
     await enforce_site_access_with_db(site_id=site_id, claims=auth_claims, session=session)
     record = await session.get(SitePlan, site_id)
     plan = record.plan if record else "free"
+    entitlements = entitlements_for_plan(plan)
     has_subscription = bool(record and record.stripe_subscription_id)
-    return BillingStatusResponse(site_id=site_id, plan=plan, has_subscription=has_subscription)
+    site = await session.get(DashboardSite, site_id)
+    site_count = max(1, await owned_site_count(session, site.owner_username if site else None))
+    return BillingStatusResponse(
+        site_id=site_id,
+        plan=entitlements.plan,  # type: ignore[arg-type]
+        display_plan=entitlements.display_name,
+        has_subscription=has_subscription,
+        included_sites=entitlements.included_sites,
+        owned_site_count=site_count,
+        additional_site_count=additional_site_count(plan, site_count),
+        extra_site_price_usd=entitlements.extra_site_price_usd,
+        aggregate_retention_days=entitlements.aggregate_retention_days,
+        can_import_historical_data=entitlements.historical_imports,
+        can_manage_anomaly_alerts=entitlements.anomaly_alerts,
+        can_manage_site_access=entitlements.team_access,
+        forecast_metrics=list(entitlements.forecast_metrics),
+    )
 
 
 @router.post("/stripe/webhook", status_code=status.HTTP_200_OK)

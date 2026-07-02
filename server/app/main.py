@@ -10,6 +10,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from .config import Settings, get_settings
 from .cors import PathAwareCORSMiddleware
+from .entitlements import forecast_metrics_for_plan
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .geoip_db import ensure_geoip_database
 from .job_status import mark_job_error, mark_job_run, mark_job_success
@@ -108,7 +109,6 @@ app.state.prometheus_gauges = prometheus_gauges
 
 async def run_forecast_training_once():
     mark_job_run("forecast")
-    metrics = ("pageviews", "sessions", "uniques", "conversions", "revenue")
     had_error = False
     async with async_session_factory() as session:
         from sqlalchemy import select
@@ -119,7 +119,7 @@ async def run_forecast_training_once():
         ).all()
 
         for site_id, plan in site_plan_rows:
-            for metric in metrics:
+            for metric in forecast_metrics_for_plan(plan):
                 try:
                     await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)
                 except Exception as exc:

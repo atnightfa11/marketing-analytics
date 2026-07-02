@@ -28,7 +28,17 @@ Standard should feel like the tier that turns analytics into a decision tool:
 - longer-range trend context
 - aggregate reporting with short-lived raw processing material
 
-Free can show current analytics, but Standard should be the clear upgrade for understanding what changed, why it matters, and what is likely next.
+Solo can show current analytics for one project, but Standard should be the clear upgrade for operating a business: multiple sites, historical imports, anomaly alerts, team access, all forecast metrics, and forever aggregate retention.
+
+## Launch Pricing
+
+- **Solo - $10/month**: 1 website, unlimited pageviews for normal website traffic, 12 months aggregate retention, notes, and basic forecasts for pageviews, visitors, and sessions.
+- **Standard - $29/month**: 3 websites included, additional websites at $5/site/month, historical imports, Slack/email anomaly alerts, all forecast metrics, team/site access, and forever aggregate retention.
+- **Early Adopter Standard - $19/month**: acceptable for the first 50-100 customers, but grandfather the price and included sites, not unlimited future expansion.
+
+Use a light fair-use footnote rather than making it a headline:
+
+> *For normal website traffic. High-volume, abusive, bot-heavy, resale, or infrastructure-impacting use may require a higher plan.
 
 ## Audience
 

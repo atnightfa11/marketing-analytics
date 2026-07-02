@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
 from .config import Settings, get_settings
+from .entitlements import forecast_metrics_for_plan
 from .geoip_db import ensure_geoip_database
 from .maintenance import purge_expired_upload_tokens
 from .models import Base, DpWindow, async_engine, async_session_factory, init_db
@@ -38,7 +39,6 @@ async def run_reduce_once() -> None:
 
 
 async def run_forecast_training_once() -> None:
-    metrics = ("pageviews", "sessions", "uniques", "conversions", "revenue")
     had_error = False
     async with async_session_factory() as session:
         site_plan_rows = (
@@ -46,7 +46,7 @@ async def run_forecast_training_once() -> None:
         ).all()
 
         for site_id, plan in site_plan_rows:
-            for metric in metrics:
+            for metric in forecast_metrics_for_plan(plan):
                 try:
                     await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)
                 except Exception as exc:

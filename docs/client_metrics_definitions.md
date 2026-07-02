@@ -5,7 +5,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 ## Plan resolution
 
 - Serving plan is resolved from `site_plan.site_id`.
-- If no `site_plan` row exists, serving defaults to `free`.
+- If no `site_plan` row exists, serving defaults to `free`, which is the current internal representation for customer-facing Solo.
 - `/api/metrics`, `/api/aggregate`, and `/api/forecast` use the resolved plan.
 - `/api/aggregate` accepts optional `start` and `end` ISO dates. If omitted, it defaults to a recent bounded window; requests over 730 days are rejected to avoid expensive unbounded reads.
 
@@ -13,7 +13,7 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 
 - `pageviews`: sum of reduced `pageviews` windows.
 - `sessions`:
-  - Free: sum of reduced `sessions` events.
+  - Solo/internal `free`: sum of reduced `sessions` events.
   - Standard: unique server-derived HMAC session keys within `SESSION_WINDOW_MINUTES`, rolled into daily aggregate buckets, then central-DP Laplace noise is added at aggregate publish time.
   - Pro: reduced LDP estimate from `sessions` randomized-response reports.
 - `uniques`: reduced estimate from `uniques` events (presence signal). Standard uses a daily coarse-context HMAC for dedupe; this is privacy-preserving but can undercount relative to GA4 users on high-traffic sites where many visitors share coarse IP/User-Agent context.
@@ -98,6 +98,7 @@ Current caveats:
 Quality notes:
 
 - Metrics publish only after minimum volume and SNR checks in reducers/routes.
+- Solo served aggregate history is limited to 12 months. Standard aggregate retention is intended to be forever.
 - Standard aggregate windows publish daily. Sessions are clamped to not exceed the deduped session baseline after noise to avoid obviously broken output.
 - Dashboard date labels preserve the date stamped on full-day aggregate windows. Shorter free/live windows are grouped into days using the site's reporting timezone.
 - `conversion_rate` is derived from already published aggregates.

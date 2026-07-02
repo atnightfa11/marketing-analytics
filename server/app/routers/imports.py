@@ -9,6 +9,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth
+from ..entitlements import require_historical_imports
 from ..models import HistoricalImportBatch, RawReport, SitePlan, get_session
 from ..scheduler.nightly_reduce import reduce_reports
 from ..scheduler.prophet_job import refresh_site_metric_forecast
@@ -35,11 +36,7 @@ async def _require_standard_import_access(
     await enforce_site_access_with_db(site_id=site_id, claims=claims, session=session)
     plan_record = await session.get(SitePlan, site_id)
     target_plan = plan_record.plan if plan_record else "free"
-    if target_plan != "standard":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Historical imports require the Standard plan",
-        )
+    require_historical_imports(target_plan)
     return target_plan
 
 

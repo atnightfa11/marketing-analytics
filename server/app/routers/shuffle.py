@@ -19,6 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import TokenClaims, get_settings
+from ..entitlements import normalize_plan
 from ..hostnames import hostname_from_request_headers
 from ..maintenance import maybe_purge_expired_upload_tokens
 from ..models import LdpReport, RawReport, SiteIpBlock, SitePlan, TokenNonce, UploadToken, get_session
@@ -109,8 +110,8 @@ async def validate_token(claims: TokenClaims, session: AsyncSession):
 
 async def resolve_plan(site_id: str, claims_plan: str, session: AsyncSession) -> str:
     record = await session.get(SitePlan, site_id)
-    db_plan = record.plan if record else "free"
-    token_plan = claims_plan or db_plan
+    db_plan = normalize_plan(record.plan if record else "free")
+    token_plan = normalize_plan(claims_plan or db_plan)
     if token_plan != db_plan:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token plan mismatch")
     if db_plan == "pro" and not settings.ENABLE_PRO_INGEST:

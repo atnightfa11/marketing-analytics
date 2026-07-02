@@ -3,7 +3,7 @@
 ```mermaid
 flowchart LR
     SDK["Browser SDK"] --> Shuffle["/api/shuffle"]
-    Shuffle -->|Free + Standard| Raw["raw_reports (Postgres)"]
+    Shuffle -->|Solo/free + Standard| Raw["raw_reports (Postgres)"]
     Shuffle -->|Pro (if enabled)| Ldp["ldp_reports (Postgres)"]
     Raw --> Reduce["Reducer"]
     Ldp --> Reduce
@@ -17,7 +17,7 @@ flowchart LR
 
 Valid uses plan-aware ingest and reduction:
 
-- **Free**: raw aggregates from coarse, non-identifying payloads.
+- **Solo/internal `free`**: raw aggregates from coarse, non-identifying payloads.
 - **Standard**: raw ingest + central-DP aggregate noise at reduce/publish time.
 - **Pro**: local-DP (RR) ingest path (currently feature-flagged with `ENABLE_PRO_INGEST`).
 
@@ -26,11 +26,11 @@ Valid uses plan-aware ingest and reduction:
 - SDK posts shuffled batches to `POST /api/shuffle`.
 - API validates short-lived upload token + origin, replay nonce (`jti`), and rate limits.
 - Pipeline inserts:
-  - `raw_reports` for Free/Standard
+  - `raw_reports` for Solo/internal `free` and Standard
   - `ldp_reports` for Pro
 - If `ENABLE_PRO_INGEST=false`, Pro requests are treated as Standard for ingest safety.
 
-## Data captured for Free/Standard
+## Data captured for Solo/Standard
 
 For each report, reducer-friendly coarse fields are stored:
 
@@ -47,7 +47,7 @@ Raw IP address and raw User-Agent are used transiently for coarse derivation/HMA
 ## Reducer + publish model
 
 - Reducer writes aggregates to `dp_windows`.
-  - Free publishes short reducer windows for live/low-latency dashboard views.
+  - Solo/internal `free` publishes short reducer windows for live/low-latency dashboard views.
   - Standard publishes daily central-DP aggregate windows for better utility and lower storage/write volume.
 - Reducer writes low-dimensional breakdown aggregates to `breakdown_rollups`.
   - Rollups are keyed by site, plan, day, dimension, hostname scope, day type, label, and metric.
@@ -85,6 +85,6 @@ All dashboard metrics endpoints require dashboard auth and site-access authoriza
 
 ## Privacy by tier
 
-- **Free**: no DP noise added; privacy comes from data minimization + coarse aggregation + short-lived credentials.
+- **Solo/internal `free`**: no DP noise added; privacy comes from data minimization + coarse aggregation + short-lived credentials.
 - **Standard**: central DP noise on aggregates plus coarse server-side sessionization.
 - **Pro**: local-DP ingest model; dimension breakdowns are currently suppressed for Pro until dimension-capable LDP histograms are enabled.

@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import {
   AggregateWindow,
+  BillingStatus,
   BreakdownDimension,
   BreakdownMetricKey,
   BreakdownRow,
@@ -3757,6 +3758,7 @@ const Settings: React.FC = () => {
   const [timezoneStatus, setTimezoneStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
   const [timezoneError, setTimezoneError] = useState<string | null>(null);
   const [billingPlan, setBillingPlan] = useState<"free" | "standard" | "pro">("free");
+  const [billingDetails, setBillingDetails] = useState<BillingStatus | null>(null);
   const [hasSubscription, setHasSubscription] = useState<boolean>(false);
   const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "redirecting" | "error">("idle");
   const [billingMessage, setBillingMessage] = useState<string | null>(null);
@@ -3855,11 +3857,13 @@ const Settings: React.FC = () => {
       .then((status) => {
         if (cancelled) return;
         setBillingPlan(status.plan);
+        setBillingDetails(status);
         setHasSubscription(Boolean(status.has_subscription));
         setBillingStatus("idle");
       })
       .catch((error) => {
         if (cancelled) return;
+        setBillingDetails(null);
         setBillingStatus("error");
         setBillingMessage(extractApiErrorMessage(error) ?? "Unable to load billing status right now.");
       });
@@ -3988,6 +3992,19 @@ const Settings: React.FC = () => {
 
   const refreshAlertSettings = useCallback(async () => {
     if (!canQuery) return;
+    if (billingPlan !== "standard" && billingPlan !== "pro") {
+      setAlertSettings(null);
+      setAnomalyAlertsEnabled(false);
+      setSlackAlertsEnabled(false);
+      setSlackWebhookUrlSet(false);
+      setSlackWebhookUrl("");
+      setClearSlackWebhook(false);
+      setEmailAlertsEnabled(false);
+      setEmailRecipientsDraft("");
+      setAlertStatus("idle");
+      setAlertMessage(null);
+      return;
+    }
     setAlertStatus("loading");
     setAlertMessage(null);
     try {
@@ -3999,7 +4016,7 @@ const Settings: React.FC = () => {
       setAlertStatus("error");
       setAlertMessage(extractApiErrorMessage(error) ?? "Unable to load anomaly alert settings right now.");
     }
-  }, [applyAlertSettings, canQuery, siteId, token]);
+  }, [applyAlertSettings, billingPlan, canQuery, siteId, token]);
 
   useEffect(() => {
     void refreshAlertSettings();
@@ -4156,6 +4173,11 @@ const Settings: React.FC = () => {
 
   const addSiteMember = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (billingPlan !== "standard" && billingPlan !== "pro") {
+      setAccessStatus("error");
+      setAccessMessage("Site access management is available on Standard.");
+      return;
+    }
     const username = accessUsername.trim().toLowerCase();
     if (!username) {
       setAccessStatus("error");
@@ -4177,6 +4199,11 @@ const Settings: React.FC = () => {
   };
 
   const removeSiteMember = async (username: string) => {
+    if (billingPlan !== "standard" && billingPlan !== "pro") {
+      setAccessStatus("error");
+      setAccessMessage("Site access management is available on Standard.");
+      return;
+    }
     setAccessStatus("saving");
     setAccessMessage(null);
     try {
@@ -4236,6 +4263,11 @@ const Settings: React.FC = () => {
       .filter(Boolean);
 
   const saveAlertSettings = async () => {
+    if (billingPlan !== "standard" && billingPlan !== "pro") {
+      setAlertStatus("error");
+      setAlertMessage("Anomaly alerts are available on Standard.");
+      return;
+    }
     const recipients = parseEmailRecipients(emailRecipientsDraft);
     const webhook = slackWebhookUrl.trim();
     const payload: {
@@ -4273,7 +4305,11 @@ const Settings: React.FC = () => {
   };
 
   const hasTimezoneChanges = timezoneDraft !== timezone;
-  const canImportHistoricalData = billingPlan === "standard";
+  const planDisplayName = billingDetails?.display_plan ?? (billingPlan === "free" ? "Solo" : billingPlan);
+  const hasStandardEntitlements = billingPlan === "standard" || billingPlan === "pro";
+  const canImportHistoricalData = Boolean(billingDetails?.can_import_historical_data ?? billingPlan === "standard");
+  const canManageAnomalyAlerts = Boolean(billingDetails?.can_manage_anomaly_alerts ?? hasStandardEntitlements);
+  const canManageSiteAccess = Boolean(billingDetails?.can_manage_site_access ?? hasStandardEntitlements);
   const importStatusClassName = importStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
   const importPreviewStatusClassName = importPreviewStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
   const canSubmitHistoricalImport = Boolean(importPreview?.valid) && importStatus !== "loading";
@@ -4296,23 +4332,28 @@ const Settings: React.FC = () => {
         ? `${health.forecast_metrics_building.join(", ")} building`
         : "Forecasts are building."
     : "Forecast status has not loaded.";
-  const alertSetupSummary = anomalyAlertsEnabled
-    ? `Enabled for ${[
-        slackAlertsEnabled && slackWebhookUrlSet ? "Slack" : null,
-        emailAlertsEnabled ? "email" : null,
-      ].filter(Boolean).join(" and ") || "selected channels"}`
-    : "Not enabled.";
+  const alertSetupSummary = !canManageAnomalyAlerts
+    ? "Available on Standard"
+    : anomalyAlertsEnabled
+      ? `Enabled for ${[
+          slackAlertsEnabled && slackWebhookUrlSet ? "Slack" : null,
+          emailAlertsEnabled ? "email" : null,
+        ].filter(Boolean).join(" and ") || "selected channels"}`
+      : "Not enabled.";
 
   const billingDescription = (() => {
     if (billingPlan === "standard") {
+      const additionalSites = billingDetails?.additional_site_count ?? 0;
       return hasSubscription
-        ? "Your Standard subscription is active for this site."
+        ? `Your Standard subscription is active. Standard includes ${
+            billingDetails?.included_sites ?? 3
+          } sites${additionalSites > 0 ? `; ${additionalSites} additional site${additionalSites === 1 ? "" : "s"} should be billed separately.` : "."}`
         : "This site is marked Standard but no active subscription is linked yet.";
     }
     if (billingPlan === "pro") {
       return "Your Pro subscription is active for this site.";
     }
-    return "This site is on the Free plan. Standard is built for forecasting, anomaly alerts, historical imports, and longer-range trend context.";
+    return "This site is on Solo. Standard is built for business operations: multiple sites, historical imports, anomaly alerts, team access, and all forecast metrics.";
   })();
 
   const billingActionLabel =
@@ -4621,7 +4662,7 @@ const Settings: React.FC = () => {
                           },
                           {
                             label: "Plan",
-                            value: billingPlan,
+                            value: planDisplayName,
                             detail: billingStatusText,
                             status: billingStatus === "error" ? "error" : "ok",
                           },
@@ -4640,7 +4681,11 @@ const Settings: React.FC = () => {
                           {
                             label: "Alerts",
                             value: alertSetupSummary,
-                            detail: alertSettings?.email_delivery_configured || slackWebhookUrlSet ? "Configured destinations can receive anomaly alerts." : "Set Slack or email in Anomaly alerts.",
+                            detail: canManageAnomalyAlerts
+                              ? alertSettings?.email_delivery_configured || slackWebhookUrlSet
+                                ? "Configured destinations can receive anomaly alerts."
+                                : "Set Slack or email in Anomaly alerts."
+                              : "Upgrade to Standard to send Slack or email anomaly alerts.",
                             status: anomalyAlertsEnabled ? "ok" : "warning",
                           },
                         ].map((item) => (
@@ -4721,6 +4766,7 @@ const Settings: React.FC = () => {
                     Refresh
                   </button>
                 </div>
+                {canManageSiteAccess ? (
                 <form className="mt-4 grid gap-2 md:grid-cols-[1fr_auto]" onSubmit={addSiteMember}>
                   <div>
                     <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
@@ -4743,6 +4789,25 @@ const Settings: React.FC = () => {
                     {accessStatus === "saving" ? "Saving..." : "Add user"}
                   </button>
                 </form>
+                ) : (
+                  <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                    <div className="text-sm text-[#1F2937]" style={fontBody}>
+                      Site access management is available on Standard.
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                      Upgrade to invite teammates or give another dashboard user access to this site.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void beginStandardCheckout()}
+                      disabled={billingActionDisabled}
+                      className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                      style={fontBody}
+                    >
+                      Upgrade to Standard
+                    </button>
+                  </div>
+                )}
                 {accessMessage ? (
                   <div className={`mt-2 text-[11px] ${accessStatus === "error" ? "text-[#8B2635]" : "text-gray-500"}`} style={fontBody}>
                     {accessMessage}
@@ -4766,7 +4831,7 @@ const Settings: React.FC = () => {
                               {member.created_at ? ` - added ${formatDateTime(member.created_at)}` : ""}
                             </div>
                           </div>
-                          {member.role === "member" ? (
+                          {member.role === "member" && canManageSiteAccess ? (
                             <button
                               type="button"
                               onClick={() => void removeSiteMember(member.username)}
@@ -4776,9 +4841,13 @@ const Settings: React.FC = () => {
                             >
                               Remove
                             </button>
-                          ) : (
+                          ) : member.role === "owner" ? (
                             <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600" style={fontBody}>
                               Owner
+                            </span>
+                          ) : (
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-600" style={fontBody}>
+                              Member
                             </span>
                           )}
                         </div>
@@ -4904,6 +4973,7 @@ const Settings: React.FC = () => {
                 ) : null}
               </div>
 
+              {canManageAnomalyAlerts ? (
               <div className="mt-4 space-y-4">
                 <label className="flex items-start gap-3 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
                   <input
@@ -5027,6 +5097,25 @@ const Settings: React.FC = () => {
                   </div>
                 ) : null}
               </div>
+              ) : (
+                <div className="mt-4 border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
+                  <div className="text-sm text-[#1F2937]" style={fontBody}>
+                    Anomaly alerts are available on Standard.
+                  </div>
+                  <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
+                    Upgrade when you want Slack or email notifications for unusual traffic, conversion, or revenue patterns.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void beginStandardCheckout()}
+                    disabled={billingActionDisabled}
+                    className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                    style={fontBody}
+                  >
+                    Upgrade to Standard
+                  </button>
+                </div>
+              )}
             </section>
 
             <section id="shields" className="scroll-mt-6 border border-gray-200 bg-white p-5">
@@ -5125,7 +5214,7 @@ const Settings: React.FC = () => {
                   Subscription
                 </div>
                 <div className="mt-2 text-sm text-[#1F2937]" style={fontBody}>
-                  Current plan: <span className="font-semibold capitalize">{billingPlan}</span>
+                  Current plan: <span className="font-semibold">{planDisplayName}</span>
                 </div>
                 <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
                   {billingStatusText}
@@ -5144,11 +5233,23 @@ const Settings: React.FC = () => {
                     Standard adds
                   </div>
                   <ul className="mt-2 grid gap-1 text-[11px] text-gray-600" style={fontBody}>
-                    <li>Forecasts with freshness and building-state guardrails</li>
-                    <li>Anomaly detection, Slack/email alerts, notes, and performance targets</li>
-                    <li>Historical data imports for long-range trends and forecast context</li>
-                    <li>Aggregate reporting with short-lived raw processing material</li>
+                    <li>3 sites included, then $5 per additional site</li>
+                    <li>Historical imports and forever aggregate retention</li>
+                    <li>Anomaly alerts for Slack and email</li>
+                    <li>All forecast metrics when enough history is available</li>
+                    <li>Team/site access management</li>
                   </ul>
+                  {billingDetails ? (
+                    <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
+                      This owner has {formatNumber(billingDetails.owned_site_count)} site
+                      {billingDetails.owned_site_count === 1 ? "" : "s"}.{" "}
+                      {billingDetails.additional_site_count > 0
+                        ? `${formatNumber(billingDetails.additional_site_count)} additional site${
+                            billingDetails.additional_site_count === 1 ? "" : "s"
+                          } should be billed after the included ${formatNumber(billingDetails.included_sites)}.`
+                        : `Included sites: ${formatNumber(billingDetails.included_sites)}.`}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -5451,7 +5552,7 @@ const Settings: React.FC = () => {
                   </div>
                   <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
                     {billingPlan === "free"
-                      ? "Upgrade to bring in prior analytics data and use it for long-range trends and forecasts."
+                      ? "Upgrade from Solo to bring in prior analytics data and use it for long-range trends and forecasts."
                       : "This import path uses Standard aggregate storage and is not available for the current plan."}
                   </div>
                   {billingPlan === "free" ? (

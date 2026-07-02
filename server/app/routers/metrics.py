@@ -3,12 +3,13 @@ from __future__ import annotations
 import datetime as dt
 import math
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..entitlements import filter_allowed_forecast_metrics, retention_cutoff_day
 from ..forecast_freshness import forecast_is_fresh
 from ..forecast_status import latest_forecasts_by_metric
 from ..ldp.rr_decoder import confidence_interval, standard_error
@@ -30,6 +31,20 @@ async def get_metrics(
     session: AsyncSession = Depends(get_session),
 ):
     stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.plan == plan)
+    cutoff_day = retention_cutoff_day(plan)
+    if cutoff_day is not None:
+        cutoff_start = dt.datetime.combine(cutoff_day, dt.time.min, tzinfo=dt.timezone.utc)
+        if start:
+            try:
+                requested_start = dt.date.fromisoformat(start[:10])
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid start date") from exc
+            if requested_start < cutoff_day:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Solo includes 12 months of aggregate history. Upgrade to Standard for forever aggregate retention.",
+                )
+        stmt = stmt.where(DpWindow.window_start >= cutoff_start)
     if start:
         stmt = stmt.where(DpWindow.window_start >= start)
     if end:
@@ -82,7 +97,7 @@ async def get_metrics(
     # Mirrors the freshness gate used by /api/forecast so the two stay consistent.
     if metric_map:
         latest_forecasts = await latest_forecasts_by_metric(
-            session, site_id, plan, metric_map.keys()
+            session, site_id, plan, filter_allowed_forecast_metrics(plan, metric_map.keys())
         )
         for metric, forecast_row in latest_forecasts.items():
             if metric in metric_map and forecast_is_fresh(forecast_row):

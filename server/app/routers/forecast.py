@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_site_plan, require_site_access
 from ..dashboard_auth import require_dashboard_auth
+from ..entitlements import forecast_metric_allowed, display_plan_name
 from ..forecast_freshness import forecast_is_fresh
 from ..models import Forecast, get_session
 from ..schemas import ForecastResponse, ForecastPoint
@@ -23,6 +24,11 @@ async def forecast(
     session: AsyncSession = Depends(get_session),
 ):
     plan = await get_site_plan(site_id, session)
+    if not forecast_metric_allowed(plan, metric):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"{display_plan_name(plan)} does not include {metric} forecasts. Upgrade to Standard for all forecast metrics.",
+        )
     stmt = (
         select(Forecast)
         .where(Forecast.site_id == site_id, Forecast.metric == metric, Forecast.plan == plan)

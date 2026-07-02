@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..access_control import require_admin_api_token
 from ..maintenance import maybe_purge_expired_upload_tokens
 from ..config import Settings, TokenClaims, get_settings
+from ..entitlements import normalize_plan
 from ..models import UploadToken, get_session
 from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import UploadTokenRequest, UploadTokenResponse
@@ -84,7 +85,7 @@ async def issue_upload_token(
 
     claims = TokenClaims(
         site_id=site_id,
-        plan=plan,
+        plan=normalize_plan(plan),
         allowed_origin=allowed_origin,
         iat=int(now.timestamp()),
         exp=int(exp.timestamp()),

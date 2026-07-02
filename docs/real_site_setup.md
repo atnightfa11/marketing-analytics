@@ -207,7 +207,8 @@ do update set plan = excluded.plan;
 
 ## Notes
 
-- Free + Standard are the launch tiers; Pro/LDP is deferred.
+- Solo + Standard are the commercial launch tiers; the current database value `free` is the internal Solo representation until the Stripe plan migration is complete. Pro/LDP is deferred.
+- Standard includes 3 sites and $5/month additional sites in the product entitlement model. Stripe/account billing for additional sites is a separate follow-up.
 - Scheduler behavior:
   - Dev: `ENABLE_DEV_SCHEDULER=1` runs reducer every 60 seconds.
   - Prod API-only mode: `ENABLE_PROD_SCHEDULER=true` runs reducer every `PROD_REDUCER_INTERVAL_MINUTES` (default 60) + daily forecast training at `PROD_SCHEDULER_HOUR_UTC`.

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..ldp.rr_decoder import confidence_interval, standard_error
 from ..models import BreakdownRollup, DpWindow, RawReport, ReducerWatermark, get_session
@@ -253,6 +254,7 @@ async def aggregate(
     session: AsyncSession = Depends(get_session),
 ):
     start_day, end_day = _resolve_date_window(start, end)
+    enforce_aggregate_retention(plan, start_day, end_day)
     if hostname is not None:
         hostname_filter = normalize_hostname(hostname)
         if not hostname_filter:
@@ -263,7 +265,7 @@ async def aggregate(
         if plan != "free":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="hostname filter is currently available for free plan sites",
+                detail="hostname filter is currently available for Solo sites",
             )
         all_days = set(_enumerate_days(start_day, end_day))
         if window == "live":
