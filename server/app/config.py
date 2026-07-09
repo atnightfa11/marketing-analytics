@@ -32,8 +32,8 @@ class Settings(BaseSettings):
   ENABLE_PRO_INGEST: bool = Field(default=False)
   SESSION_HMAC_SECRET: str | None = None
   SESSION_WINDOW_MINUTES: int = Field(default=30)
-  SESSION_HMAC_IP_PREFIX_V4: int = Field(default=24)
-  SESSION_HMAC_IP_PREFIX_V6: int = Field(default=56)
+  SESSION_HMAC_IP_PREFIX_V4: int = Field(default=32)
+  SESSION_HMAC_IP_PREFIX_V6: int = Field(default=64)
   BOT_FILTER_ENABLED: bool = Field(default=True)
   BOT_FILTER_MIN_CF_SCORE: int = Field(default=30)
   BOT_FILTER_UA_PATTERNS_CSV: str | None = None

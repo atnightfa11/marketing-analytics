@@ -34,15 +34,15 @@ Valid uses plan-aware ingest and reduction:
 
 For each report, reducer-friendly coarse fields are stored:
 
-- `_session_hmac` (Standard/Free session dedupe key, server-derived)
-- `_visitor_day_hmac` (daily unique dedupe key, server-derived)
+- `_session_hmac` (Standard/Free `standard-id-v2` session dedupe key, server-derived)
+- `_visitor_day_hmac` (daily `standard-id-v2` unique dedupe key, server-derived)
 - `_device_bucket` (`mobile`, `desktop`, `tablet`, `unknown`)
 - `_country_code` (2-letter code or `Unknown`)
 - `_timezone_hint` when supplied by request infrastructure
 - `_hostname` (normalized host for subdomain filtering)
 - event payload fields such as `url`, `conversion_type`, `referrer_bucket`, `referrer_source`
 
-Raw IP address and raw User-Agent are used transiently for coarse derivation/HMAC and are not persisted as raw identifiers in report payloads.
+Raw IP address and raw User-Agent are used transiently to derive keyed `standard-id-v2` HMACs and coarse reporting dimensions. Raw IP and raw User-Agent are not persisted as raw identifiers in report payloads.
 
 ## Reducer + publish model
 

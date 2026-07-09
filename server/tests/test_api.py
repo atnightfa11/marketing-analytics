@@ -51,7 +51,7 @@ from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
 from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
-from app.routers.shuffle import _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
+from app.routers.shuffle import STANDARD_ID_VERSION, _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import purge_reduced_raw_reports, reduce_reports, settings as reduce_settings  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
@@ -993,6 +993,9 @@ async def test_collect_enriches_country_from_ip_lookup_and_timezone_hint(client,
         stmt = select(RawReport).where(RawReport.site_id == site_id)
         row = (await session.execute(stmt)).scalars().first()
         assert row is not None
+        assert row.payload.get("_identity_hmac_version") == STANDARD_ID_VERSION
+        assert row.payload.get("_session_hmac")
+        assert row.payload.get("_visitor_day_hmac")
         assert row.payload.get("_country_code") == "US"
         assert row.payload.get("_timezone_hint") == "America/New_York"
 
@@ -1121,6 +1124,55 @@ def test_standard_hmac_session_key_stability_and_rollover():
     assert stable_key_1 != rollover_key
 
 
+def test_standard_hmac_v2_separates_common_browser_and_timezone_signals():
+    base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
+    chrome_ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_0) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    )
+    chrome_patch_ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_0) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0.6422.142 Safari/537.36"
+    )
+    safari_ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_0) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+    )
+
+    chrome_key = derive_standard_session_key(
+        site_id="site-hmac-v2",
+        server_received_at=base_time,
+        ip_value="203.0.113.44",
+        user_agent=chrome_ua,
+        timezone_hint="America/Chicago",
+    )
+    chrome_patch_key = derive_standard_session_key(
+        site_id="site-hmac-v2",
+        server_received_at=base_time,
+        ip_value="203.0.113.44",
+        user_agent=chrome_patch_ua,
+        timezone_hint="America/Chicago",
+    )
+    safari_key = derive_standard_session_key(
+        site_id="site-hmac-v2",
+        server_received_at=base_time,
+        ip_value="203.0.113.44",
+        user_agent=safari_ua,
+        timezone_hint="America/Chicago",
+    )
+    denver_key = derive_standard_session_key(
+        site_id="site-hmac-v2",
+        server_received_at=base_time,
+        ip_value="203.0.113.44",
+        user_agent=chrome_ua,
+        timezone_hint="America/Denver",
+    )
+
+    assert chrome_key == chrome_patch_key
+    assert chrome_key != safari_key
+    assert chrome_key != denver_key
+
+
 def test_daily_visitor_key_rotates_daily():
     base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
     day_key_1 = derive_daily_visitor_key(
@@ -1144,6 +1196,30 @@ def test_daily_visitor_key_rotates_daily():
 
     assert day_key_1 == day_key_2
     assert day_key_1 != next_day_key
+
+
+def test_daily_visitor_key_uses_ip_specificity_for_standard_id_v2():
+    day = date(2026, 3, 18)
+    user_agent = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1"
+    )
+    first = derive_daily_visitor_key(
+        site_id="site-hmac-v2",
+        day=day,
+        ip_value="203.0.113.44",
+        user_agent=user_agent,
+        timezone_hint="America/Chicago",
+    )
+    nearby = derive_daily_visitor_key(
+        site_id="site-hmac-v2",
+        day=day,
+        ip_value="203.0.113.45",
+        user_agent=user_agent,
+        timezone_hint="America/Chicago",
+    )
+
+    assert first != nearby
 
 
 def test_resolve_client_ip_prefers_proxy_headers():

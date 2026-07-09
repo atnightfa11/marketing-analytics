@@ -50,6 +50,8 @@ Set these environment variables on the backend service:
 - `UPLOAD_TOKEN_SECRET=<strong-random-secret>`
 - `APP_ENV=production`
 - `SESSION_HMAC_SECRET=<strong-random-secret>` (required for Standard plan ingest)
+- `SESSION_HMAC_IP_PREFIX_V4=32` (default; Standard visitor/session HMAC input uses full IPv4 before discarding raw IP)
+- `SESSION_HMAC_IP_PREFIX_V6=64` (default; Standard visitor/session HMAC input uses IPv6 /64 before discarding raw IP)
 - `GEOIP_COUNTRY_DB_PATH=/tmp/geoip-country.mmdb` (optional; path where API reads/writes GeoIP MMDB)
 - `GEOIP_COUNTRY_DB_URL=https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz` (optional; startup auto-download)
 - `GEOIP_COUNTRY_DB_DOWNLOAD_TIMEOUT_SECONDS=20` (optional; startup download timeout)

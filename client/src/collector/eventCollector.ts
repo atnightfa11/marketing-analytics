@@ -3,6 +3,18 @@ import { Logger } from "../utils/logger";
 
 const JITTER_RANGE_MS = 250;
 
+function browserTimeZone(): string | null {
+  if (typeof Intl === "undefined") {
+    return null;
+  }
+  try {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof timeZone === "string" && /^[A-Za-z0-9._/+:-]{1,64}$/.test(timeZone) ? timeZone : null;
+  } catch {
+    return null;
+  }
+}
+
 export class EventCollector {
   private buffer: EventEnvelope[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -91,11 +103,13 @@ export class EventCollector {
   }
 
   private sendBatch(batch: EventEnvelope[], token: string, signal: AbortSignal): Promise<Response> {
+    const timeZone = browserTimeZone();
     return fetch(this.config.shuffleUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
+        ...(timeZone ? { "X-Timezone": timeZone } : {}),
       },
       body: JSON.stringify({
         token,

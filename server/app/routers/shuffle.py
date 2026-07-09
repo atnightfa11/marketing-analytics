@@ -36,6 +36,7 @@ rate_limiter: DefaultDict[tuple[str, str], list[float]] = defaultdict(list)
 settings = get_settings()
 logger = logging.getLogger(__name__)
 _timezone_token_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,64}$")
+STANDARD_ID_VERSION = "standard-id-v2"
 _geoip_reader = None
 _geoip_reader_path: str | None = None
 DEFAULT_BOT_UA_PATTERNS: tuple[str, ...] = (
@@ -173,6 +174,94 @@ def _coarsen_ua(ua: str) -> str:
     family, version = head.split("/", 1)
     major = version.split(".", 1)[0]
     return f"{family[:24].lower()}:{major[:8]}"
+
+
+def _first_major_version(pattern: str, user_agent: str) -> str | None:
+    match = re.search(pattern, user_agent, flags=re.IGNORECASE)
+    if not match:
+        return None
+    raw_major = match.group(1)
+    return raw_major[:8] if raw_major else None
+
+
+def _versioned_component(name: str, major: str | None) -> str:
+    return f"{name}:{major}" if major else name
+
+
+def _browser_component(user_agent: str) -> str:
+    if not user_agent:
+        return "browser:unknown"
+
+    patterns: tuple[tuple[str, str], ...] = (
+        ("edge", r"\bEdg(?:A|iOS)?/(\d+)"),
+        ("opera", r"\b(?:OPR|Opera)/(\d+)"),
+        ("samsung", r"\bSamsungBrowser/(\d+)"),
+        ("chrome", r"\b(?:Chrome|CriOS)/(\d+)"),
+        ("firefox", r"\b(?:Firefox|FxiOS)/(\d+)"),
+    )
+    for name, pattern in patterns:
+        major = _first_major_version(pattern, user_agent)
+        if major:
+            return f"browser:{_versioned_component(name, major)}"
+
+    if "Safari/" in user_agent and "Chrome/" not in user_agent and "CriOS/" not in user_agent:
+        safari_major = _first_major_version(r"\bVersion/(\d+)", user_agent)
+        return f"browser:{_versioned_component('safari', safari_major)}"
+
+    return f"browser:{_coarsen_ua(user_agent)}"
+
+
+def _os_component(user_agent: str) -> str:
+    if not user_agent:
+        return "os:unknown"
+
+    ios = _first_major_version(r"\b(?:CPU iPhone OS|CPU OS|iPhone OS) (\d+)", user_agent)
+    if ios:
+        return f"os:ios:{ios}"
+
+    android = _first_major_version(r"\bAndroid (\d+)", user_agent)
+    if android:
+        return f"os:android:{android}"
+
+    windows = _first_major_version(r"\bWindows NT (\d+)", user_agent)
+    if windows:
+        return f"os:windows:{windows}"
+
+    macos = _first_major_version(r"\bMac OS X (\d+)", user_agent)
+    if macos:
+        return f"os:macos:{macos}"
+
+    chromeos = _first_major_version(r"\bCrOS [^ ]+ (\d+)", user_agent)
+    if chromeos:
+        return f"os:chromeos:{chromeos}"
+
+    if "Linux" in user_agent:
+        return "os:linux"
+
+    return "os:unknown"
+
+
+def _standard_identity_material(
+    *,
+    site_id: str,
+    scope: str,
+    ip_value: str,
+    user_agent: str,
+    timezone_hint: str | None = None,
+) -> str:
+    timezone_component = _normalize_timezone_hint(timezone_hint) or "unknown"
+    return "|".join(
+        (
+            STANDARD_ID_VERSION,
+            f"site:{site_id}",
+            f"scope:{scope}",
+            f"ip:{_coarsen_ip(ip_value)}",
+            _browser_component(user_agent),
+            _os_component(user_agent),
+            f"device:{_derive_device_bucket(user_agent)}",
+            f"tz:{timezone_component}",
+        )
+    )
 
 
 def _derive_device_bucket(user_agent: str) -> str:
@@ -412,6 +501,7 @@ def derive_standard_session_key(
     server_received_at: dt.datetime,
     ip_value: str,
     user_agent: str,
+    timezone_hint: str | None = None,
 ) -> str | None:
     secret = settings.SESSION_HMAC_SECRET
     if not secret:
@@ -420,9 +510,13 @@ def derive_standard_session_key(
     bucket_seconds = bucket_minutes * 60
     ts = int(server_received_at.timestamp())
     bucket = ts - (ts % bucket_seconds)
-    coarse_ip = _coarsen_ip(ip_value)
-    coarse_ua = _coarsen_ua(user_agent)
-    canonical = f"{site_id}|{bucket}|{coarse_ip}|{coarse_ua}"
+    canonical = _standard_identity_material(
+        site_id=site_id,
+        scope=f"session:{bucket}",
+        ip_value=ip_value,
+        user_agent=user_agent,
+        timezone_hint=timezone_hint,
+    )
     digest = hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
@@ -433,13 +527,18 @@ def derive_daily_visitor_key(
     day: dt.date,
     ip_value: str,
     user_agent: str,
+    timezone_hint: str | None = None,
 ) -> str | None:
     secret = settings.SESSION_HMAC_SECRET
     if not secret:
         return None
-    coarse_ip = _coarsen_ip(ip_value)
-    coarse_ua = _coarsen_ua(user_agent)
-    canonical = f"{site_id}|{day.isoformat()}|{coarse_ip}|{coarse_ua}"
+    canonical = _standard_identity_material(
+        site_id=site_id,
+        scope=f"day:{day.isoformat()}",
+        ip_value=ip_value,
+        user_agent=user_agent,
+        timezone_hint=timezone_hint,
+    )
     digest = hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
@@ -545,6 +644,7 @@ async def ingest_reports(
             server_received_at=collect.server_received_at,
             ip_value=resolved_client_ip,
             user_agent=user_agent,
+            timezone_hint=timezone_hint,
         )
         if effective_plan != "pro"
         else None
@@ -578,9 +678,12 @@ async def ingest_reports(
                 day=payload_time.date(),
                 ip_value=resolved_client_ip,
                 user_agent=user_agent,
+                timezone_hint=timezone_hint,
             )
             if visitor_day_hmac:
                 raw_payload["_visitor_day_hmac"] = visitor_day_hmac
+            if standard_session_key or visitor_day_hmac:
+                raw_payload["_identity_hmac_version"] = STANDARD_ID_VERSION
             raw_payload.setdefault("_device_bucket", device_bucket)
             raw_payload.setdefault("_country_code", country_code)
             if timezone_hint:
