@@ -28,10 +28,16 @@ async def readiness(session: AsyncSession = Depends(get_session)):
         "database": True,
         "dashboard_auth_configured": settings.auth_configured(),
         "billing_configured": (not settings.BILLING_ENABLED) or settings.billing_configured(),
+        "production_secrets_configured": (not settings.production_like()) or settings.production_secrets_configured(),
+        "metrics_exposure_safe": settings.metrics_exposure_safe(),
     }
     details = {
         "dashboard_auth_enabled": settings.DASHBOARD_AUTH_ENABLED,
         "billing_enabled": settings.BILLING_ENABLED,
+        "production_like": settings.production_like(),
+        "valid_process_type": settings.VALID_PROCESS_TYPE,
+        "metrics_public": settings.METRICS_PUBLIC,
+        "metrics_auth_configured": bool(settings.METRICS_AUTH_TOKEN),
     }
     if not all(checks.values()):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail={"checks": checks, "details": details})

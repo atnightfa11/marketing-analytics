@@ -39,7 +39,7 @@ os.environ["STRIPE_PRO_PRICE_ID"] = ""
 ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
 COLLECT_HEADERS = {"X-Collect-Token": os.environ["COLLECT_ENDPOINT_TOKEN"]}
 
-from app.main import app  # noqa: E402
+from app.main import app, settings as app_settings  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from argon2 import PasswordHasher  # noqa: E402
@@ -880,6 +880,30 @@ async def test_site_goals_are_owner_managed_and_update_in_place(client):
 async def test_health_endpoints(client):
     assert client.get("/health/liveness").status_code == 200
     assert client.get("/health/readiness").status_code == 200
+
+
+def test_metrics_endpoint_is_hidden_without_configured_token(client, monkeypatch):
+    monkeypatch.setattr(app_settings, "METRICS_PUBLIC", False)
+    monkeypatch.setattr(app_settings, "METRICS_AUTH_TOKEN", None)
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 404
+
+
+def test_metrics_endpoint_requires_configured_token(client, monkeypatch):
+    monkeypatch.setattr(app_settings, "METRICS_PUBLIC", False)
+    monkeypatch.setattr(app_settings, "METRICS_AUTH_TOKEN", "metrics-secret")
+
+    missing = client.get("/metrics")
+    wrong = client.get("/metrics", headers={"X-Metrics-Token": "wrong"})
+    good = client.get("/metrics", headers={"X-Metrics-Token": "metrics-secret"})
+    bearer = client.get("/metrics", headers={"Authorization": "Bearer metrics-secret"})
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 401
+    assert good.status_code == 200
+    assert bearer.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -4678,12 +4702,12 @@ def test_alert_webhook_requires_token(client):
 def test_alert_webhook_accepts_valid_token(client, monkeypatch):
     import app.routers.alert_webhook as alert_webhook_module
 
-    forwarded: list = []
+    delivered: list = []
 
-    async def _fake_forward(payload):
-        forwarded.append(payload)
+    async def _fake_deliver(payload):
+        delivered.append(payload)
 
-    monkeypatch.setattr(alert_webhook_module, "forward_to_sidecar", _fake_forward)
+    monkeypatch.setattr(alert_webhook_module, "deliver_ops_alert_payload", _fake_deliver)
 
     payload = {"source": "reducer", "severity": "critical", "message": "no events", "metadata": {"site_id": "x"}}
     resp = client.post(
@@ -4692,7 +4716,7 @@ def test_alert_webhook_accepts_valid_token(client, monkeypatch):
         headers={"X-Alert-Token": os.environ["ALERT_WEBHOOK_TOKEN"]},
     )
     assert resp.status_code == 202
-    assert len(forwarded) == 1
+    assert len(delivered) == 1
 
 
 def test_login_is_rate_limited(client):

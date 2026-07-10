@@ -9,6 +9,7 @@ class Settings(BaseSettings):
   DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./marketing.db")
   UPLOAD_TOKEN_SECRET: str = Field(default="change-me")
   APP_ENV: str = Field(default="development")
+  VALID_PROCESS_TYPE: str = Field(default="api")
   BILLING_ENABLED: bool = Field(default=False)
   STRIPE_SECRET_KEY: str | None = None
   STRIPE_WEBHOOK_SECRET: str | None = None
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
   RATE_LIMIT_BUCKET_PER_MIN: int = Field(default=200)
   ALPHA_SMOOTHING: float = Field(default=0.5)
   MAX_EVENTS_PER_MINUTE: int = Field(default=60)
+  METRICS_PUBLIC: bool = Field(default=False)
+  METRICS_AUTH_TOKEN: str | None = None
   AGGREGATE_DP_EPSILON: float = Field(default=1.0)
   AGGREGATE_DP_NOISE_SECRET: str | None = None
   ENABLE_PRO_INGEST: bool = Field(default=False)
@@ -55,7 +58,12 @@ class Settings(BaseSettings):
   ALERT_EMAIL_FROM: str | None = None
   ALERT_EMAIL_USE_TLS: bool = Field(default=True)
   ALERT_WEBHOOK_TOKEN: str | None = None
+  # Deprecated compatibility setting. Internal ops delivery now uses
+  # OPS_ALERT_WEBHOOK_URL / OPS_ALERT_EMAIL_RECIPIENTS_CSV directly.
   ALERT_SIDECAR_URL: str = Field(default="http://alerts:8080/notify")
+  OPS_ALERT_WEBHOOK_URL: str | None = None
+  OPS_ALERT_EMAIL_RECIPIENTS_CSV: str | None = None
+  OPS_ALERT_DEDUP_SECONDS: int = Field(default=300)
   LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=10)
   # In production the schema is owned by Alembic migrations. Leave this False so the
   # service never silently diverges from migrations via create_all; enable only for
@@ -113,14 +121,17 @@ class Settings(BaseSettings):
   cors_origin_regex: str | None = Field(
       default=r"^https?://.*$"
   )
+  RAILWAY_ENVIRONMENT: str | None = None
+  RAILWAY_ENVIRONMENT_NAME: str | None = None
 
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
   @model_validator(mode="after")
   def ensure_required_cors_origins(self):
+    api_process = self.VALID_PROCESS_TYPE.strip().lower() != "worker"
     if self.UPLOAD_TOKEN_SECRET == "change-me":
       raise ValueError("UPLOAD_TOKEN_SECRET must be overridden from the insecure default")
-    if self.DASHBOARD_AUTH_ENABLED and not self.DASHBOARD_AUTH_SECRET:
+    if api_process and self.DASHBOARD_AUTH_ENABLED and not self.DASHBOARD_AUTH_SECRET:
       raise ValueError("DASHBOARD_AUTH_SECRET must be configured when dashboard auth is enabled")
     if self.BILLING_ENABLED:
       missing_billing = [
@@ -136,11 +147,19 @@ class Settings(BaseSettings):
         raise ValueError(
             "Billing is enabled but required Stripe config is missing: " + ", ".join(missing_billing)
         )
-    production_like = self.APP_ENV.strip().lower() in {"prod", "production"}
-    if production_like and not self.DASHBOARD_AUTH_ENABLED:
+    production_like = self.production_like()
+    if production_like and api_process and not self.DASHBOARD_AUTH_ENABLED:
       raise ValueError("DASHBOARD_AUTH_ENABLED cannot be disabled in production")
-    if production_like and self.DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV:
+    if production_like and api_process and self.DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV:
       raise ValueError("DASHBOARD_AUTH_ALLOW_PLAINTEXT_DEV cannot be enabled in production")
+    if production_like and self.DATABASE_URL.startswith("sqlite"):
+      raise ValueError("DATABASE_URL cannot use sqlite in production")
+    if production_like:
+      missing_production = self.missing_production_secrets()
+      if missing_production:
+        raise ValueError(
+            "Production config is missing required secrets: " + ", ".join(missing_production)
+        )
     if self.DASHBOARD_AUTH_COOKIE_SAMESITE.lower() not in {"lax", "strict", "none"}:
       raise ValueError("DASHBOARD_AUTH_COOKIE_SAMESITE must be lax, strict, or none")
     if self.DASHBOARD_AUTH_COOKIE_SAMESITE.lower() == "none":
@@ -183,6 +202,37 @@ class Settings(BaseSettings):
 
   def alert_email_configured(self) -> bool:
     return bool(self.ALERT_EMAIL_SMTP_HOST and self.ALERT_EMAIL_FROM)
+
+  def production_like(self) -> bool:
+    candidates = (
+        self.APP_ENV,
+        self.RAILWAY_ENVIRONMENT,
+        self.RAILWAY_ENVIRONMENT_NAME,
+    )
+    return any((value or "").strip().lower() in {"prod", "production"} for value in candidates)
+
+  def metrics_exposure_safe(self) -> bool:
+    return not self.METRICS_PUBLIC
+
+  def missing_production_secrets(self) -> list[str]:
+    required: list[tuple[str, str | None]] = [("SESSION_HMAC_SECRET", self.SESSION_HMAC_SECRET)]
+    if self.VALID_PROCESS_TYPE.strip().lower() != "worker":
+      required.extend(
+          [
+              ("ADMIN_API_TOKEN", self.ADMIN_API_TOKEN),
+              ("COLLECT_ENDPOINT_TOKEN", self.COLLECT_ENDPOINT_TOKEN),
+              ("ALERT_WEBHOOK_TOKEN", self.ALERT_WEBHOOK_TOKEN),
+          ]
+      )
+    return [name for name, value in required if not value]
+
+  def production_secrets_configured(self) -> bool:
+    return not self.missing_production_secrets()
+
+  def ops_alert_email_recipients(self) -> list[str]:
+    if not self.OPS_ALERT_EMAIL_RECIPIENTS_CSV:
+      return []
+    return [item.strip() for item in self.OPS_ALERT_EMAIL_RECIPIENTS_CSV.split(",") if item.strip()]
 
 
 @lru_cache(1)

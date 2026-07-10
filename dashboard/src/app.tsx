@@ -3812,8 +3812,6 @@ const Settings: React.FC = () => {
   const [importHistoryMessage, setImportHistoryMessage] = useState<string | null>(null);
   const [deletingImportBatchId, setDeletingImportBatchId] = useState<number | null>(null);
   const [health, setHealth] = useState<SiteHealthResponse | null>(null);
-  const [healthStatus, setHealthStatus] = useState<"idle" | "loading" | "error">("idle");
-  const [healthMessage, setHealthMessage] = useState<string | null>(null);
   const [installVerify, setInstallVerify] = useState<SdkInstallVerifyResponse | null>(null);
   const [installVerifyStatus, setInstallVerifyStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [installVerifyMessage, setInstallVerifyMessage] = useState<string | null>(null);
@@ -3945,19 +3943,14 @@ const Settings: React.FC = () => {
   useEffect(() => {
     if (!canQuery) return;
     let cancelled = false;
-    setHealthStatus("loading");
-    setHealthMessage(null);
     fetchSiteHealth(token ?? undefined, siteId)
       .then((result) => {
         if (cancelled) return;
         setHealth(result);
-        setHealthStatus("idle");
       })
-      .catch((error) => {
+      .catch(() => {
         if (cancelled) return;
         setHealth(null);
-        setHealthStatus("error");
-        setHealthMessage(extractApiErrorMessage(error) ?? "Unable to load tracking health right now.");
       });
     return () => {
       cancelled = true;
@@ -4021,8 +4014,6 @@ const Settings: React.FC = () => {
       );
       const refreshedHealth = await fetchSiteHealth(token ?? undefined, siteId);
       setHealth(refreshedHealth);
-      setHealthStatus("idle");
-      setHealthMessage(null);
     } catch (error) {
       setInstallVerify(null);
       setInstallVerifyStatus("error");
@@ -4402,7 +4393,17 @@ const Settings: React.FC = () => {
   const alertStatusClassName = alertStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
   const latestInstallReportAt = installVerify?.last_report_at ?? health?.last_report_at ?? null;
   const installationHasRecentActivity = Boolean(installVerify?.has_recent_activity || health?.last_report_at);
-  const installationStatus = installVerifyStatus === "loading" ? "checking" : health?.overall_status ?? "not reviewed";
+  const installationHasBeenReviewed = Boolean(installVerify || health);
+  const installationStatusLabel =
+    installVerifyStatus === "loading"
+      ? "Checking"
+      : installationHasRecentActivity
+        ? "Receiving data"
+        : installationHasBeenReviewed
+          ? "Needs review"
+          : "Not reviewed";
+  const installationStatusTone =
+    installVerifyStatus === "loading" ? "warning" : installationHasRecentActivity ? "ok" : health?.overall_status === "error" ? "error" : "warning";
   const installationSummary = installationHasRecentActivity
     ? `Last event ${formatRelativeTime(latestInstallReportAt)}`
     : "No recent tracking event verified yet.";
@@ -4536,7 +4537,6 @@ const Settings: React.FC = () => {
                 ["#shields", "Shields"],
                 ["#billing", "Plan & billing"],
                 ["#imports", "Imports & exports"],
-                ["#tracking-health", "Tracking health"],
               ].map(([href, label]) => (
                 <a key={href} href={href} className="rounded px-3 py-2 text-gray-700 hover:bg-gray-100 hover:text-[#111827]">
                   {label}
@@ -4631,14 +4631,12 @@ const Settings: React.FC = () => {
                       Review whether this site is receiving data and ready for reporting.
                     </div>
                   </div>
-                  {health ? (
+                  {installationHasBeenReviewed || installVerifyStatus === "loading" ? (
                     <span
-                      className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
-                        health.overall_status
-                      )}`}
+                      className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(installationStatusTone)}`}
                       style={fontBody}
                     >
-                      {health.overall_status}
+                      {installationStatusLabel}
                     </span>
                   ) : null}
                 </div>
@@ -4693,12 +4691,10 @@ const Settings: React.FC = () => {
                     <div className="overflow-auto px-5 py-4">
                       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                         <span
-                          className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
-                            installationStatus
-                          )}`}
+                          className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(installationStatusTone)}`}
                           style={fontBody}
                         >
-                          {installationStatus}
+                          {installationStatusLabel}
                         </span>
                         <button
                           type="button"
@@ -4753,9 +4749,9 @@ const Settings: React.FC = () => {
                             status: billingStatus === "error" ? "error" : "ok",
                           },
                           {
-                            label: "Reducer",
+                            label: "Reporting data",
                             value: reducerSummary,
-                            detail: health?.latest_reduced_at ? `Last reduced ${formatRelativeTime(health.latest_reduced_at)}` : "Reducer status updates after aggregate publishing.",
+                            detail: health?.latest_reduced_at ? `Updated ${formatRelativeTime(health.latest_reduced_at)}` : "Reporting data updates after aggregate publishing.",
                             status: ["success", "completed", "ok"].includes(health?.latest_reducer_status ?? "") ? "ok" : health?.latest_reducer_status ? "warning" : "warning",
                           },
                           {
@@ -4798,35 +4794,6 @@ const Settings: React.FC = () => {
                           </div>
                         ))}
                       </div>
-                      {health?.checks.length ? (
-                        <div className="mt-4 border-t border-gray-100 pt-4">
-                          <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                            Detailed checks
-                          </div>
-                          <div className="mt-2 grid gap-2">
-                            {health.checks.map((check) => (
-                              <div key={check.key} className="flex flex-wrap items-start justify-between gap-2 border border-[var(--color-border-subtle)] px-3 py-2">
-                                <div>
-                                  <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                                    {check.label}
-                                  </div>
-                                  <div className="mt-1 text-[11px] text-gray-600" style={fontBody}>
-                                    {check.detail}
-                                  </div>
-                                </div>
-                                <span
-                                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
-                                    check.status
-                                  )}`}
-                                  style={fontBody}
-                                >
-                                  {check.status}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -5686,102 +5653,6 @@ const Settings: React.FC = () => {
               )}
             </section>
 
-            <section id="tracking-health" className="scroll-mt-6 border border-gray-200 bg-white p-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
-                    Tracking health
-                  </div>
-                  <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-                    Recent tracking, reduction, and forecast signals for this site.
-                  </div>
-                </div>
-                {health ? (
-                  <span
-                    className={`rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusToneClass(
-                      health.overall_status
-                    )}`}
-                    style={fontBody}
-                  >
-                    {health.overall_status}
-                  </span>
-                ) : null}
-              </div>
-              {healthStatus === "loading" ? (
-                <div className="mt-4 text-[12px] text-gray-500" style={fontBody}>
-                  Loading tracking health...
-                </div>
-              ) : healthStatus === "error" ? (
-                <div className="mt-4 text-[12px] text-[#8B2635]" style={fontBody}>
-                  {healthMessage ?? "Unable to load tracking health."}
-                </div>
-              ) : health ? (
-                <div className="mt-4 grid gap-3 lg:grid-cols-[1.4fr_1fr]">
-                  <div className="grid gap-2">
-                    {health.checks.map((check) => (
-                      <div key={check.key} className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                            {check.label}
-                          </div>
-                          <span
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${statusToneClass(
-                              check.status
-                            )}`}
-                            style={fontBody}
-                          >
-                            {check.status}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-[11px] text-gray-600" style={fontBody}>
-                          {check.detail}
-                        </div>
-                        {check.action ? (
-                          <div className="mt-1 text-[11px] text-gray-500" style={fontBody}>
-                            {check.action}
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                      Last {health.lookback_minutes} minutes
-                    </div>
-                    <div className="mt-2 text-2xl metric-number text-[#1F2937]" style={fontMetric}>
-                      {formatNumber(health.recent_reports)}
-                    </div>
-                    <div className="text-[11px] text-gray-500" style={fontBody}>
-                      reports received
-                    </div>
-                    <div className="mt-3 space-y-1 text-[11px] text-gray-600" style={fontBody}>
-                      <div>Last report: {formatDateTime(health.last_report_at)}</div>
-                      <div>Active site keys: {formatNumber(health.active_site_keys)}</div>
-                      <div>Latest reducer day: {health.latest_reducer_day ?? "-"}</div>
-                      <div>Latest aggregate: {formatDateTime(health.latest_standard_published_at)}</div>
-                    </div>
-                    {Object.keys(health.counts_by_kind).length > 0 ? (
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {Object.entries(health.counts_by_kind).map(([kind, count]) => (
-                          <span
-                            key={kind}
-                            className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-700"
-                            style={fontBody}
-                          >
-                            {kind}: {formatNumber(count)}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    {health.detected_hostnames.length > 0 ? (
-                      <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
-                        Hostnames: {health.detected_hostnames.join(", ")}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-            </section>
           </div>
         </div>
       </main>

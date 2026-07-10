@@ -13,6 +13,7 @@ from .entitlements import forecast_metrics_for_plan
 from .geoip_db import ensure_geoip_database
 from .maintenance import purge_expired_upload_tokens
 from .models import Base, DpWindow, async_engine, async_session_factory, init_db
+from .ops_alerts import notify_ops_alert
 from .scheduler.nightly_reduce import reduce_reports
 from .scheduler.prophet_job import refresh_site_metric_forecast
 
@@ -32,10 +33,19 @@ async def initialize_worker() -> None:
 
 
 async def run_reduce_once() -> None:
-    async with async_session_factory() as session:
-        await reduce_reports(session)
-        deleted_tokens = await purge_expired_upload_tokens(session)
-    logger.info("Reducer completed", extra={"deleted_upload_tokens": deleted_tokens})
+    try:
+        async with async_session_factory() as session:
+            await reduce_reports(session)
+            deleted_tokens = await purge_expired_upload_tokens(session)
+        logger.info("Reducer completed", extra={"deleted_upload_tokens": deleted_tokens})
+    except Exception as exc:
+        await notify_ops_alert(
+            source="worker_reducer",
+            severity="critical",
+            message="Worker reducer job failed",
+            metadata={"error": str(exc)},
+        )
+        raise
 
 
 async def run_forecast_training_once() -> None:
@@ -51,6 +61,12 @@ async def run_forecast_training_once() -> None:
                     await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)
                 except Exception as exc:
                     had_error = True
+                    await notify_ops_alert(
+                        source="worker_forecast",
+                        severity="critical",
+                        message="Worker forecast training failed",
+                        metadata={"site_id": site_id, "metric": metric, "plan": plan, "error": str(exc)},
+                    )
                     logger.exception(
                         "Forecast training failed",
                         extra={"site_id": site_id, "metric": metric, "plan": plan, "error": str(exc)},

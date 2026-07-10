@@ -81,6 +81,12 @@ Set these environment variables on the backend service:
 - `ALERT_EMAIL_SMTP_PASSWORD=` (optional, depending on provider)
 - `ALERT_EMAIL_FROM=alerts@validanalytics.io` (required with `ALERT_EMAIL_SMTP_HOST`)
 - `ALERT_EMAIL_USE_TLS=true`
+- `ALERT_WEBHOOK_TOKEN=<strong-random-secret>` (required for authenticated internal `/api/alert/webhook`)
+- `OPS_ALERT_WEBHOOK_URL=` (optional Slack/ops webhook destination for reducer/forecast/API alerts)
+- `OPS_ALERT_EMAIL_RECIPIENTS_CSV=` (optional comma-separated internal ops recipients; uses the same SMTP settings above)
+- `OPS_ALERT_DEDUP_SECONDS=300`
+- `METRICS_PUBLIC=false` (recommended; unauthenticated `/metrics` is hidden when no token is configured)
+- `METRICS_AUTH_TOKEN=<strong-random-secret>` (optional; allows Prometheus scrapes with `X-Metrics-Token` or `Authorization: Bearer`)
 - `ENABLE_PROD_SCHEDULER=false` on the API service when a separate worker is deployed
 - `PROD_SCHEDULER_HOUR_UTC=2`
 - `PROD_REDUCER_INTERVAL_MINUTES=60` (hourly reducer cadence)
@@ -96,6 +102,7 @@ Privileged endpoint headers:
 
 - `POST /api/upload-token` and `POST /api/admin/*` require `X-Admin-Token`.
 - `POST /api/collect` requires `X-Collect-Token`; it no longer falls back to `ADMIN_API_TOKEN`.
+- `GET /metrics` requires `X-Metrics-Token` or `Authorization: Bearer <token>` when `METRICS_AUTH_TOKEN` is configured. Without a metrics token and with `METRICS_PUBLIC=false`, the endpoint returns 404.
 - Browser dashboard reads use the `HttpOnly` session cookie set by `/api/auth/login`. Manual scripts can still pass `Authorization: Bearer <token>` from `/api/auth/login` for dashboard-protected reads such as `/api/metrics`, `/api/aggregate`, `/api/breakdown`, `/api/forecast/{metric}`, and `/api/jobs/status`.
 
 Stripe billing env vars:
@@ -172,6 +179,10 @@ Site owners can configure anomaly alert destinations in Dashboard Settings -> An
 - Alert delivery runs from the forecast refresh path. A site/metric/channel is notified at most once per training day for the same anomaly key.
 - Alerts use the same anomaly detector as the forecast chart; they do not add a separate anomaly scoring path.
 
+## Internal ops alerts
+
+Reducer and forecast job failures send internal ops alerts directly from the API/worker process when `OPS_ALERT_WEBHOOK_URL` and/or `OPS_ALERT_EMAIL_RECIPIENTS_CSV` is configured. The authenticated `POST /api/alert/webhook` endpoint uses the same direct delivery path and requires `X-Alert-Token`.
+
 ## Installation review
 
 Dashboard Settings -> General -> Site installation should stay compact. Use the **Review installation** button to open the guided setup review instead of exposing the full tracking script or a large health panel inline.
@@ -186,7 +197,7 @@ The review flow should show:
 - forecast status
 - anomaly alert setup
 
-The deeper Tracking health panel can remain lower in Settings for support/admin diagnosis, but the primary customer workflow should be the single Review installation action.
+Do not expose the deeper operational health panel as a primary customer setting. Keep support/admin diagnosis in logs, readiness checks, and internal ops alerts.
 
 Example per-user beta access config:
 

@@ -15,7 +15,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .geoip_db import ensure_geoip_database
 from .job_status import mark_job_error, mark_job_run, mark_job_success
 from .maintenance import purge_expired_upload_tokens
+from .metrics_auth import MetricsAuthMiddleware
 from .models import async_session_factory
+from .ops_alerts import notify_ops_alert
 from .scheduler.nightly_reduce import reduce_reports
 from .scheduler.prophet_job import refresh_site_metric_forecast
 from .models import Base, async_engine, init_db
@@ -58,6 +60,7 @@ app = FastAPI(
 Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(PathAwareCORSMiddleware, settings=settings)
+app.add_middleware(MetricsAuthMiddleware, settings=settings)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -125,6 +128,12 @@ async def run_forecast_training_once():
                 except Exception as exc:
                     had_error = True
                     mark_job_error("forecast", RuntimeError(f"site={site_id} metric={metric} plan={plan}: {exc}"))
+                    await notify_ops_alert(
+                        source="forecast",
+                        severity="critical",
+                        message="Forecast training failed",
+                        metadata={"site_id": site_id, "metric": metric, "plan": plan, "error": str(exc)},
+                    )
                     logger.exception(
                         "Forecast training failed",
                         extra={"site_id": site_id, "metric": metric, "plan": plan},
@@ -165,6 +174,12 @@ async def on_startup():
                         mark_job_success("reduce")
                     except Exception as exc:
                         mark_job_error("reduce", exc)
+                        await notify_ops_alert(
+                            source="dev_reducer",
+                            severity="warning",
+                            message="Development reducer job failed",
+                            metadata={"error": str(exc)},
+                        )
                         raise
 
             scheduler.add_job(job, "interval", seconds=60, id="dev_reducer", replace_existing=True)
@@ -188,6 +203,12 @@ async def on_startup():
                         mark_job_success("reduce")
                     except Exception as exc:
                         mark_job_error("reduce", exc)
+                        await notify_ops_alert(
+                            source="reducer",
+                            severity="critical",
+                            message="Production reducer job failed",
+                            metadata={"error": str(exc)},
+                        )
                         raise
 
             prod_scheduler.add_job(
