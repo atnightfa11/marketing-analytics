@@ -1444,7 +1444,9 @@
           "plan": {
             "type": "string",
             "enum": [
+              "solo",
               "standard",
+              "early_adopter_standard",
               "pro"
             ],
             "title": "Plan"
@@ -1893,10 +1895,12 @@
             "type": "string",
             "enum": [
               "free",
-              "standard"
+              "solo",
+              "standard",
+              "early_adopter_standard"
             ],
             "title": "Plan",
-            "default": "free"
+            "default": "solo"
           }
         },
         "type": "object",
@@ -2160,6 +2164,7 @@
             "type": "string",
             "enum": [
               "free",
+              "solo",
               "standard",
               "pro"
             ],

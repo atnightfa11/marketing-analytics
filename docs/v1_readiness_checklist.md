@@ -7,7 +7,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Plan-aware ingestion and serving (`free`, `standard`; `pro` behind flag).
 - [x] Central-DP reducer path for Standard.
 - [x] Public signup endpoint (`POST /api/public/signup`) for Solo/internal `free` + Standard.
-- [x] Stripe live checkout session creation for Standard (`/api/checkout/session` and signup checkout URL flow).
+- [x] Stripe live checkout session creation for Solo, Standard, and optional Early Adopter Standard (`/api/checkout/session` and signup checkout URL flow).
 - [x] Stripe webhook endpoint live and signature-validated (`/api/stripe/webhook`).
 - [x] Dashboard auth defaults to enabled and site-access authorization hooks present.
 - [x] Readiness endpoint checks database and surfaces auth/billing configuration state (`/health/readiness`).
@@ -24,15 +24,17 @@ This checklist reflects what is live in production and what remains before broad
 
 ## Still required before broader launch
 
+- [ ] Complete one real Solo checkout and verify webhook links Stripe customer/subscription while `site_plan.plan` remains internal `free`.
 - [ ] Complete one real Standard checkout and verify webhook plan flip (`site_plan.plan=standard`) for the purchased site.
 - [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
 - [x] Decide and encode launch entitlements: Solo ($10) for one site/basic forecasts/12-month aggregate history; Standard ($29) for 3 sites, imports, alerts, all forecast metrics, team/site access, and forever aggregate retention.
-- [ ] Update Stripe/account billing for Solo, Standard, and $5/additional Standard sites after gates are verified.
+- [x] Wire Stripe checkout for Solo, Standard, and optional Early Adopter Standard prices.
+- [ ] Update Stripe/account billing for $5/additional Standard sites after gates are verified.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
 - [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
 - [ ] Keep Pro/Enterprise local-DP claims hidden until the Pro path is enabled, tested, and supported commercially.
 - [ ] Run a full launch smoke in production from clean browser:
-  - free signup -> dashboard access
+  - Solo signup -> checkout -> return -> dashboard access
   - standard signup -> checkout -> return -> upgraded plan
   - snippet installed -> first data visible
 
@@ -49,6 +51,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] `PROD_SCHEDULER_HOUR_UTC`
 - [x] `STRIPE_SECRET_KEY` (live)
 - [x] `STRIPE_WEBHOOK_SECRET`
+- [x] `STRIPE_SOLO_PRICE_ID`
 - [x] `STRIPE_STANDARD_PRICE_ID`
 - [x] `BILLING_ENABLED=true` for commercial production
 - [x] `STRIPE_SIGNUP_SUCCESS_URL`

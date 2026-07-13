@@ -107,10 +107,12 @@ Privileged endpoint headers:
 
 Stripe billing env vars:
 
-- `BILLING_ENABLED=true` for commercial production. When enabled, startup requires Stripe secret, webhook secret, and Standard price ID.
+- `BILLING_ENABLED=true` for commercial production. When enabled, startup requires Stripe secret, webhook secret, Solo price ID, and Standard price ID.
 - `STRIPE_SECRET_KEY=sk_live_...` (production; use `sk_test_...` only in non-prod environments)
 - `STRIPE_WEBHOOK_SECRET=whsec_...` (from the Dashboard webhook endpoint, not Stripe CLI `listen`)
+- `STRIPE_SOLO_PRICE_ID=price_...`
 - `STRIPE_STANDARD_PRICE_ID=price_...`
+- `STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID=price_...` (optional; use when offering Early Adopter Standard)
 - `STRIPE_PRO_PRICE_ID=price_...` (optional if Pro is hidden in UI)
 - `STRIPE_CHECKOUT_SUCCESS_URL=https://app.validanalytics.io/billing/success`
 - `STRIPE_CHECKOUT_CANCEL_URL=https://app.validanalytics.io/billing/cancel`
@@ -132,7 +134,11 @@ Checkout endpoint:
 - `POST /api/checkout/session`
 - Request body:
   - `site_id` (your internal site key, for example `live-validanalytics-io`)
-  - `plan` (`standard` or `pro`)
+  - `plan`:
+    - `solo`: customer-facing Solo checkout; persists backend entitlements as internal `free`
+    - `standard`: Standard checkout
+    - `early_adopter_standard`: Early Adopter Standard checkout; persists backend entitlements as `standard`
+    - `pro`: hidden until Pro/LDP is commercially ready
 
 Public signup endpoint:
 
@@ -140,10 +146,10 @@ Public signup endpoint:
 - Request body:
   - `username`, `email`, `password`
   - `site_name`, `site_domain`
-  - `plan` (`free` or `standard`)
+  - `plan` (`solo`, `standard`, or `early_adopter_standard`; legacy `free` is treated as Solo checkout)
 - Behavior:
-  - `free`: returns `201` with `requires_checkout=false`
-  - `standard`: returns `201` with `requires_checkout=true` and `checkout_url`
+  - all customer-facing signup plans return `201` with `requires_checkout=true` and `checkout_url`
+  - Solo remains stored as backend plan `free` after successful checkout so existing Solo entitlement gates continue to work
 
 Domain routing:
 
@@ -220,7 +226,7 @@ do update set plan = excluded.plan;
 
 ## Notes
 
-- Solo + Standard are the commercial launch tiers; the current database value `free` is the internal Solo representation until the Stripe plan migration is complete. Pro/LDP is deferred.
+- Solo + Standard are the commercial launch tiers; the current database value `free` is the internal Solo representation. Pro/LDP is deferred.
 - Standard includes 3 sites and $5/month additional sites in the product entitlement model. Stripe/account billing for additional sites is a separate follow-up.
 - Scheduler behavior:
   - Dev: `ENABLE_DEV_SCHEDULER=1` runs reducer every 60 seconds.

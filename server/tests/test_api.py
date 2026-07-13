@@ -33,7 +33,9 @@ os.environ["LOGIN_RATE_LIMIT_PER_MINUTE"] = "100000"
 os.environ["BILLING_ENABLED"] = "false"
 os.environ["STRIPE_SECRET_KEY"] = ""
 os.environ["STRIPE_WEBHOOK_SECRET"] = ""
+os.environ["STRIPE_SOLO_PRICE_ID"] = ""
 os.environ["STRIPE_STANDARD_PRICE_ID"] = ""
+os.environ["STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID"] = ""
 os.environ["STRIPE_PRO_PRICE_ID"] = ""
 
 ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
@@ -2988,7 +2990,12 @@ async def test_sdk_verify_install_returns_recent_raw_activity(client):
 @pytest.mark.asyncio
 async def test_metrics_and_aggregate_follow_site_plan(client):
     site_id = "site-plan-serving-contract"
-    base_start = datetime(2026, 4, 11, 12, 0, tzinfo=timezone.utc)
+    base_start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+        hour=12,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
 
     await _insert_dp_window(
         site_id=site_id,
@@ -3057,7 +3064,12 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
 @pytest.mark.asyncio
 async def test_missing_site_plan_defaults_to_free_for_serving(client):
     site_id = "site-default-plan-free"
-    base_start = datetime(2026, 4, 11, 14, 0, tzinfo=timezone.utc)
+    base_start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+        hour=14,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
 
     # No site_plan row for this site on purpose: serving should fall back to free.
     await _insert_dp_window(
@@ -4503,7 +4515,9 @@ async def test_site_settings_update_claims_unclaimed_site_for_authed_user(client
 
 
 @pytest.mark.asyncio
-async def test_public_signup_free_creates_user_site_and_key(client):
+async def test_public_signup_solo_returns_checkout_and_keeps_internal_free_plan(client, monkeypatch):
+    from app.routers import public_signup as public_signup_router
+
     original = (
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
         dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
@@ -4514,6 +4528,12 @@ async def test_public_signup_free_creates_user_site_and_key(client):
         dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
         dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
     )
+    original_stripe = (
+        public_signup_router.settings.STRIPE_SECRET_KEY,
+        public_signup_router.settings.STRIPE_SOLO_PRICE_ID,
+        public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
+        public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+    )
     dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
     dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
     dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
@@ -4522,40 +4542,61 @@ async def test_public_signup_free_creates_user_site_and_key(client):
     dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
     dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
     dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    public_signup_router.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    public_signup_router.settings.STRIPE_SOLO_PRICE_ID = "price_mock_solo"
+    public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL = "https://validanalytics.io/signup/complete"
+    public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL = "https://validanalytics.io/signup"
     dashboard_auth_module._parse_auth_users.cache_clear()
     dashboard_auth_module._parse_site_access_map.cache_clear()
+
+    captured_checkout: dict = {}
+
+    class _FakeSession:
+        url = "https://checkout.stripe.test/solo_session"
+
+    def _fake_checkout_create(**kwargs):
+        captured_checkout.update(kwargs)
+        return _FakeSession()
+
+    monkeypatch.setattr(public_signup_router.stripe.checkout.Session, "create", _fake_checkout_create)
+
     try:
         signup = client.post(
             "/api/public/signup",
             json={
-                "username": "signup_free_user",
-                "email": "signup-free@example.com",
+                "username": "signup_solo_user",
+                "email": "signup-solo@example.com",
                 "password": "strong-pass-123",
-                "site_name": "Signup Free Site",
-                "site_domain": "example-signup-free.com",
-                "plan": "free",
+                "site_name": "Signup Solo Site",
+                "site_domain": "example-signup-solo.com",
+                "plan": "solo",
             },
         )
         assert signup.status_code == 201
         body = signup.json()
-        assert body["requires_checkout"] is False
-        assert body["checkout_url"] is None
-        assert body["site_id"].startswith("live-example-signup-free-com")
+        assert body["requires_checkout"] is True
+        assert body["checkout_url"] == "https://checkout.stripe.test/solo_session"
+        assert body["site_id"].startswith("live-example-signup-solo-com")
         assert body["site_key"].startswith("vsk_")
         assert body["access_token"]
+        assert captured_checkout["line_items"] == [{"price": "price_mock_solo", "quantity": 1}]
+        assert captured_checkout["metadata"]["plan"] == "free"
+        assert captured_checkout["metadata"]["checkout_plan"] == "solo"
+        assert captured_checkout["subscription_data"]["metadata"]["plan"] == "free"
+        assert captured_checkout["subscription_data"]["metadata"]["checkout_plan"] == "solo"
 
         async with async_session_factory() as session:
-            user = await session.get(DashboardUser, "signup_free_user")
+            user = await session.get(DashboardUser, "signup_solo_user")
             assert user is not None
             assert user.password_hash != "strong-pass-123"
             site = await session.get(DashboardSite, body["site_id"])
             assert site is not None
-            assert site.owner_username == "signup_free_user"
+            assert site.owner_username == "signup_solo_user"
             plan = await session.get(SitePlan, body["site_id"])
             assert plan is not None
             assert plan.plan == "free"
 
-        login = client.post("/api/auth/login", json={"username": "signup_free_user", "password": "strong-pass-123"})
+        login = client.post("/api/auth/login", json={"username": "signup_solo_user", "password": "strong-pass-123"})
         assert login.status_code == 200
         token = login.json()["access_token"]
         assert token
@@ -4565,8 +4606,8 @@ async def test_public_signup_free_creates_user_site_and_key(client):
         assert sites.json()["sites"] == [
             {
                 "site_id": body["site_id"],
-                "site_name": "Signup Free Site",
-                "allowed_origin": "https://example-signup-free.com",
+                "site_name": "Signup Solo Site",
+                "allowed_origin": "https://example-signup-solo.com",
                 "plan": "free",
             }
         ]
@@ -4586,6 +4627,12 @@ async def test_public_signup_free_creates_user_site_and_key(client):
             dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
             dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
         ) = original
+        (
+            public_signup_router.settings.STRIPE_SECRET_KEY,
+            public_signup_router.settings.STRIPE_SOLO_PRICE_ID,
+            public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
+            public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+        ) = original_stripe
 
 
 @pytest.mark.asyncio
@@ -4626,7 +4673,10 @@ async def test_public_signup_standard_returns_checkout_url(client, monkeypatch):
     class _FakeSession:
         url = "https://checkout.stripe.test/session_123"
 
-    def _fake_checkout_create(**_kwargs):
+    captured_checkout: dict = {}
+
+    def _fake_checkout_create(**kwargs):
+        captured_checkout.update(kwargs)
         return _FakeSession()
 
     monkeypatch.setattr(public_signup_router.stripe.checkout.Session, "create", _fake_checkout_create)
@@ -4648,6 +4698,11 @@ async def test_public_signup_standard_returns_checkout_url(client, monkeypatch):
         assert body["requires_checkout"] is True
         assert body["checkout_url"] == "https://checkout.stripe.test/session_123"
         assert body["site_key"].startswith("vsk_")
+        assert captured_checkout["line_items"] == [{"price": "price_mock_standard", "quantity": 1}]
+        assert captured_checkout["metadata"]["plan"] == "standard"
+        assert captured_checkout["metadata"]["checkout_plan"] == "standard"
+        assert captured_checkout["subscription_data"]["metadata"]["plan"] == "standard"
+        assert captured_checkout["subscription_data"]["metadata"]["checkout_plan"] == "standard"
 
         async with async_session_factory() as session:
             plan = await session.get(SitePlan, body["site_id"])
@@ -4670,6 +4725,100 @@ async def test_public_signup_standard_returns_checkout_url(client, monkeypatch):
         (
             public_signup_router.settings.STRIPE_SECRET_KEY,
             public_signup_router.settings.STRIPE_STANDARD_PRICE_ID,
+            public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
+            public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+        ) = original_stripe
+
+
+@pytest.mark.asyncio
+async def test_public_signup_early_adopter_standard_uses_early_price_and_standard_entitlement(client, monkeypatch):
+    from app.routers import public_signup as public_signup_router
+
+    original_auth = (
+        dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+        dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+        dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+        dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+        dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+        dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+        dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+    )
+    original_stripe = (
+        public_signup_router.settings.STRIPE_SECRET_KEY,
+        public_signup_router.settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID,
+        public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
+        public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
+    )
+    dashboard_auth_settings.DASHBOARD_AUTH_ENABLED = True
+    dashboard_auth_settings.DASHBOARD_AUTH_USERNAME = "admin"
+    dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD = None
+    dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON = None
+    dashboard_auth_settings.DASHBOARD_AUTH_SECRET = "dashboard-auth-public-signup-early-secret"
+    dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS = 3600
+    dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS = None
+    dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON = None
+    public_signup_router.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    public_signup_router.settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID = "price_mock_early"
+    public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL = "https://validanalytics.io/signup/complete"
+    public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL = "https://validanalytics.io/signup"
+    dashboard_auth_module._parse_auth_users.cache_clear()
+    dashboard_auth_module._parse_site_access_map.cache_clear()
+
+    captured_checkout: dict = {}
+
+    class _FakeSession:
+        url = "https://checkout.stripe.test/early_session"
+
+    def _fake_checkout_create(**kwargs):
+        captured_checkout.update(kwargs)
+        return _FakeSession()
+
+    monkeypatch.setattr(public_signup_router.stripe.checkout.Session, "create", _fake_checkout_create)
+
+    try:
+        signup = client.post(
+            "/api/public/signup",
+            json={
+                "username": "signup_early_user",
+                "email": "signup-early@example.com",
+                "password": "strong-pass-789",
+                "site_name": "Signup Early Site",
+                "site_domain": "example-signup-early.com",
+                "plan": "early_adopter_standard",
+            },
+        )
+        assert signup.status_code == 201
+        body = signup.json()
+        assert body["requires_checkout"] is True
+        assert body["checkout_url"] == "https://checkout.stripe.test/early_session"
+        assert captured_checkout["line_items"] == [{"price": "price_mock_early", "quantity": 1}]
+        assert captured_checkout["metadata"]["plan"] == "standard"
+        assert captured_checkout["metadata"]["checkout_plan"] == "early_adopter_standard"
+        assert captured_checkout["subscription_data"]["metadata"]["plan"] == "standard"
+        assert captured_checkout["subscription_data"]["metadata"]["checkout_plan"] == "early_adopter_standard"
+
+        async with async_session_factory() as session:
+            plan = await session.get(SitePlan, body["site_id"])
+            assert plan is not None
+            # The paid entitlement flips to Standard after Stripe confirms checkout.
+            assert plan.plan == "free"
+    finally:
+        dashboard_auth_module._parse_auth_users.cache_clear()
+        dashboard_auth_module._parse_site_access_map.cache_clear()
+        (
+            dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERNAME,
+            dashboard_auth_settings.DASHBOARD_AUTH_PASSWORD,
+            dashboard_auth_settings.DASHBOARD_AUTH_USERS_JSON,
+            dashboard_auth_settings.DASHBOARD_AUTH_SECRET,
+            dashboard_auth_settings.DASHBOARD_AUTH_TTL_SECONDS,
+            dashboard_auth_settings.DASHBOARD_ALLOWED_SITE_IDS,
+            dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
+        ) = original_auth
+        (
+            public_signup_router.settings.STRIPE_SECRET_KEY,
+            public_signup_router.settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID,
             public_signup_router.settings.STRIPE_SIGNUP_SUCCESS_URL,
             public_signup_router.settings.STRIPE_SIGNUP_CANCEL_URL,
         ) = original_stripe

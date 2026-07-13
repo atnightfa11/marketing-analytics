@@ -53,8 +53,11 @@ Operational definition:
 
 ## Implementation Notes
 
-- Backend plan value `free` is the current internal representation for Solo.
+- Backend plan value `free` is the current internal representation for customer-facing Solo.
+- Solo checkout uses `STRIPE_SOLO_PRICE_ID` and stores the site as backend plan `free` after the Stripe webhook links the customer/subscription.
+- Standard checkout uses `STRIPE_STANDARD_PRICE_ID` and stores the site as backend plan `standard`.
+- Early Adopter Standard checkout uses `STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID` when configured and also stores the site as backend plan `standard`.
 - Standard entitlements are enforced server-side for historical imports, anomaly alerts, advanced forecast metrics, and site access management.
 - Solo served aggregate history is limited to 365 days.
 - Standard includes 3 sites in the entitlement response. Charging $5/additional site requires the deferred Stripe/account-billing pass.
-- Stripe product/price changes are intentionally deferred until product gates are settled.
+- Additional-site billing, Customer Portal, payment-failure policy, and webhook event idempotency remain the deferred Stripe/account-billing pass.

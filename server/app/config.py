@@ -13,7 +13,9 @@ class Settings(BaseSettings):
   BILLING_ENABLED: bool = Field(default=False)
   STRIPE_SECRET_KEY: str | None = None
   STRIPE_WEBHOOK_SECRET: str | None = None
+  STRIPE_SOLO_PRICE_ID: str | None = None
   STRIPE_STANDARD_PRICE_ID: str | None = None
+  STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID: str | None = None
   STRIPE_PRO_PRICE_ID: str | None = None
   STRIPE_CHECKOUT_SUCCESS_URL: str = Field(default="https://app.validanalytics.io/billing/success")
   STRIPE_CHECKOUT_CANCEL_URL: str = Field(default="https://app.validanalytics.io/billing/cancel")
@@ -139,6 +141,7 @@ class Settings(BaseSettings):
           for name, value in (
               ("STRIPE_SECRET_KEY", self.STRIPE_SECRET_KEY),
               ("STRIPE_WEBHOOK_SECRET", self.STRIPE_WEBHOOK_SECRET),
+              ("STRIPE_SOLO_PRICE_ID", self.STRIPE_SOLO_PRICE_ID),
               ("STRIPE_STANDARD_PRICE_ID", self.STRIPE_STANDARD_PRICE_ID),
           )
           if not value
@@ -195,7 +198,12 @@ class Settings(BaseSettings):
     return self
 
   def billing_configured(self) -> bool:
-    return bool(self.STRIPE_SECRET_KEY and self.STRIPE_WEBHOOK_SECRET and self.STRIPE_STANDARD_PRICE_ID)
+    return bool(
+        self.STRIPE_SECRET_KEY
+        and self.STRIPE_WEBHOOK_SECRET
+        and self.STRIPE_SOLO_PRICE_ID
+        and self.STRIPE_STANDARD_PRICE_ID
+    )
 
   def auth_configured(self) -> bool:
     return (not self.DASHBOARD_AUTH_ENABLED) or bool(self.DASHBOARD_AUTH_SECRET)

@@ -38,7 +38,7 @@ class RevokeTokensRequest(BaseModel):
 
 class CheckoutSessionRequest(BaseModel):
     site_id: str
-    plan: Literal["standard", "pro"]
+    plan: Literal["solo", "standard", "early_adopter_standard", "pro"]
     success_url: str | None = None
     cancel_url: str | None = None
 
@@ -128,7 +128,7 @@ class PublicSignupRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     site_name: str = Field(min_length=1, max_length=255)
     site_domain: str = Field(min_length=3, max_length=255)
-    plan: Literal["free", "solo", "standard"] = "free"
+    plan: Literal["free", "solo", "standard", "early_adopter_standard"] = "solo"
 
 
 class PublicSignupResponse(BaseModel):

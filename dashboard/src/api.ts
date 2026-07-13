@@ -435,7 +435,7 @@ export async function fetchBillingStatus(token?: string, siteId?: string): Promi
 }
 
 export async function createCheckoutSession(
-  plan: "standard" | "pro",
+  plan: "solo" | "standard" | "early_adopter_standard" | "pro",
   token?: string,
   siteId?: string,
   successUrl?: string,

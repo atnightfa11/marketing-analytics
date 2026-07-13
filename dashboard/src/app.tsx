@@ -4130,15 +4130,14 @@ const Settings: React.FC = () => {
     }
   };
 
-  const beginStandardCheckout = async () => {
+  const beginCheckout = async (plan: "solo" | "standard" | "early_adopter_standard" | "pro") => {
     setBillingStatus("redirecting");
     setBillingMessage(null);
     try {
       const origin = typeof window !== "undefined" ? window.location.origin : "https://app.validanalytics.io";
       const successUrl = `${origin}/billing/success?site_id=${encodeURIComponent(siteId)}`;
       const cancelUrl = `${origin}/site/${encodeURIComponent(siteId)}/settings`;
-      const checkoutPlan = billingPlan === "pro" ? "pro" : "standard";
-      const checkout = await createCheckoutSession(checkoutPlan, token ?? undefined, siteId, successUrl, cancelUrl);
+      const checkout = await createCheckoutSession(plan, token ?? undefined, siteId, successUrl, cancelUrl);
       window.location.assign(checkout.checkout_url);
     } catch (error) {
       setBillingStatus("error");
@@ -4440,17 +4439,23 @@ const Settings: React.FC = () => {
     if (billingPlan === "pro") {
       return "Your Pro subscription is active for this site.";
     }
-    return "This site is on Solo. Standard is built for business operations: multiple sites, historical imports, anomaly alerts, team access, and all forecast metrics.";
+    return hasSubscription
+      ? "Your Solo subscription is active. Standard is built for business operations: multiple sites, historical imports, anomaly alerts, team access, and all forecast metrics."
+      : "This site is on Solo features, but billing is not active yet. Subscribe to Solo to keep this site active commercially.";
   })();
 
+  const billingCheckoutPlan: "solo" | "standard" | "early_adopter_standard" | "pro" =
+    billingPlan === "free" && !hasSubscription ? "solo" : billingPlan === "pro" ? "pro" : "standard";
   const billingActionLabel =
     billingPlan === "free"
-      ? "Upgrade To Standard"
+      ? hasSubscription
+        ? "Upgrade To Standard"
+        : "Subscribe To Solo"
       : billingPlan === "standard"
-        ? "Update Standard Subscription"
+        ? "Standard Active"
         : "Manage Pro Subscription";
 
-  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading";
+  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading" || billingPlan === "standard";
 
   const billingStatusText =
     billingStatus === "loading"
@@ -4852,7 +4857,7 @@ const Settings: React.FC = () => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => void beginStandardCheckout()}
+                      onClick={() => void beginCheckout("standard")}
                       disabled={billingActionDisabled}
                       className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                       style={fontBody}
@@ -5190,7 +5195,7 @@ const Settings: React.FC = () => {
                   </div>
                   <button
                     type="button"
-                    onClick={() => void beginStandardCheckout()}
+                    onClick={() => void beginCheckout("standard")}
                     disabled={billingActionDisabled}
                     className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                     style={fontBody}
@@ -5304,7 +5309,7 @@ const Settings: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  onClick={() => void beginStandardCheckout()}
+                  onClick={() => void beginCheckout(billingCheckoutPlan)}
                   disabled={billingActionDisabled}
                   className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                   style={fontBody}
@@ -5641,7 +5646,7 @@ const Settings: React.FC = () => {
                   {billingPlan === "free" ? (
                     <button
                       type="button"
-                      onClick={() => void beginStandardCheckout()}
+                      onClick={() => void beginCheckout("standard")}
                       disabled={billingActionDisabled}
                       className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                       style={fontBody}

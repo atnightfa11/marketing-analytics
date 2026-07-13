@@ -69,31 +69,71 @@ async def _next_unique_site_id(base_site_id: str, session: AsyncSession) -> str:
         candidate = f"{base_site_id}-{suffix}"
 
 
+def _checkout_plan_for_signup_plan(plan: str) -> str:
+    if plan in {"free", "solo"}:
+        return "solo"
+    return plan
+
+
+def _stored_plan_for_checkout_plan(plan: str) -> str:
+    if plan == "solo":
+        return "free"
+    if plan == "early_adopter_standard":
+        return "standard"
+    return plan
+
+
+def _price_id_for_checkout_plan(plan: str) -> str:
+    def require_price_id(value: str, label: str) -> str:
+        if not value.startswith("price_"):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"{label} is not a Stripe Price ID (expected prefix price_)",
+            )
+        return value
+
+    if plan == "solo":
+        if not settings.STRIPE_SOLO_PRICE_ID:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Solo plan is not configured")
+        return require_price_id(settings.STRIPE_SOLO_PRICE_ID, "Solo price")
+    if plan == "standard":
+        if not settings.STRIPE_STANDARD_PRICE_ID:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Standard plan is not configured",
+            )
+        return require_price_id(settings.STRIPE_STANDARD_PRICE_ID, "Standard price")
+    if plan == "early_adopter_standard":
+        if not settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Early Adopter Standard plan is not configured",
+            )
+        return require_price_id(settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID, "Early Adopter Standard price")
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported paid plan")
+
+
 def _create_checkout_session_for_signup(site_id: str, plan: str) -> str:
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Stripe is not configured")
-    if plan != "standard":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported paid plan")
-    if not settings.STRIPE_STANDARD_PRICE_ID:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Standard plan is not configured",
-        )
 
+    checkout_plan = _checkout_plan_for_signup_plan(plan)
+    stored_plan = _stored_plan_for_checkout_plan(checkout_plan)
+    price_id = _price_id_for_checkout_plan(checkout_plan)
     stripe.api_key = settings.STRIPE_SECRET_KEY
     success_url = (
         f"{settings.STRIPE_SIGNUP_SUCCESS_URL}"
-        f"?site_id={quote_plus(site_id)}&plan=standard&session_id={{CHECKOUT_SESSION_ID}}"
+        f"?site_id={quote_plus(site_id)}&plan={quote_plus(checkout_plan)}&session_id={{CHECKOUT_SESSION_ID}}"
     )
-    cancel_url = f"{settings.STRIPE_SIGNUP_CANCEL_URL}?site_id={quote_plus(site_id)}&plan=standard"
+    cancel_url = f"{settings.STRIPE_SIGNUP_CANCEL_URL}?site_id={quote_plus(site_id)}&plan={quote_plus(checkout_plan)}"
     try:
         checkout_session = stripe.checkout.Session.create(
             mode="subscription",
             success_url=success_url,
             cancel_url=cancel_url,
-            line_items=[{"price": settings.STRIPE_STANDARD_PRICE_ID, "quantity": 1}],
-            metadata={"site_id": site_id, "plan": "standard"},
-            subscription_data={"metadata": {"site_id": site_id, "plan": "standard"}},
+            line_items=[{"price": price_id, "quantity": 1}],
+            metadata={"site_id": site_id, "plan": stored_plan, "checkout_plan": checkout_plan},
+            subscription_data={"metadata": {"site_id": site_id, "plan": stored_plan, "checkout_plan": checkout_plan}},
             client_reference_id=site_id,
             allow_promotion_codes=True,
         )
@@ -137,9 +177,8 @@ async def public_signup(
     base_site_id = site_id_from_domain(allowed_origin)
     site_id = await _next_unique_site_id(base_site_id, session)
 
-    checkout_url: str | None = None
-    if payload.plan == "standard":
-        checkout_url = _create_checkout_session_for_signup(site_id, payload.plan)
+    checkout_plan = _checkout_plan_for_signup_plan(payload.plan)
+    checkout_url = _create_checkout_session_for_signup(site_id, checkout_plan)
 
     key_id, key_prefix, plaintext_site_key = build_site_key()
     user = DashboardUser(
@@ -182,5 +221,5 @@ async def public_signup(
         site_domain=allowed_origin,
         site_key=plaintext_site_key,
         checkout_url=checkout_url,
-        requires_checkout=payload.plan == "standard",
+        requires_checkout=True,
     )

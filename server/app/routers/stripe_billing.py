@@ -62,7 +62,15 @@ def _safe_redirect_url(candidate: str | None, default: str) -> str:
     return candidate
 
 
-def _price_id_for_plan(plan: str) -> str:
+def _stored_plan_for_checkout_plan(plan: str) -> str:
+    if plan == "solo":
+        return "free"
+    if plan == "early_adopter_standard":
+        return "standard"
+    return normalize_plan(plan)
+
+
+def _price_id_for_checkout_plan(plan: str) -> str:
     def require_price_id(value: str, label: str) -> str:
         if not value.startswith("price_"):
             raise HTTPException(
@@ -71,10 +79,21 @@ def _price_id_for_plan(plan: str) -> str:
             )
         return value
 
+    if plan == "solo":
+        if not settings.STRIPE_SOLO_PRICE_ID:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Solo price is not configured")
+        return require_price_id(settings.STRIPE_SOLO_PRICE_ID, "Solo price")
     if plan == "standard":
         if not settings.STRIPE_STANDARD_PRICE_ID:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Standard price is not configured")
         return require_price_id(settings.STRIPE_STANDARD_PRICE_ID, "Standard price")
+    if plan == "early_adopter_standard":
+        if not settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Early Adopter Standard price is not configured",
+            )
+        return require_price_id(settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID, "Early Adopter Standard price")
     if plan == "pro":
         if not settings.STRIPE_PRO_PRICE_ID:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Pro price is not configured")
@@ -85,7 +104,11 @@ def _price_id_for_plan(plan: str) -> str:
 def _plan_for_price_id(price_id: str | None) -> str:
     if not price_id:
         return "free"
+    if price_id == settings.STRIPE_SOLO_PRICE_ID:
+        return "free"
     if price_id == settings.STRIPE_STANDARD_PRICE_ID:
+        return "standard"
+    if price_id == settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID:
         return "standard"
     if price_id == settings.STRIPE_PRO_PRICE_ID:
         return "pro"
@@ -96,7 +119,9 @@ def _normalize_plan(raw: str | None) -> str | None:
     if not raw:
         return None
     plan = raw.strip().lower()
-    if plan in {"free", "solo", "standard", "pro"}:
+    if plan in {"free", "solo", "standard", "pro", "early_adopter_standard"}:
+        if plan == "early_adopter_standard":
+            return "standard"
         return normalize_plan(plan)
     return None
 
@@ -153,7 +178,9 @@ async def create_checkout_session(
     await enforce_site_access_with_db(site_id=payload.site_id, claims=auth_claims, session=session)
     _require_stripe_settings()
     stripe.api_key = settings.STRIPE_SECRET_KEY
-    price_id = _price_id_for_plan(payload.plan)
+    checkout_plan = payload.plan
+    stored_plan = _stored_plan_for_checkout_plan(checkout_plan)
+    price_id = _price_id_for_checkout_plan(checkout_plan)
     base_success_url = _safe_redirect_url(payload.success_url, settings.STRIPE_CHECKOUT_SUCCESS_URL)
     success_sep = "&" if "?" in base_success_url else "?"
     success_url = f"{base_success_url}{success_sep}session_id={{CHECKOUT_SESSION_ID}}"
@@ -168,8 +195,8 @@ async def create_checkout_session(
             success_url=success_url,
             cancel_url=cancel_url,
             line_items=[{"price": price_id, "quantity": 1}],
-            metadata={"site_id": payload.site_id, "plan": payload.plan},
-            subscription_data={"metadata": {"site_id": payload.site_id, "plan": payload.plan}},
+            metadata={"site_id": payload.site_id, "plan": stored_plan, "checkout_plan": checkout_plan},
+            subscription_data={"metadata": {"site_id": payload.site_id, "plan": stored_plan, "checkout_plan": checkout_plan}},
             client_reference_id=payload.site_id,
             allow_promotion_codes=True,
         )
