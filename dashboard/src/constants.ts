@@ -52,8 +52,8 @@ export const hourOfDayLabels = [
 export const dayOfWeekLabels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
 export const metricOptions = [
-  { key: "pageviews", label: "Pageviews" },
   { key: "uniques", label: "Unique Visitors" },
+  { key: "pageviews", label: "Pageviews" },
   { key: "sessions", label: "Sessions" },
   { key: "conversions", label: "Conversions" },
   { key: "revenue", label: "Revenue" },

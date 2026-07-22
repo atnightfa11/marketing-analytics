@@ -51,6 +51,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] `PROD_REDUCER_INTERVAL_MINUTES=60` (or desired hourly cadence)
 - [x] `PROD_REDUCER_LOOKBACK_DAYS=7` (recent-day catch-up scan for missing reducer watermarks)
 - [x] `PROD_SCHEDULER_HOUR_UTC`
+- [x] `FORECAST_TRAIN_ON_STARTUP=true`
 - [x] `STRIPE_SECRET_KEY` (live)
 - [x] `STRIPE_WEBHOOK_SECRET`
 - [x] `STRIPE_SOLO_PRICE_ID`

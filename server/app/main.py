@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import os
 
@@ -236,6 +237,11 @@ async def on_startup():
                 minute=15,
                 id="prod_forecast_daily",
                 replace_existing=True,
+                next_run_time=(
+                    dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)
+                    if settings.FORECAST_TRAIN_ON_STARTUP
+                    else None
+                ),
             )
             prod_scheduler.start()
             app.state.prod_scheduler = prod_scheduler
@@ -245,6 +251,7 @@ async def on_startup():
                     "reducer_interval_minutes": settings.PROD_REDUCER_INTERVAL_MINUTES,
                     "reducer_lookback_days": settings.PROD_REDUCER_LOOKBACK_DAYS,
                     "forecast_hour_utc": settings.PROD_SCHEDULER_HOUR_UTC,
+                    "forecast_train_on_startup": settings.FORECAST_TRAIN_ON_STARTUP,
                 },
             )
         except Exception:

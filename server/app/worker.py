@@ -107,6 +107,11 @@ async def main() -> None:
         minute=15,
         id="worker_forecast_daily",
         replace_existing=True,
+        next_run_time=(
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)
+            if settings.FORECAST_TRAIN_ON_STARTUP
+            else None
+        ),
     )
     scheduler.start()
     logger.info(
@@ -115,6 +120,7 @@ async def main() -> None:
             "reducer_interval_minutes": settings.PROD_REDUCER_INTERVAL_MINUTES,
             "reducer_lookback_days": settings.PROD_REDUCER_LOOKBACK_DAYS,
             "forecast_hour_utc": settings.PROD_SCHEDULER_HOUR_UTC,
+            "forecast_train_on_startup": settings.FORECAST_TRAIN_ON_STARTUP,
         },
     )
 

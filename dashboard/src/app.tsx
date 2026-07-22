@@ -678,7 +678,7 @@ const Overview: React.FC = () => {
   }, [hasExplicitSiteSelection, siteId]);
   const [selectedMetric, setSelectedMetric] = useState<string>(() => {
     const m = searchParams.get("metric");
-    return m && metricLabels[m] ? m : "pageviews";
+    return m && metricLabels[m] ? m : "uniques";
   });
   const [range, setRange] = useState<RangeOption>(() => {
     const r = searchParams.get("range");
@@ -2237,7 +2237,7 @@ const Overview: React.FC = () => {
       "filter",
     ];
     managedKeys.forEach((k) => next.delete(k));
-    if (selectedMetric !== "pageviews") next.set("metric", selectedMetric);
+    if (selectedMetric !== "uniques") next.set("metric", selectedMetric);
     if (range !== "Last 30") next.set("range", range);
     if (selectedHostname !== "all") next.set("hostname", selectedHostname);
     if (range === "Custom") {

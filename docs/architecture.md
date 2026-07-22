@@ -63,6 +63,7 @@ Raw IP address and raw User-Agent are used transiently to derive keyed `standard
   - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
   - reducer catch-up scan: `PROD_REDUCER_LOOKBACK_DAYS` (default 7), so recent raw days missing a successful watermark can still be reduced after a short outage or missed run.
   - forecast training: daily at `PROD_SCHEDULER_HOUR_UTC` (+15 minute offset)
+  - forecast startup catch-up: `FORECAST_TRAIN_ON_STARTUP` (default true), so a restarted worker refreshes stale forecasts shortly after reducer catch-up.
   - preferred deployment: run the same image with `VALID_PROCESS_TYPE=worker` as a separate Railway worker service, with `ENABLE_PROD_SCHEDULER=false` on the API service.
 
 ## Serving endpoints

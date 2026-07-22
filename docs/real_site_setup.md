@@ -91,6 +91,7 @@ Set these environment variables on the backend service:
 - `PROD_SCHEDULER_HOUR_UTC=2`
 - `PROD_REDUCER_INTERVAL_MINUTES=60` (hourly reducer cadence)
 - `PROD_REDUCER_LOOKBACK_DAYS=7` (recent-day catch-up scan for raw days missing a successful reducer watermark)
+- `FORECAST_TRAIN_ON_STARTUP=true` (runs one forecast pass shortly after worker startup, after reducer catch-up)
 - Worker service: `VALID_PROCESS_TYPE=worker`
 
 Optional tuning:
