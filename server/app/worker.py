@@ -14,7 +14,7 @@ from .geoip_db import ensure_geoip_database
 from .maintenance import purge_expired_upload_tokens
 from .models import Base, DpWindow, async_engine, async_session_factory, init_db
 from .ops_alerts import notify_ops_alert
-from .scheduler.nightly_reduce import reduce_reports
+from .scheduler.nightly_reduce import reduce_reports, unreduced_recent_raw_days
 from .scheduler.prophet_job import refresh_site_metric_forecast
 
 logger = logging.getLogger("marketing-analytics-worker")
@@ -33,11 +33,22 @@ async def initialize_worker() -> None:
 
 
 async def run_reduce_once() -> None:
+    reducer_lookback_days = max(1, settings.PROD_REDUCER_LOOKBACK_DAYS)
     try:
         async with async_session_factory() as session:
             await reduce_reports(session)
+            catchup_days = await unreduced_recent_raw_days(session, days=reducer_lookback_days)
+            for day in catchup_days:
+                await reduce_reports(session, start_day=day, end_day=day)
             deleted_tokens = await purge_expired_upload_tokens(session)
-        logger.info("Reducer completed", extra={"deleted_upload_tokens": deleted_tokens})
+        logger.info(
+            "Reducer completed",
+            extra={
+                "deleted_upload_tokens": deleted_tokens,
+                "reducer_lookback_days": reducer_lookback_days,
+                "catchup_days": [day.isoformat() for day in catchup_days],
+            },
+        )
     except Exception as exc:
         await notify_ops_alert(
             source="worker_reducer",
@@ -102,6 +113,7 @@ async def main() -> None:
         "Started worker scheduler",
         extra={
             "reducer_interval_minutes": settings.PROD_REDUCER_INTERVAL_MINUTES,
+            "reducer_lookback_days": settings.PROD_REDUCER_LOOKBACK_DAYS,
             "forecast_hour_utc": settings.PROD_SCHEDULER_HOUR_UTC,
         },
     )

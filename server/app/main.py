@@ -18,7 +18,7 @@ from .maintenance import purge_expired_upload_tokens
 from .metrics_auth import MetricsAuthMiddleware
 from .models import async_session_factory
 from .ops_alerts import notify_ops_alert
-from .scheduler.nightly_reduce import reduce_reports
+from .scheduler.nightly_reduce import reduce_reports, unreduced_recent_raw_days
 from .scheduler.prophet_job import refresh_site_metric_forecast
 from .models import Base, async_engine, init_db
 from .routers import (
@@ -196,11 +196,22 @@ async def on_startup():
 
             async def reduce_job():
                 mark_job_run("reduce")
+                reducer_lookback_days = max(1, settings.PROD_REDUCER_LOOKBACK_DAYS)
                 async with async_session_factory() as session:
                     try:
                         await reduce_reports(session)
+                        catchup_days = await unreduced_recent_raw_days(session, days=reducer_lookback_days)
+                        for day in catchup_days:
+                            await reduce_reports(session, start_day=day, end_day=day)
                         await purge_expired_upload_tokens(session)
                         mark_job_success("reduce")
+                        logger.info(
+                            "Production reducer completed",
+                            extra={
+                                "reducer_lookback_days": reducer_lookback_days,
+                                "catchup_days": [day.isoformat() for day in catchup_days],
+                            },
+                        )
                     except Exception as exc:
                         mark_job_error("reduce", exc)
                         await notify_ops_alert(
@@ -232,6 +243,7 @@ async def on_startup():
                 "Started production scheduler (hourly reducer + daily forecast)",
                 extra={
                     "reducer_interval_minutes": settings.PROD_REDUCER_INTERVAL_MINUTES,
+                    "reducer_lookback_days": settings.PROD_REDUCER_LOOKBACK_DAYS,
                     "forecast_hour_utc": settings.PROD_SCHEDULER_HOUR_UTC,
                 },
             )

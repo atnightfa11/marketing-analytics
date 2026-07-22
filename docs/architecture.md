@@ -61,6 +61,7 @@ Raw IP address and raw User-Agent are used transiently to derive keyed `standard
 - Dashboard notes are stored separately in `dashboard_notes` and shown as chart annotations; they do not modify analytics aggregates.
 - Production scheduler behavior:
   - reducer interval: `PROD_REDUCER_INTERVAL_MINUTES` (default 60)
+  - reducer catch-up scan: `PROD_REDUCER_LOOKBACK_DAYS` (default 7), so recent raw days missing a successful watermark can still be reduced after a short outage or missed run.
   - forecast training: daily at `PROD_SCHEDULER_HOUR_UTC` (+15 minute offset)
   - preferred deployment: run the same image with `VALID_PROCESS_TYPE=worker` as a separate Railway worker service, with `ENABLE_PROD_SCHEDULER=false` on the API service.
 

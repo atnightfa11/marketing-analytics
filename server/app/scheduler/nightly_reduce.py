@@ -7,7 +7,7 @@ import math
 import secrets
 from collections import defaultdict
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..breakdown_logic import (
@@ -332,6 +332,17 @@ async def purge_reduced_raw_reports(
             continue
         if plan_map.get(watermark.site_id, "free") != watermark.plan:
             continue
+        late_raw = (
+            await session.execute(
+                select(RawReport.id).where(
+                    RawReport.site_id == watermark.site_id,
+                    RawReport.day == watermark.day,
+                    RawReport.server_received_at > watermark.reduced_at,
+                )
+            )
+        ).scalars().first()
+        if late_raw is not None:
+            continue
         result = await session.execute(
             delete(RawReport).where(
                 RawReport.site_id == watermark.site_id,
@@ -347,7 +358,6 @@ async def purge_reduced_raw_reports(
                 select(RawReport).where(
                     RawReport.site_id == watermark.site_id,
                     RawReport.day == watermark.day,
-                    RawReport.server_received_at <= watermark.reduced_at,
                 )
             )
         ).scalars().first()
@@ -355,6 +365,62 @@ async def purge_reduced_raw_reports(
             watermark.raw_purged_at = effective_now
 
     return deleted_total
+
+
+async def unreduced_recent_raw_days(
+    session: AsyncSession,
+    *,
+    days: int,
+) -> list[dt.date]:
+    """Return recent raw days that still need a successful reducer watermark."""
+    start, end = _resolve_day_window(days=days, start_day=None, end_day=None)
+    raw_site_day_rows = (
+        await session.execute(
+            select(RawReport.site_id, RawReport.day, func.max(RawReport.server_received_at))
+            .where(RawReport.day >= start, RawReport.day <= end)
+            .group_by(RawReport.site_id, RawReport.day)
+        )
+    ).all()
+    if not raw_site_day_rows:
+        return []
+
+    plan_map = {
+        rec.site_id: rec.plan
+        for rec in (await session.execute(select(SitePlan))).scalars().all()
+    }
+    success_rows = (
+        await session.execute(
+            select(
+                ReducerWatermark.site_id,
+                ReducerWatermark.plan,
+                ReducerWatermark.day,
+                ReducerWatermark.reduced_at,
+                ReducerWatermark.raw_purged_at,
+            ).where(
+                ReducerWatermark.reducer_version == REDUCER_VERSION,
+                ReducerWatermark.status == "success",
+                ReducerWatermark.day >= start,
+                ReducerWatermark.day <= end,
+            )
+        )
+    ).all()
+    success_map = {
+        (site_id, plan, day): (reduced_at, raw_purged_at)
+        for site_id, plan, day, reduced_at, raw_purged_at in success_rows
+    }
+
+    missing_days: set[dt.date] = set()
+    for site_id, day, latest_raw_received_at in raw_site_day_rows:
+        plan = plan_map.get(site_id, "free")
+        watermark_state = success_map.get((site_id, plan, day))
+        if watermark_state is None:
+            missing_days.add(day)
+            continue
+        reduced_at, raw_purged_at = watermark_state
+        if raw_purged_at is None and latest_raw_received_at > reduced_at:
+            missing_days.add(day)
+
+    return sorted(missing_days)
 
 
 async def reduce_reports(

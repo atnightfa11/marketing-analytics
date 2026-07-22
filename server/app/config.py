@@ -74,6 +74,7 @@ class Settings(BaseSettings):
   ENABLE_PROD_SCHEDULER: bool = Field(default=False)
   PROD_SCHEDULER_HOUR_UTC: int = Field(default=2)
   PROD_REDUCER_INTERVAL_MINUTES: int = Field(default=60)
+  PROD_REDUCER_LOOKBACK_DAYS: int = Field(default=7)
   RAW_REPORT_PURGE_ENABLED: bool = Field(default=True)
   FREE_RAW_PURGE_ENABLED: bool = Field(default=False)
   RAW_REPORT_RETENTION_HOURS: int = Field(default=72)

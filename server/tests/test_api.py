@@ -55,7 +55,7 @@ from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import STANDARD_ID_VERSION, _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
-from app.scheduler.nightly_reduce import purge_reduced_raw_reports, reduce_reports, settings as reduce_settings  # noqa: E402
+from app.scheduler.nightly_reduce import purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
@@ -1835,6 +1835,168 @@ async def test_raw_purge_requires_output_counts(client):
 
 
 @pytest.mark.asyncio
+async def test_raw_purge_skips_day_with_raw_after_reduced_at(client):
+    site_id = "site-purge-late-raw"
+    day = date(2026, 5, 12)
+    reduced_at = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+    await _set_site_plan(site_id, "standard")
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/before"},
+        day=day,
+        server_received_at=reduced_at - timedelta(minutes=5),
+    )
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/after"},
+        day=day,
+        server_received_at=reduced_at + timedelta(minutes=5),
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ReducerWatermark(
+                site_id=site_id,
+                plan="standard",
+                day=day,
+                reducer_version="rollups-v1",
+                status="success",
+                raw_report_count=1,
+                dp_window_count=1,
+                breakdown_rollup_count=1,
+                reduced_at=reduced_at,
+                raw_purged_at=None,
+                error=None,
+            )
+        )
+        await session.commit()
+
+    original_retention = reduce_settings.RAW_REPORT_RETENTION_HOURS
+    reduce_settings.RAW_REPORT_RETENTION_HOURS = 0
+    try:
+        async with async_session_factory() as session:
+            deleted = await purge_reduced_raw_reports(session, now=reduced_at + timedelta(days=1))
+            await session.commit()
+    finally:
+        reduce_settings.RAW_REPORT_RETENTION_HOURS = original_retention
+
+    async with async_session_factory() as session:
+        raw_rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        watermark = (
+            await session.execute(select(ReducerWatermark).where(ReducerWatermark.site_id == site_id))
+        ).scalars().first()
+    assert deleted == 0
+    assert len(raw_rows) == 2
+    assert watermark is not None
+    assert watermark.raw_purged_at is None
+
+
+@pytest.mark.asyncio
+async def test_unreduced_recent_raw_days_skips_successful_watermarks(client):
+    missing_site_id = "site-catchup-missing-watermark"
+    reduced_site_id = "site-catchup-success-watermark"
+    late_site_id = "site-catchup-late-raw"
+    partially_purged_site_id = "site-catchup-partially-purged"
+    today = date.today()
+    missing_day = today - timedelta(days=2)
+    reduced_day = today - timedelta(days=1)
+    late_day = today - timedelta(days=3)
+    partially_purged_day = today - timedelta(days=4)
+    await _set_site_plan(missing_site_id, "standard")
+    await _set_site_plan(reduced_site_id, "standard")
+    await _set_site_plan(late_site_id, "standard")
+    await _set_site_plan(partially_purged_site_id, "standard")
+
+    await _insert_raw_report(
+        site_id=missing_site_id,
+        kind="pageviews",
+        payload={"url": "/needs-catchup"},
+        day=missing_day,
+        server_received_at=datetime.combine(missing_day, datetime.min.time(), tzinfo=timezone.utc),
+    )
+    await _insert_raw_report(
+        site_id=reduced_site_id,
+        kind="pageviews",
+        payload={"url": "/already-reduced"},
+        day=reduced_day,
+        server_received_at=datetime.combine(reduced_day, datetime.min.time(), tzinfo=timezone.utc),
+    )
+    late_reduced_at = datetime.combine(late_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=12)
+    await _insert_raw_report(
+        site_id=late_site_id,
+        kind="pageviews",
+        payload={"url": "/late"},
+        day=late_day,
+        server_received_at=late_reduced_at + timedelta(minutes=5),
+    )
+    partially_purged_reduced_at = (
+        datetime.combine(partially_purged_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=12)
+    )
+    await _insert_raw_report(
+        site_id=partially_purged_site_id,
+        kind="pageviews",
+        payload={"url": "/unsafe-to-reprocess"},
+        day=partially_purged_day,
+        server_received_at=partially_purged_reduced_at + timedelta(minutes=5),
+    )
+
+    async with async_session_factory() as session:
+        session.add_all(
+            [
+                ReducerWatermark(
+                    site_id=reduced_site_id,
+                    plan="standard",
+                    day=reduced_day,
+                    reducer_version="rollups-v1",
+                    status="success",
+                    raw_report_count=1,
+                    dp_window_count=1,
+                    breakdown_rollup_count=1,
+                    reduced_at=datetime.combine(reduced_day, datetime.max.time(), tzinfo=timezone.utc),
+                    raw_purged_at=None,
+                    error=None,
+                ),
+                ReducerWatermark(
+                    site_id=late_site_id,
+                    plan="standard",
+                    day=late_day,
+                    reducer_version="rollups-v1",
+                    status="success",
+                    raw_report_count=1,
+                    dp_window_count=1,
+                    breakdown_rollup_count=1,
+                    reduced_at=late_reduced_at,
+                    raw_purged_at=None,
+                    error=None,
+                ),
+                ReducerWatermark(
+                    site_id=partially_purged_site_id,
+                    plan="standard",
+                    day=partially_purged_day,
+                    reducer_version="rollups-v1",
+                    status="success",
+                    raw_report_count=1,
+                    dp_window_count=1,
+                    breakdown_rollup_count=1,
+                    reduced_at=partially_purged_reduced_at,
+                    raw_purged_at=partially_purged_reduced_at + timedelta(days=1),
+                    error=None,
+                ),
+            ]
+        )
+        await session.commit()
+
+    async with async_session_factory() as session:
+        catchup_days = await unreduced_recent_raw_days(session, days=7)
+
+    assert missing_day in catchup_days
+    assert late_day in catchup_days
+    assert reduced_day not in catchup_days
+    assert partially_purged_day not in catchup_days
+
+
+@pytest.mark.asyncio
 async def test_raw_purge_skips_watermark_when_site_plan_changed(client):
     site_id = "site-purge-plan-change"
     day = date(2026, 5, 11)
@@ -3319,7 +3481,13 @@ async def test_reducer_uses_revenue_payload_value_for_live_events(client):
 
     aggregate_resp = client.get(
         "/api/aggregate",
-        params={"site_id": site_id, "metric": "revenue", "window": "standard"},
+        params={
+            "site_id": site_id,
+            "metric": "revenue",
+            "window": "standard",
+            "start": base.date().isoformat(),
+            "end": base.date().isoformat(),
+        },
     )
     assert aggregate_resp.status_code == 200
     total = sum(row["value"] for row in aggregate_resp.json()["windows"])
@@ -3473,6 +3641,8 @@ async def test_hostname_filter_scopes_free_aggregate_and_breakdown(client):
                     "metric": "uniques",
                     "window": "standard",
                     "hostname": "app.neurotypicaltranslator.com",
+                    "start": "2026-04-20",
+                    "end": "2026-04-20",
                 },
             )
             assert uniques_resp.status_code == 200

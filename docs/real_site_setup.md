@@ -90,6 +90,7 @@ Set these environment variables on the backend service:
 - `ENABLE_PROD_SCHEDULER=false` on the API service when a separate worker is deployed
 - `PROD_SCHEDULER_HOUR_UTC=2`
 - `PROD_REDUCER_INTERVAL_MINUTES=60` (hourly reducer cadence)
+- `PROD_REDUCER_LOOKBACK_DAYS=7` (recent-day catch-up scan for raw days missing a successful reducer watermark)
 - Worker service: `VALID_PROCESS_TYPE=worker`
 
 Optional tuning:

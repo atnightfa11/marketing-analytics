@@ -46,8 +46,10 @@ This checklist reflects what is live in production and what remains before broad
 - [x] `COLLECT_ENDPOINT_TOKEN`
 - [x] `SESSION_HMAC_SECRET`
 - [x] `AGGREGATE_DP_NOISE_SECRET`
-- [x] `ENABLE_PROD_SCHEDULER=true`
+- [x] `ENABLE_PROD_SCHEDULER=false` on the API when the separate worker service is deployed
+- [x] `VALID_PROCESS_TYPE=worker` on the worker service
 - [x] `PROD_REDUCER_INTERVAL_MINUTES=60` (or desired hourly cadence)
+- [x] `PROD_REDUCER_LOOKBACK_DAYS=7` (recent-day catch-up scan for missing reducer watermarks)
 - [x] `PROD_SCHEDULER_HOUR_UTC`
 - [x] `STRIPE_SECRET_KEY` (live)
 - [x] `STRIPE_WEBHOOK_SECRET`

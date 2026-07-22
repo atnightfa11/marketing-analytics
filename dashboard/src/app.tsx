@@ -3377,9 +3377,6 @@ const Overview: React.FC = () => {
                     <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
                       Notes
                     </div>
-                    <div className="mt-0.5 text-[11px] text-[#6B7280]" style={fontBody}>
-                      {formatShortDate(activeNoteMarkerDay)}
-                    </div>
                   </div>
                   {selectedNoteMarkerDay && (
                     <button
@@ -3396,29 +3393,37 @@ const Overview: React.FC = () => {
                   )}
                 </div>
                 <div className="mt-2 space-y-2">
-                  {activeMarkerNotes.map((note) => (
-                    <div key={note.id} className="border-t border-[#EEF2F7] pt-2 first:border-t-0 first:pt-0">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]" style={fontMeta}>
-                            {formatShortDate(note.day)}
-                            {note.metric ? ` · ${formatNoteMetric(note.metric)}` : ""}
+                  {activeMarkerNotes.map((note) => {
+                    const noteContext =
+                      note.day !== activeNoteMarkerDay
+                        ? [formatShortDate(note.day), note.metric ? formatNoteMetric(note.metric) : null]
+                        : [note.metric ? formatNoteMetric(note.metric) : null];
+                    const noteContextText = noteContext.filter(Boolean).join(" · ");
+                    return (
+                      <div key={note.id} className="border-t border-[#EEF2F7] pt-2 first:border-t-0 first:pt-0">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            {noteContextText && (
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9CA3AF]" style={fontMeta}>
+                                {noteContextText}
+                              </div>
+                            )}
+                            <div className={noteContextText ? "mt-1 text-[12px] leading-5 text-[#374151]" : "text-[12px] leading-5 text-[#374151]"} style={fontBody}>
+                              {note.body}
+                            </div>
                           </div>
-                          <div className="mt-1 text-[12px] leading-5 text-[#374151]" style={fontBody}>
-                            {note.body}
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteNote(note)}
+                            className="shrink-0 rounded-full p-0.5 text-[#B7C0CC] transition-colors hover:bg-[#EEF2F7] hover:text-[#8B2635]"
+                            aria-label={`Delete note from ${note.day}`}
+                          >
+                            <CloseIcon />
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteNote(note)}
-                          className="shrink-0 rounded-full p-0.5 text-[#B7C0CC] transition-colors hover:bg-[#EEF2F7] hover:text-[#8B2635]"
-                          aria-label={`Delete note from ${note.day}`}
-                        >
-                          <CloseIcon />
-                        </button>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
