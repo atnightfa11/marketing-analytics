@@ -4782,9 +4782,9 @@ async def test_insights_identify_source_driver_for_metric_decline(client):
     assert body["insights"]
     first = body["insights"][0]
     assert first["type"] == "change_driver"
-    assert first["label"] == "Traffic source"
+    assert first["label"] == "Channel"
     assert first["driver"] == "Direct"
-    assert "Direct explains most" in first["text"]
+    assert "Direct accounted for" in first["text"]
 
 
 @pytest.mark.asyncio
@@ -4877,6 +4877,15 @@ async def test_insights_warn_when_metric_spike_is_aggregate_only(client):
                         ci95_high=1000.0,
                     )
                 )
+                session.add(
+                    DashboardNote(
+                        site_id=site_id,
+                        day=spike_day,
+                        body="Manual aggregate recovery from GA4 after the database capacity incident.",
+                        metric=None,
+                        created_by=owner,
+                    )
+                )
         await session.commit()
 
     response = client.get(
@@ -4895,6 +4904,96 @@ async def test_insights_warn_when_metric_spike_is_aggregate_only(client):
     attribution = next((item for item in insights if item["type"] == "attribution_limited"), None)
     assert attribution is not None
     assert "aggregate KPI data without matching" in attribution["text"]
+    note = next((item for item in insights if item["type"] == "annotation"), None)
+    assert note is not None
+    assert "Manual aggregate recovery" in note["text"]
+
+
+@pytest.mark.asyncio
+async def test_insights_do_not_emit_generic_filler_for_quiet_period(client):
+    site_id = "insight-quiet-site"
+    owner = "insight-quiet-owner"
+    current_start = date(2026, 7, 8)
+    current_end = date(2026, 7, 14)
+    previous_start = date(2026, 7, 1)
+    previous_end = date(2026, 7, 7)
+
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="insight-quiet-owner@example.com",
+                password_hash="hash",
+            )
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username=owner,
+                site_name="Insight Quiet Site",
+                allowed_origin="https://quiet.example.com",
+            )
+        )
+        session.add(SitePlan(site_id=site_id, plan="free"))
+        for offset in range(7):
+            for day in (previous_start + timedelta(days=offset), current_start + timedelta(days=offset)):
+                window_start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+                session.add(
+                    DpWindow(
+                        site_id=site_id,
+                        plan="free",
+                        window_start=window_start,
+                        window_end=window_start + timedelta(days=1),
+                        metric="sessions",
+                        value=100.0,
+                        variance=100.0,
+                        ci80_low=100.0,
+                        ci80_high=100.0,
+                        ci95_low=100.0,
+                        ci95_high=100.0,
+                    )
+                )
+                session.add(
+                    ReducerWatermark(
+                        site_id=site_id,
+                        plan="free",
+                        day=day,
+                        reducer_version=REDUCER_VERSION,
+                        status="success",
+                        raw_report_count=10,
+                        dp_window_count=1,
+                        breakdown_rollup_count=1,
+                        reduced_at=window_start,
+                    )
+                )
+                session.add(
+                    BreakdownRollup(
+                        site_id=site_id,
+                        plan="free",
+                        day=day,
+                        dimension="sources",
+                        hostname="",
+                        day_type="all",
+                        label="Direct",
+                        metric="sessions",
+                        value=100.0,
+                    )
+                )
+        await session.commit()
+
+    response = client.get(
+        "/api/insights",
+        params={
+            "site_id": site_id,
+            "metric": "sessions",
+            "start": current_start.isoformat(),
+            "end": current_end.isoformat(),
+            "compare_start": previous_start.isoformat(),
+            "compare_end": previous_end.isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["insights"] == []
 
 
 @pytest.mark.asyncio

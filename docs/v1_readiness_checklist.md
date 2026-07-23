@@ -31,6 +31,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Wire Stripe checkout for Solo, Standard, and optional Early Adopter Standard prices.
 - [ ] Update Stripe/account billing for $5/additional Standard sites after gates are verified.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
+- [ ] Verify production Postgres backups/PITR and run a restore drill into staging. Aggregate tables are the durable source of truth after raw purge.
 - [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
 - [ ] Keep Pro/Enterprise local-DP claims hidden until the Pro path is enabled, tested, and supported commercially.
 - [ ] Run a full launch smoke in production from clean browser:

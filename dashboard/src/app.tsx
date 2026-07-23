@@ -746,6 +746,7 @@ const Overview: React.FC = () => {
   const [kpiError, setKpiError] = useState<string | null>(null);
   const [metricAnomalies, setMetricAnomalies] = useState<Record<string, boolean>>({});
   const [remoteInsights, setRemoteInsights] = useState<InsightItem[]>([]);
+  const [remoteInsightsStatus, setRemoteInsightsStatus] = useState<"fallback" | "loading" | "loaded" | "error">("fallback");
   const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>(() => createEmptyBreakdownMap());
   const [breakdownErrors, setBreakdownErrors] = useState<BreakdownErrorMap>({});
   const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
@@ -1695,9 +1696,11 @@ const Overview: React.FC = () => {
       activeFilters.length > 0
     ) {
       setRemoteInsights([]);
+      setRemoteInsightsStatus("fallback");
       return;
     }
     let cancelled = false;
+    setRemoteInsightsStatus("loading");
     fetchInsights(
       token ?? undefined,
       siteId,
@@ -1708,11 +1711,15 @@ const Overview: React.FC = () => {
       insightComparisonBounds?.end
     )
       .then((response) => {
-        if (!cancelled) setRemoteInsights(response.insights ?? []);
+        if (!cancelled) {
+          setRemoteInsights(response.insights ?? []);
+          setRemoteInsightsStatus("loaded");
+        }
       })
       .catch((error) => {
         if (!cancelled) {
           setRemoteInsights([]);
+          setRemoteInsightsStatus("error");
           console.error(error);
         }
       });
@@ -2661,10 +2668,10 @@ const Overview: React.FC = () => {
   ]);
   const insightItems = useMemo(
     () =>
-      remoteInsights.length > 0
+      remoteInsightsStatus === "loaded"
         ? remoteInsights.map((item) => ({ label: item.label, text: item.text }))
         : fallbackInsightItems,
-    [remoteInsights, fallbackInsightItems]
+    [remoteInsightsStatus, remoteInsights, fallbackInsightItems]
   );
   const dashboardControlClass =
     "h-8 rounded-md border border-[#DDE4EC] bg-white px-3 text-xs font-medium text-[#424A57] shadow-sm outline-none transition-colors hover:border-[#C7D0DC] focus:border-[#5b55ff]";
@@ -3721,23 +3728,25 @@ const Overview: React.FC = () => {
             </div>
           </div>
         </section>
-        <section>
-          <SectionLabel>Insights</SectionLabel>
-          <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
-            <div className="space-y-4">
-              {insightItems.map((item) => (
-                <div key={`${item.label}:${item.text}`} className="border-l-2 border-[#6B63FF] pl-3">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
-                    {item.label}
+        {insightItems.length > 0 ? (
+          <section>
+            <SectionLabel>Insights</SectionLabel>
+            <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+              <div className="space-y-4">
+                {insightItems.map((item) => (
+                  <div key={`${item.label}:${item.text}`} className="border-l-2 border-[#6B63FF] pl-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
+                      {item.label}
+                    </div>
+                    <div className="mt-1 text-[13px] leading-relaxed text-[#374151]" style={fontBody}>
+                      {item.text}
+                    </div>
                   </div>
-                  <div className="mt-1 text-[13px] leading-relaxed text-[#374151]" style={fontBody}>
-                    {item.text}
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
 
         <section>
           <SectionLabel>Breakdowns</SectionLabel>

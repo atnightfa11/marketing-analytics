@@ -109,6 +109,16 @@ Quality notes:
 - Forecast accuracy is based on count-domain backtesting after any model transform. The dashboard should display an accuracy percentage only when recent backtests are within a useful range; otherwise it should show a building/unstable state.
 - Dashboard notes are customer-authored annotations for business context. They do not change aggregate metrics, forecasts, or reducer output.
 
+## Insights
+
+Insights are deterministic summaries derived from the selected KPI period, its comparison period, and reduced aggregate breakdowns.
+
+- Valid only states a driver when one channel, source, page, device, country, or goal-completion type clears contribution and volume thresholds.
+- Source rows are also grouped into channel-level evidence so a category such as Organic Search can explain a change even when no single source is dominant.
+- If aggregate KPI rows exist for days where matching breakdown rollups are missing, Valid returns an attribution-limited insight instead of ranking incomplete drivers.
+- Chart notes can appear as context when they overlap a highlighted period, but notes do not change the analytics totals or the driver calculation.
+- If no useful driver or material change is present, `/api/insights` may return an empty list. The dashboard should not replace that with generic filler copy.
+
 ## Privacy/data handling summary
 
 - No cookies required.

@@ -1,6 +1,25 @@
 # Backup, Restore, and Incident Basics
 
-## Backup procedure
+## Backup requirement
+
+After `raw_reports` purge, aggregate tables are the durable customer history. Losing `dp_windows` or `breakdown_rollups` means losing customer analytics history, even if privacy-sensitive raw processing rows are gone.
+
+For launch, keep Postgres on Railway unless there is a separate reliability or compliance reason to move. The required work is:
+
+1. Confirm Railway Postgres volume backups are enabled for production.
+2. Enable Railway Postgres point-in-time recovery if available for the production database.
+3. Confirm the backup/PITR retention windows and document them separately from raw-report primary retention.
+4. Run a restore drill into a separate staging database before broad paid launch.
+5. Keep manual logical backups available for incidents where a point-in-time restore is not enough or a local audit copy is needed.
+
+Current Railway references:
+
+- Railway volume backups can be scheduled daily, weekly, or monthly and restored from the service Backups tab.
+- Railway Postgres point-in-time recovery restores into a new sibling Postgres service at a selected timestamp inside the archive window.
+
+You do not need a second live production database solely for this requirement.
+
+## Manual logical backup
 
 Daily Postgres logical backup:
 

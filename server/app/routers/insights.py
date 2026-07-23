@@ -12,7 +12,7 @@ from .. import breakdown_logic
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..entitlements import enforce_aggregate_retention
-from ..models import BreakdownRollup, DashboardSite, DpWindow, RawReport, ReducerWatermark, get_session
+from ..models import BreakdownRollup, DashboardNote, DashboardSite, DpWindow, RawReport, ReducerWatermark, get_session
 from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import InsightItem, InsightsResponse
 
@@ -20,9 +20,11 @@ router = APIRouter(tags=["metrics"])
 
 Metric = Literal["pageviews", "uniques", "sessions", "conversions", "revenue"]
 Dimension = Literal["sources", "pages", "devices", "countries", "conversions"]
+InsightDimension = Literal["channels", "sources", "pages", "devices", "countries", "conversions"]
 
 METRICS: tuple[Metric, ...] = ("pageviews", "uniques", "sessions", "conversions", "revenue")
-INSIGHT_DIMENSIONS: tuple[Dimension, ...] = ("sources", "pages", "devices", "countries", "conversions")
+STORED_INSIGHT_DIMENSIONS: tuple[Dimension, ...] = ("sources", "pages", "devices", "countries", "conversions")
+INSIGHT_DIMENSIONS: tuple[InsightDimension, ...] = ("channels", "sources", "pages", "devices", "countries", "conversions")
 DEFAULT_DAYS = 30
 MAX_DAYS = 180
 MAX_INSIGHTS = 5
@@ -51,6 +53,7 @@ METRIC_LABELS = {
     "revenue": "Revenue",
 }
 DIMENSION_LABELS = {
+    "channels": "Channel",
     "sources": "Traffic source",
     "pages": "Page",
     "devices": "Device",
@@ -58,11 +61,47 @@ DIMENSION_LABELS = {
     "conversions": "Goal completion",
 }
 DIMENSION_PHRASES = {
+    "channels": "channel",
     "sources": "traffic source",
     "pages": "page",
     "devices": "device type",
     "countries": "country",
     "conversions": "goal completion type",
+}
+
+SEARCH_SOURCE_SET = {
+    "google",
+    "google.com",
+    "bing",
+    "bing.com",
+    "duckduckgo",
+    "duckduckgo.com",
+    "yahoo",
+    "yahoo.com",
+    "ecosia",
+    "ecosia.org",
+    "search.brave.com",
+    "baidu.com",
+    "yandex.com",
+}
+SOCIAL_SOURCE_SET = {
+    "reddit",
+    "reddit.com",
+    "x",
+    "x.com",
+    "t.co",
+    "linkedin",
+    "linkedin.com",
+    "facebook",
+    "facebook.com",
+    "instagram",
+    "instagram.com",
+    "youtube",
+    "youtube.com",
+    "tiktok",
+    "tiktok.com",
+    "threads.net",
+    "pinterest.com",
 }
 
 
@@ -156,6 +195,49 @@ def _format_day_ranges(days: list[dt.date]) -> str:
 
 def _metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " ").title())
+
+
+def _metric_keys_for_dimension(dimension: InsightDimension) -> tuple[str, ...]:
+    if dimension == "channels":
+        return breakdown_logic.BREAKDOWN_METRIC_ORDER["sources"]
+    return breakdown_logic.BREAKDOWN_METRIC_ORDER[dimension]
+
+
+def _primary_metric_for_dimension(dimension: InsightDimension) -> str:
+    if dimension == "channels":
+        return breakdown_logic.BREAKDOWN_PRIMARY_METRIC["sources"]
+    return breakdown_logic.BREAKDOWN_PRIMARY_METRIC[dimension]
+
+
+def _classify_channel_label(label: str) -> str:
+    normalized = label.strip().lower()
+    if not normalized or normalized in {"unknown", "referral"}:
+        return "Referral"
+    if normalized == "direct":
+        return "Direct"
+    if normalized == "organic":
+        return "Organic Search"
+    if normalized == "social":
+        return "Organic Social"
+    if normalized == "email":
+        return "Email"
+    is_paid = any(token in normalized for token in ("paid", "cpc", "ppc", "adwords", "sponsored", "campaign"))
+    if is_paid and normalized in SOCIAL_SOURCE_SET:
+        return "Paid Social"
+    if is_paid:
+        return "Paid Search"
+    if normalized in SOCIAL_SOURCE_SET:
+        return "Organic Social"
+    if normalized in SEARCH_SOURCE_SET:
+        return "Organic Search"
+    return "Referral"
+
+
+def _clip_note_body(body: str, limit: int = 160) -> str:
+    cleaned = " ".join(body.strip().split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[: limit - 1].rstrip()}..."
 
 
 def _blank_bucket(dimension: Dimension) -> dict[str, float]:
@@ -261,7 +343,11 @@ async def _aggregate_only_days(
     metric: Metric,
     daily_totals: dict[dt.date, float],
 ) -> list[dt.date]:
-    dimensions = [dimension for dimension in INSIGHT_DIMENSIONS if metric in breakdown_logic.BREAKDOWN_METRIC_ORDER[dimension]]
+    dimensions = [
+        dimension
+        for dimension in STORED_INSIGHT_DIMENSIONS
+        if metric in breakdown_logic.BREAKDOWN_METRIC_ORDER[dimension]
+    ]
     if not dimensions:
         return []
     active_days = [day for day, value in daily_totals.items() if value >= MIN_ROW_DELTA.get(metric, 1.0)]
@@ -296,12 +382,28 @@ async def _dimension_buckets(
     session: AsyncSession,
     site_id: str,
     plan: str,
-    dimension: Dimension,
+    dimension: InsightDimension,
     start_day: dt.date,
     end_day: dt.date,
 ) -> dict[str, dict[str, float]]:
     if plan == "pro":
         return {}
+    if dimension == "channels":
+        source_buckets = await _dimension_buckets(
+            session=session,
+            site_id=site_id,
+            plan=plan,
+            dimension="sources",
+            start_day=start_day,
+            end_day=end_day,
+        )
+        channel_buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: _blank_bucket("sources"))
+        metric_keys = breakdown_logic.BREAKDOWN_METRIC_ORDER["sources"]
+        for source_label, metrics in source_buckets.items():
+            channel = _classify_channel_label(source_label)
+            for metric in metric_keys:
+                channel_buckets[channel][metric] += metrics.get(metric, 0.0)
+        return dict(channel_buckets)
 
     all_days = set(_enumerate_days(start_day, end_day))
     reduced_days = await _successful_reduced_days(
@@ -359,14 +461,14 @@ async def _dimension_buckets(
 def _best_dimension_driver(
     *,
     selected_metric: Metric,
-    dimension: Dimension,
+    dimension: InsightDimension,
     current_totals: dict[str, float],
     previous_totals: dict[str, float],
     current_buckets: dict[str, dict[str, float]],
     previous_buckets: dict[str, dict[str, float]],
 ) -> InsightItem | None:
-    metric_keys = breakdown_logic.BREAKDOWN_METRIC_ORDER[dimension]
-    metric = selected_metric if selected_metric in metric_keys else breakdown_logic.BREAKDOWN_PRIMARY_METRIC[dimension]
+    metric_keys = _metric_keys_for_dimension(dimension)
+    metric = selected_metric if selected_metric in metric_keys else _primary_metric_for_dimension(dimension)
     current_total = current_totals.get(metric, 0.0)
     previous_total = previous_totals.get(metric, 0.0)
     total_delta = current_total - previous_total
@@ -409,15 +511,15 @@ def _best_dimension_driver(
     row_change_word = "added" if row_delta > 0 else "lost"
     effect_word = "lift" if total_delta > 0 else "decline"
     severity: Literal["info", "warning", "success"] = "success" if total_delta > 0 else "warning"
+    change = _format_percent(abs(total_delta / previous_total)) if previous_total > 0 else _format_value(metric, abs(total_delta))
     return InsightItem(
         type="change_driver",
         severity=severity,
         label=DIMENSION_LABELS[dimension],
         text=(
-            f"{label} explains most of the {metric_label.lower()} {effect_word}. "
-            f"{metric_label} are {total_change_word} {_format_percent(abs(total_delta / previous_total)) if previous_total > 0 else _format_value(metric, abs(total_delta))} "
-            f"vs the prior period; this {DIMENSION_PHRASES[dimension]} {row_change_word} "
-            f"{_format_value(metric, abs(row_delta))}, explaining {_format_percent(contribution_share)} of the change."
+            f"{label} accounted for {_format_percent(contribution_share)} of the {metric_label.lower()} {effect_word}. "
+            f"{metric_label} are {total_change_word} {change} vs the prior period; this "
+            f"{DIMENSION_PHRASES[dimension]} {row_change_word} {_format_value(metric, abs(row_delta))}."
         ),
         metric=metric,
         dimension=dimension,
@@ -468,9 +570,10 @@ def _aggregate_only_insight(
     current_totals: dict[str, float],
     previous_totals: dict[str, float],
     current_daily: dict[dt.date, float],
-    aggregate_only_days: list[dt.date],
+    current_aggregate_only_days: list[dt.date],
+    previous_aggregate_only_days: list[dt.date],
 ) -> InsightItem | None:
-    if not aggregate_only_days:
+    if not current_aggregate_only_days and not previous_aggregate_only_days:
         return None
     current_value = current_totals.get(metric, 0.0)
     previous_value = previous_totals.get(metric, 0.0)
@@ -479,31 +582,76 @@ def _aggregate_only_insight(
         return None
     if previous_value > 0 and abs(total_delta / previous_value) < MIN_RELATIVE_CHANGE:
         return None
-    aggregate_only_total = sum(current_daily.get(day, 0.0) for day in aggregate_only_days)
+    aggregate_only_total = sum(current_daily.get(day, 0.0) for day in current_aggregate_only_days)
     if aggregate_only_total < max(MIN_ROW_DELTA.get(metric, 5.0), abs(total_delta) * 0.25):
-        return None
+        if not previous_aggregate_only_days:
+            return None
     metric_label = _metric_label(metric)
     direction = "up" if total_delta >= 0 else "down"
     change = _format_percent(abs(total_delta / previous_value)) if previous_value > 0 else _format_value(metric, abs(total_delta))
     share = min(1.0, aggregate_only_total / max(abs(total_delta), 1.0))
+    if current_aggregate_only_days:
+        period_phrase = (
+            f"with a large part of the current period concentrated on {_format_day_ranges(current_aggregate_only_days)}"
+        )
+    else:
+        period_phrase = f"and the comparison period has aggregate-only days on {_format_day_ranges(previous_aggregate_only_days)}"
     return InsightItem(
         type="attribution_limited",
         severity="warning",
         label="Attribution",
         text=(
-            f"{metric_label} are {direction} {change} vs the prior period, with a large part of the change concentrated on "
-            f"{_format_day_ranges(aggregate_only_days)}. Those days currently have aggregate KPI data without matching "
-            "source/page/device breakdowns, so Valid cannot honestly attribute the spike yet."
+            f"{metric_label} are {direction} {change} vs the prior period, {period_phrase}. "
+            "Those days have aggregate KPI data without matching breakdowns, so Valid can show the change but not attribute it."
         ),
         metric=metric,
         contribution_share=share,
     )
 
 
-def _status_insight(metric: Metric, current_totals: dict[str, float], previous_totals: dict[str, float]) -> InsightItem:
+async def _note_context_insight(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    metric: Metric,
+    start_day: dt.date,
+    end_day: dt.date,
+    highlighted_days: list[dt.date],
+) -> InsightItem | None:
+    stmt = (
+        select(DashboardNote)
+        .where(
+            DashboardNote.site_id == site_id,
+            DashboardNote.day >= start_day,
+            DashboardNote.day <= end_day,
+        )
+        .order_by(DashboardNote.day.desc(), DashboardNote.created_at.desc())
+        .limit(25)
+    )
+    notes = (await session.execute(stmt)).scalars().all()
+    relevant_notes = [note for note in notes if note.metric in (None, metric)]
+    if highlighted_days:
+        highlighted = set(highlighted_days)
+        relevant_notes = [note for note in relevant_notes if note.day in highlighted]
+    if not relevant_notes:
+        return None
+    note = relevant_notes[0]
+    return InsightItem(
+        type="annotation",
+        severity="info",
+        label="Note",
+        text=f"{_format_day(note.day)} note: {_clip_note_body(note.body)}",
+        metric=metric,
+    )
+
+
+def _metric_change_insight(metric: Metric, current_totals: dict[str, float], previous_totals: dict[str, float]) -> InsightItem | None:
     current_value = current_totals.get(metric, 0.0)
     previous_value = previous_totals.get(metric, 0.0)
     metric_label = _metric_label(metric)
+    total_baseline = max(current_value, previous_value)
+    if total_baseline < MIN_TOTAL_VOLUME.get(metric, 10.0):
+        return None
     if previous_value > 0:
         delta_pct = (current_value - previous_value) / previous_value
         if abs(delta_pct) >= MIN_RELATIVE_CHANGE:
@@ -512,16 +660,11 @@ def _status_insight(metric: Metric, current_totals: dict[str, float], previous_t
                 label="Trend",
                 text=(
                     f"{metric_label} are {'up' if delta_pct >= 0 else 'down'} {_format_percent(abs(delta_pct))} "
-                    "vs the prior period. No single breakdown explains enough of the change yet."
+                    "vs the prior period."
                 ),
                 metric=metric,
             )
-    return InsightItem(
-        type="status",
-        label="Status",
-        text=f"No clear driver stands out for {metric_label.lower()} in this period yet.",
-        metric=metric,
-    )
+    return None
 
 
 @router.get("/insights", response_model=InsightsResponse)
@@ -577,52 +720,87 @@ async def insights(
         metric=selected_metric,
         daily_totals=current_daily,
     )
+    previous_daily = await _daily_metric_totals(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        metric=selected_metric,
+        start_day=compare_start_day,
+        end_day=compare_end_day,
+    )
+    previous_aggregate_only = await _aggregate_only_days(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        metric=selected_metric,
+        daily_totals=previous_daily,
+    )
 
     insights_out: list[InsightItem] = []
-    for dimension in INSIGHT_DIMENSIONS:
-        current_buckets = await _dimension_buckets(
-            session=session,
-            site_id=site_id,
-            plan=plan,
-            dimension=dimension,
-            start_day=start_day,
-            end_day=end_day,
-        )
-        previous_buckets = await _dimension_buckets(
-            session=session,
-            site_id=site_id,
-            plan=plan,
-            dimension=dimension,
-            start_day=compare_start_day,
-            end_day=compare_end_day,
-        )
-        insight = _best_dimension_driver(
-            selected_metric=selected_metric,
-            dimension=dimension,
-            current_totals=current_totals,
-            previous_totals=previous_totals,
-            current_buckets=current_buckets,
-            previous_buckets=previous_buckets,
-        )
-        if insight is not None:
-            insights_out.append(insight)
-
-    conversion_rate = _conversion_rate_insight(current_totals, previous_totals)
-    if conversion_rate is not None:
-        insights_out.append(conversion_rate)
     limited_attribution = _aggregate_only_insight(
         metric=selected_metric,
         current_totals=current_totals,
         previous_totals=previous_totals,
         current_daily=current_daily,
-        aggregate_only_days=aggregate_only,
+        current_aggregate_only_days=aggregate_only,
+        previous_aggregate_only_days=previous_aggregate_only,
     )
     if limited_attribution is not None:
         insights_out.append(limited_attribution)
+    else:
+        seen_driver_keys: set[tuple[str | None, str | None]] = set()
+        for dimension in INSIGHT_DIMENSIONS:
+            current_buckets = await _dimension_buckets(
+                session=session,
+                site_id=site_id,
+                plan=plan,
+                dimension=dimension,
+                start_day=start_day,
+                end_day=end_day,
+            )
+            previous_buckets = await _dimension_buckets(
+                session=session,
+                site_id=site_id,
+                plan=plan,
+                dimension=dimension,
+                start_day=compare_start_day,
+                end_day=compare_end_day,
+            )
+            insight = _best_dimension_driver(
+                selected_metric=selected_metric,
+                dimension=dimension,
+                current_totals=current_totals,
+                previous_totals=previous_totals,
+                current_buckets=current_buckets,
+                previous_buckets=previous_buckets,
+            )
+            if insight is not None:
+                driver_key = (insight.metric, insight.driver)
+                if driver_key in seen_driver_keys:
+                    continue
+                seen_driver_keys.add(driver_key)
+                insights_out.append(insight)
+
+        conversion_rate = _conversion_rate_insight(current_totals, previous_totals)
+        if conversion_rate is not None:
+            insights_out.append(conversion_rate)
+
+    note_context = await _note_context_insight(
+        session=session,
+        site_id=site_id,
+        metric=selected_metric,
+        start_day=start_day,
+        end_day=end_day,
+        highlighted_days=aggregate_only,
+    )
+    if note_context is not None:
+        insights_out.append(note_context)
 
     insights_out.sort(key=lambda item: (-(item.contribution_share or 0.0), 0 if item.severity == "warning" else 1))
     if not insights_out:
-        insights_out.append(_status_insight(selected_metric, current_totals, previous_totals))
+        metric_change = _metric_change_insight(selected_metric, current_totals, previous_totals)
+        if metric_change is not None:
+            insights_out.append(metric_change)
 
     return InsightsResponse(
         site_id=site_id,

@@ -32,6 +32,7 @@ This contract defines what each analytics table is allowed to contain and how it
 - Sparse breakdown output remains threshold-gated before response.
 - Historical import rows are aggregate-only and excluded from dimension rollups.
 - Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
+- Insight endpoints may use `dp_windows`, `breakdown_rollups`, and dashboard notes. If KPI aggregates exist without matching breakdown coverage for the selected period, Insights must say attribution is limited instead of inventing a driver from incomplete data.
 - Dashboard notes are displayed as annotations only. They must not alter KPI aggregates, breakdown rollups, forecasts, or anomaly scoring.
 - Site goals are displayed as pacing targets only. They must not alter KPI aggregates, breakdown rollups, forecasts, anomaly scoring, or import reduction.
 
@@ -56,3 +57,9 @@ Current breakdown outputs use aggregation and suppression thresholds. They shoul
 5. The site's current plan still matches the watermark plan.
 
 This prevents late-arriving rows from being deleted before a later reducer pass can include them.
+
+## Backup Boundary
+
+After raw purge, `dp_windows`, `breakdown_rollups`, `reducer_watermarks`, `forecasts`, `historical_import_batches`, dashboard notes, site goals, and access/billing records are the durable source of truth. They must be covered by database backups before broad commercial launch.
+
+Backup retention is separate from primary-table raw retention. Backups may contain rows that have already been purged from the primary database, so privacy language must describe the backup retention window and limit backup restores to operational recovery.
