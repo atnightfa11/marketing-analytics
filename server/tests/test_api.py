@@ -55,7 +55,7 @@ from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import STANDARD_ID_VERSION, _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
-from app.scheduler.nightly_reduce import purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
+from app.scheduler.nightly_reduce import REDUCER_VERSION, purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
@@ -4685,6 +4685,106 @@ async def test_site_settings_update_claims_unclaimed_site_for_authed_user(client
             dashboard_auth_settings.DASHBOARD_SITE_ACCESS_JSON,
             dashboard_auth_settings.DASHBOARD_ALLOW_UNCLAIMED_SITES,
         ) = original
+
+
+@pytest.mark.asyncio
+async def test_insights_identify_source_driver_for_metric_decline(client):
+    site_id = "insight-driver-site"
+    owner = "insight-owner"
+    current_start = date(2026, 7, 8)
+    current_end = date(2026, 7, 14)
+    previous_start = date(2026, 7, 1)
+    previous_end = date(2026, 7, 7)
+
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="insight-owner@example.com",
+                password_hash="hash",
+            )
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username=owner,
+                site_name="Insight Driver Site",
+                allowed_origin="https://insights.example.com",
+            )
+        )
+        session.add(SitePlan(site_id=site_id, plan="free"))
+        for offset in range(7):
+            current_day = current_start + timedelta(days=offset)
+            previous_day = previous_start + timedelta(days=offset)
+            for day, total_sessions, direct_sessions, organic_sessions in (
+                (previous_day, 20.0, 17.0, 3.0),
+                (current_day, 10.0, 5.0, 5.0),
+            ):
+                window_start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+                session.add(
+                    DpWindow(
+                        site_id=site_id,
+                        plan="free",
+                        window_start=window_start,
+                        window_end=window_start + timedelta(days=1),
+                        metric="sessions",
+                        value=total_sessions,
+                        variance=max(1.0, total_sessions),
+                        ci80_low=total_sessions,
+                        ci80_high=total_sessions,
+                        ci95_low=total_sessions,
+                        ci95_high=total_sessions,
+                    )
+                )
+                session.add(
+                    ReducerWatermark(
+                        site_id=site_id,
+                        plan="free",
+                        day=day,
+                        reducer_version=REDUCER_VERSION,
+                        status="success",
+                        raw_report_count=10,
+                        dp_window_count=1,
+                        breakdown_rollup_count=2,
+                        reduced_at=window_start,
+                    )
+                )
+                for label, value in (("Direct", direct_sessions), ("Organic Search", organic_sessions)):
+                    session.add(
+                        BreakdownRollup(
+                            site_id=site_id,
+                            plan="free",
+                            day=day,
+                            dimension="sources",
+                            hostname="",
+                            day_type="all",
+                            label=label,
+                            metric="sessions",
+                            value=value,
+                        )
+                    )
+        await session.commit()
+
+    response = client.get(
+        "/api/insights",
+        params={
+            "site_id": site_id,
+            "metric": "sessions",
+            "start": current_start.isoformat(),
+            "end": current_end.isoformat(),
+            "compare_start": previous_start.isoformat(),
+            "compare_end": previous_end.isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["metric"] == "sessions"
+    assert body["insights"]
+    first = body["insights"][0]
+    assert first["type"] == "change_driver"
+    assert first["label"] == "Traffic source"
+    assert first["driver"] == "Direct"
+    assert "Direct explains most" in first["text"]
 
 
 @pytest.mark.asyncio

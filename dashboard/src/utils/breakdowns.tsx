@@ -70,7 +70,7 @@ const breakdownFallbackDimensionLabels: Record<string, string> = {
   countries: "Country",
   devices: "Device",
   goals: "Conversion type",
-  "goal events": "Conversion type",
+  "goal completions": "Conversion type",
   "time parting": "Time",
 };
 
@@ -121,6 +121,7 @@ const countryNameFallbacks: Record<string, string> = {
   BS: "Bahamas",
   BZ: "Belize",
   CA: "Canada",
+  CW: "Curacao",
   CH: "Switzerland",
   CL: "Chile",
   CN: "China",
@@ -136,6 +137,8 @@ const countryNameFallbacks: Record<string, string> = {
   FI: "Finland",
   FR: "France",
   GB: "United Kingdom",
+  GF: "French Guiana",
+  GP: "Guadeloupe",
   GR: "Greece",
   GT: "Guatemala",
   HK: "Hong Kong",
@@ -153,6 +156,7 @@ const countryNameFallbacks: Record<string, string> = {
   LT: "Lithuania",
   LU: "Luxembourg",
   LV: "Latvia",
+  MQ: "Martinique",
   MX: "Mexico",
   MY: "Malaysia",
   NL: "Netherlands",
@@ -162,11 +166,14 @@ const countryNameFallbacks: Record<string, string> = {
   PE: "Peru",
   PH: "Philippines",
   PL: "Poland",
+  PR: "Puerto Rico",
   PT: "Portugal",
+  RE: "Reunion",
   RO: "Romania",
   RS: "Serbia",
   SE: "Sweden",
   SG: "Singapore",
+  SX: "Sint Maarten",
   TH: "Thailand",
   TR: "Turkey",
   TW: "Taiwan",
@@ -178,6 +185,17 @@ const countryNameFallbacks: Record<string, string> = {
   ZA: "South Africa",
 };
 
+const countryCodesWithoutReliableEmojiFlag = new Set([
+  "CW",
+  "GF",
+  "GP",
+  "HK",
+  "MQ",
+  "PR",
+  "RE",
+  "SX",
+]);
+
 const getCountryDisplay = (label: string): { flag: string | null; name: string } => {
   const trimmed = label.trim();
   const code =
@@ -185,6 +203,9 @@ const getCountryDisplay = (label: string): { flag: string | null; name: string }
       ? trimmed.toUpperCase()
       : Object.entries(countryNameFallbacks).find(([, name]) => name.toLowerCase() === trimmed.toLowerCase())?.[0] ?? null;
   if (!code) return { flag: null, name: trimmed };
-  const flag = String.fromCodePoint(...[...code].map((char) => 0x1f1e6 + char.charCodeAt(0) - 65));
+  const flag =
+    countryNameFallbacks[code] && !countryCodesWithoutReliableEmojiFlag.has(code)
+      ? String.fromCodePoint(...[...code].map((char) => 0x1f1e6 + char.charCodeAt(0) - 65))
+      : null;
   return { flag, name: countryNameFallbacks[code] ?? code };
 };

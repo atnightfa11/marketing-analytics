@@ -10,6 +10,27 @@ export interface MetricStatistic {
   has_anomaly: boolean;
 }
 
+export interface InsightItem {
+  type: string;
+  severity: "info" | "warning" | "success";
+  label: string;
+  text: string;
+  metric?: string | null;
+  dimension?: string | null;
+  driver?: string | null;
+  contribution_share?: number | null;
+}
+
+export interface InsightsResponse {
+  site_id: string;
+  start: string;
+  end: string;
+  compare_start: string;
+  compare_end: string;
+  metric: string;
+  insights: InsightItem[];
+}
+
 export interface ForecastEntry {
   day: string;
   yhat: number;
@@ -325,6 +346,30 @@ export async function fetchMetrics(token?: string, siteId?: string): Promise<Met
     params: { site_id: resolvedSiteId },
   });
   return response.data.metrics;
+}
+
+export async function fetchInsights(
+  token: string | undefined,
+  siteId: string | undefined,
+  metric: string,
+  start?: string,
+  end?: string,
+  compareStart?: string,
+  compareEnd?: string
+): Promise<InsightsResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.get("/api/insights", {
+    headers: authHeaders(token),
+    params: {
+      site_id: resolvedSiteId,
+      metric,
+      start,
+      end,
+      compare_start: compareStart,
+      compare_end: compareEnd,
+    },
+  });
+  return response.data;
 }
 
 export async function fetchForecast(token: string | undefined, metric: string, siteId?: string): Promise<ForecastResponse> {

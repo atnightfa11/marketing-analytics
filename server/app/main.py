@@ -32,6 +32,7 @@ from .routers import (
     health,
     imports,
     ingest,
+    insights,
     job_status,
     metrics as metrics_router,
     notes,
@@ -277,6 +278,7 @@ app.include_router(ingest.router, prefix="/api")
 app.include_router(metrics_router.router, prefix="/api")
 app.include_router(aggregates.router, prefix="/api")
 app.include_router(breakdowns.router, prefix="/api")
+app.include_router(insights.router, prefix="/api")
 app.include_router(forecast.router, prefix="/api")
 app.include_router(imports.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")

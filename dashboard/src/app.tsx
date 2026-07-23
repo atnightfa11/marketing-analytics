@@ -28,6 +28,7 @@ import {
   fetchDashboardSites,
   fetchDashboardNotes,
   fetchForecast,
+  fetchInsights,
   fetchMetrics,
   fetchImportHistory,
   fetchSiteAlertSettings,
@@ -43,6 +44,7 @@ import {
   HistoricalImportBatch,
   HistoricalImportPreviewResponse,
   importHistoricalCsv,
+  InsightItem,
   deleteSiteIpBlock,
   removeSiteAccess,
   previewHistoricalCsv,
@@ -471,7 +473,7 @@ const breakdownSectionLabels: Record<BreakdownDimension, string> = {
   pages: "Top pages",
   devices: "Devices",
   countries: "Countries",
-  conversions: "Goal events",
+  conversions: "Goal completions",
   hour_of_day: "Hourly arrivals",
   day_of_week: "Day-of-week arrivals",
   hostnames: "Hostnames",
@@ -743,6 +745,7 @@ const Overview: React.FC = () => {
   const [aggregateMap, setAggregateMap] = useState<Record<string, AggregateWindow[]>>({});
   const [kpiError, setKpiError] = useState<string | null>(null);
   const [metricAnomalies, setMetricAnomalies] = useState<Record<string, boolean>>({});
+  const [remoteInsights, setRemoteInsights] = useState<InsightItem[]>([]);
   const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>(() => createEmptyBreakdownMap());
   const [breakdownErrors, setBreakdownErrors] = useState<BreakdownErrorMap>({});
   const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
@@ -1682,6 +1685,53 @@ const Overview: React.FC = () => {
   const comparisonRangeLabel = compareEnabled && comparisonBounds
     ? formatRangeLabel(comparisonBounds.start, comparisonBounds.end)
     : null;
+  const insightComparisonBounds = comparisonBounds ?? previousBounds;
+  useEffect(() => {
+    if (
+      !canQuery ||
+      showSeededBreakdowns ||
+      !primaryRangeBounds ||
+      hostnameFilter ||
+      activeFilters.length > 0
+    ) {
+      setRemoteInsights([]);
+      return;
+    }
+    let cancelled = false;
+    fetchInsights(
+      token ?? undefined,
+      siteId,
+      selectedMetric,
+      primaryRangeBounds.start,
+      primaryRangeBounds.end,
+      insightComparisonBounds?.start,
+      insightComparisonBounds?.end
+    )
+      .then((response) => {
+        if (!cancelled) setRemoteInsights(response.insights ?? []);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRemoteInsights([]);
+          console.error(error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canQuery,
+    showSeededBreakdowns,
+    token,
+    siteId,
+    selectedMetric,
+    primaryRangeBounds?.start,
+    primaryRangeBounds?.end,
+    insightComparisonBounds?.start,
+    insightComparisonBounds?.end,
+    hostnameFilter,
+    activeFilters.length,
+  ]);
   const rangeDomainDays = useMemo(() => {
     if (primaryRangeBounds) return enumerateDays(primaryRangeBounds.start, primaryRangeBounds.end);
     if (dailySelected.length > 0) return dailySelected.map((entry) => entry.day);
@@ -2215,9 +2265,9 @@ const Overview: React.FC = () => {
         totalsByMetric: showSeededBreakdowns ? seededBreakdownTotals : breakdownData.devices.totalsByMetric,
       },
       {
-        title: "Goal events",
+        title: "Goal completions",
         rows: goalRows,
-        empty: "No goal events yet for the selected range.",
+        empty: "No goal completions yet for the selected range.",
         error: showSeededBreakdowns ? null : breakdownErrors.conversions ?? null,
         dimension: "goal",
         primaryMetric: showSeededBreakdowns ? ("conversions" as BreakdownMetricKey) : breakdownData.conversions.primaryMetric,
@@ -2490,18 +2540,31 @@ const Overview: React.FC = () => {
     todayKey <= chartDomainDays[chartDomainDays.length - 1];
   const todayActualValue = actualByDay.get(todayKey) ?? Number.NaN;
   const todayForecastEntry = forecastHorizon.find((entry) => entry.day === todayKey);
-  const todayProjectionValue = Number.isFinite(todayForecastEntry?.yhat ?? Number.NaN)
-    ? (todayForecastEntry?.yhat as number)
-    : todayActualValue;
+  const hasTodayTileActual = Number.isFinite(todayActualValue);
+  const hasTodayProjectionBaseline = Number.isFinite(todayForecastEntry?.yhat ?? Number.NaN);
+  const todayProjectionValue = hasTodayProjectionBaseline ? (todayForecastEntry?.yhat as number) : Number.NaN;
   const todayProgressPct =
     Number.isFinite(todayActualValue) && Number.isFinite(todayProjectionValue) && todayProjectionValue > 0
       ? clamp((todayActualValue / todayProjectionValue) * 100, 0, 999)
       : Number.NaN;
-  const todayProgressNote = Number.isFinite(todayActualValue)
-    ? `${formatMetricValue(selectedMetric, todayActualValue)} so far${
-        Number.isFinite(todayProgressPct) ? ` · ${todayProgressPct.toFixed(0)}% complete` : ""
-      }`
-    : "No same-day actuals yet";
+  const todayActualExceedsProjection =
+    hasTodayTileActual && hasTodayProjectionBaseline && todayActualValue > todayProjectionValue;
+  const todayTileLabel = todayActualExceedsProjection || !hasTodayProjectionBaseline ? "Today so far" : "Projected today";
+  const todayTileValue =
+    todayActualExceedsProjection || !hasTodayProjectionBaseline ? todayActualValue : todayProjectionValue;
+  const todayBaselineProgressText = Number.isFinite(todayProgressPct)
+    ? `${todayProgressPct.toFixed(0)}% of baseline`
+    : "baseline unavailable";
+  const todayProgressNote =
+    hasTodayTileActual && hasTodayProjectionBaseline
+      ? todayActualExceedsProjection
+        ? `${formatMetricValue(selectedMetric, todayProjectionValue)} baseline · ${todayBaselineProgressText}`
+        : `${formatMetricValue(selectedMetric, todayActualValue)} so far · ${todayBaselineProgressText}`
+      : hasTodayTileActual
+        ? `${formatMetricValue(selectedMetric, todayActualValue)} recorded today`
+        : hasTodayProjectionBaseline
+          ? "No same-day actuals yet"
+          : "No same-day data yet";
   const chartSubtitle = [
     currentRangeLabel ?? range,
     lastCompleteActualDay ? `actual through ${formatShortDate(lastCompleteActualDay)}` : "awaiting actual data",
@@ -2511,7 +2574,7 @@ const Overview: React.FC = () => {
     ? `${selectedMetricDeltaPct >= 0 ? "↑" : "↓"} ${Math.abs(selectedMetricDeltaPct * 100).toFixed(0)}%`
     : "N/A";
   const periodDeltaNote = kpiComparisonLabel ?? "vs previous period";
-  const showTodayProjection = showTodayLine && Number.isFinite(todayProjectionValue);
+  const showTodayProjection = showTodayLine && Number.isFinite(todayTileValue);
   const forecastTileHeading =
     forecastDayCount > 0
       ? `Next ${forecastDayCount} days · total`
@@ -2529,7 +2592,7 @@ const Overview: React.FC = () => {
     });
     return values;
   }, [goalRows, scaledTotals]);
-  const insightItems = useMemo(() => {
+  const fallbackInsightItems = useMemo(() => {
     const items: { label: string; text: string }[] = [];
     if (forecastMeta?.has_anomaly) {
       items.push({
@@ -2596,6 +2659,13 @@ const Overview: React.FC = () => {
     goalSentence,
     dashboardGoals.length,
   ]);
+  const insightItems = useMemo(
+    () =>
+      remoteInsights.length > 0
+        ? remoteInsights.map((item) => ({ label: item.label, text: item.text }))
+        : fallbackInsightItems,
+    [remoteInsights, fallbackInsightItems]
+  );
   const dashboardControlClass =
     "h-8 rounded-md border border-[#DDE4EC] bg-white px-3 text-xs font-medium text-[#424A57] shadow-sm outline-none transition-colors hover:border-[#C7D0DC] focus:border-[#5b55ff]";
   const dashboardActionClass =
@@ -3611,10 +3681,10 @@ const Overview: React.FC = () => {
               {showTodayProjection ? (
                 <div className="py-2 sm:pr-5">
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#7B8190]" style={fontBody}>
-                    Projected today
+                    {todayTileLabel}
                   </div>
                   <div className="mt-1 metric-number text-[18px] font-semibold leading-tight text-[#111827]" style={fontMetric}>
-                    {formatMetricValue(selectedMetric, todayProjectionValue)}
+                    {formatMetricValue(selectedMetric, todayTileValue)}
                   </div>
                   <div className="mt-1 text-[11px] text-[#7B8190]" style={fontBody}>
                     {todayProgressNote}
@@ -3803,7 +3873,7 @@ const Overview: React.FC = () => {
               siteId={siteId}
             />
             <TableBlock
-              title="Goal events"
+              title="Goal completions"
               rows={breakdownCards[3]?.rows ?? []}
               metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
               primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}

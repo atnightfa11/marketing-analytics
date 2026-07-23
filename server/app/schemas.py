@@ -344,6 +344,27 @@ class MetricsResponse(BaseModel):
     metrics: list[MetricStatistic]
 
 
+class InsightItem(BaseModel):
+    type: str
+    severity: Literal["info", "warning", "success"] = "info"
+    label: str
+    text: str
+    metric: str | None = None
+    dimension: str | None = None
+    driver: str | None = None
+    contribution_share: float | None = None
+
+
+class InsightsResponse(BaseModel):
+    site_id: str
+    start: dt.date
+    end: dt.date
+    compare_start: dt.date
+    compare_end: dt.date
+    metric: str
+    insights: list[InsightItem]
+
+
 class WindowAggregate(BaseModel):
     window_start: dt.datetime
     window_end: dt.datetime
