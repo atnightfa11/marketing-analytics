@@ -4653,21 +4653,24 @@ async def test_site_settings_update_claims_unclaimed_site_for_authed_user(client
         update = client.put(
             "/api/site-settings",
             params={"site_id": site_id},
-            json={"timezone": "America/Chicago"},
+            json={"timezone": "America/Chicago", "site_name": "Settings Test Site"},
             headers=headers,
         )
         assert update.status_code == 200, update.text
         assert update.json()["timezone"] == "America/Chicago"
+        assert update.json()["site_name"] == "Settings Test Site"
 
         fetched = client.get("/api/site-settings", params={"site_id": site_id}, headers=headers)
         assert fetched.status_code == 200
         assert fetched.json()["timezone"] == "America/Chicago"
+        assert fetched.json()["site_name"] == "Settings Test Site"
 
         async with async_session_factory() as session:
             row = await session.get(DashboardSite, site_id)
             assert row is not None
             assert row.owner_username == "alice"
             assert row.timezone == "America/Chicago"
+            assert row.site_name == "Settings Test Site"
     finally:
         dashboard_auth_module._parse_auth_users.cache_clear()
         dashboard_auth_module._parse_site_access_map.cache_clear()

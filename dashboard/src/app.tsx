@@ -57,6 +57,7 @@ import {
   SdkInstallVerifyResponse,
   TimePartingDayType,
   updateSiteAlertSettings,
+  updateSiteName,
   upsertSiteGoal,
   updateSiteTimezone,
   verifySdkInstall,
@@ -182,7 +183,7 @@ const fallbackSiteDisplayName = (siteId: string): string => {
 
 const dashboardSiteDisplayName = (siteId: string, siteName?: string | null): string => {
   const trimmed = siteName?.trim();
-  if (trimmed && trimmed !== siteId) return titleCaseSiteName(trimmed);
+  if (trimmed && trimmed !== siteId) return trimmed;
   return fallbackSiteDisplayName(siteId);
 };
 
@@ -3845,6 +3846,11 @@ const Settings: React.FC = () => {
   const { siteId: pathSiteId } = useParams<{ siteId?: string }>();
   const querySiteId = searchParams.get("site_id") ?? undefined;
   const siteId = useMemo(() => resolveActiveSiteId(pathSiteId ?? querySiteId), [pathSiteId, querySiteId]);
+  const [siteName, setSiteName] = useState<string | null>(null);
+  const [siteNameDraft, setSiteNameDraft] = useState<string>(() => fallbackSiteDisplayName(siteId));
+  const [siteNameStatus, setSiteNameStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [siteNameError, setSiteNameError] = useState<string | null>(null);
+  const siteDisplayName = useMemo(() => dashboardSiteDisplayName(siteId, siteName), [siteId, siteName]);
   const [timezone, setTimezone] = useState<string>("UTC");
   const [timezoneDraft, setTimezoneDraft] = useState<string>("UTC");
   const [timezoneStatus, setTimezoneStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
@@ -3974,6 +3980,11 @@ const Settings: React.FC = () => {
       .then((settings) => {
         if (cancelled) return;
         const resolvedTimezone = settings.timezone || "UTC";
+        const resolvedSiteName = dashboardSiteDisplayName(siteId, settings.site_name);
+        setSiteName(settings.site_name ?? null);
+        setSiteNameDraft(resolvedSiteName);
+        setSiteNameStatus("idle");
+        setSiteNameError(null);
         setTimezone(resolvedTimezone);
         setTimezoneDraft(resolvedTimezone);
         setTimezoneStatus("idle");
@@ -3981,6 +3992,11 @@ const Settings: React.FC = () => {
       })
       .catch((error) => {
         if (cancelled) return;
+        const fallbackName = fallbackSiteDisplayName(siteId);
+        setSiteName(null);
+        setSiteNameDraft(fallbackName);
+        setSiteNameStatus("error");
+        setSiteNameError(extractApiErrorMessage(error) ?? "Unable to load site name.");
         setTimezone("UTC");
         setTimezoneDraft("UTC");
         setTimezoneStatus("error");
@@ -4199,6 +4215,30 @@ const Settings: React.FC = () => {
       ).sort((a, b) => a.localeCompare(b)),
     [goalConversionTypes, goals]
   );
+
+  const saveSiteName = async () => {
+    const nextName = siteNameDraft.trim();
+    if (!nextName) {
+      setSiteNameStatus("error");
+      setSiteNameError("Site name is required.");
+      return;
+    }
+    setSiteNameStatus("saving");
+    setSiteNameError(null);
+    try {
+      const updated = await updateSiteName(nextName, token ?? undefined, siteId);
+      const resolvedName = dashboardSiteDisplayName(updated.site_id, updated.site_name);
+      setSiteName(updated.site_name ?? resolvedName);
+      setSiteNameDraft(resolvedName);
+      setSiteNameStatus("saved");
+      window.setTimeout(() => {
+        setSiteNameStatus((prev) => (prev === "saved" ? "idle" : prev));
+      }, 1200);
+    } catch (error) {
+      setSiteNameStatus("error");
+      setSiteNameError(extractApiErrorMessage(error) ?? "Unable to update site name right now.");
+    }
+  };
 
   const saveTimezone = async () => {
     setTimezoneStatus("saving");
@@ -4468,6 +4508,16 @@ const Settings: React.FC = () => {
     }
   };
 
+  const hasSiteNameChanges = siteNameDraft.trim() !== siteDisplayName.trim();
+  const siteNameStatusClassName = siteNameStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
+  const siteNameStatusText =
+    siteNameStatus === "saving"
+      ? "Saving site name..."
+      : siteNameStatus === "saved"
+        ? "Site name saved."
+        : siteNameStatus === "error"
+          ? siteNameError
+          : "Used across the dashboard and settings navigation.";
   const hasTimezoneChanges = timezoneDraft !== timezone;
   const planDisplayName = billingDetails?.display_plan ?? (billingPlan === "free" ? "Solo" : billingPlan);
   const hasStandardEntitlements = billingPlan === "standard" || billingPlan === "pro";
@@ -4635,7 +4685,7 @@ const Settings: React.FC = () => {
             Settings
           </h1>
           <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-            {fallbackSiteDisplayName(siteId)}
+            {siteDisplayName}
           </div>
         </div>
 
@@ -4644,10 +4694,7 @@ const Settings: React.FC = () => {
             <a href={`/site/${encodeURIComponent(siteId)}`} className="text-sm font-semibold text-[#4f46e5]" style={fontBody}>
               ← Back to stats
             </a>
-            <div className="mt-5 text-sm font-semibold text-[#7B8190]" style={fontBody}>
-              {siteId}
-            </div>
-            <nav className="grid gap-1 text-sm" style={fontBody}>
+            <nav className="mt-5 grid gap-1 text-sm" style={fontBody}>
               {settingsPanels.map(({ id, label }) => (
                 <button
                   key={id}
@@ -4678,17 +4725,53 @@ const Settings: React.FC = () => {
 
               <div className="border border-gray-200 bg-white p-5">
                 <div className="text-sm font-semibold text-[#1F2937]" style={fontBody}>
-                  Site domain
+                  Site name
                 </div>
                 <div className="mt-1 text-[12px] text-gray-500" style={fontBody}>
-                  This is the dashboard site identifier used for reporting.
+                  This is the customer-facing name shown inside Valid.
                 </div>
-                <input
-                  className="mt-4 w-full max-w-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500"
-                  style={fontBody}
-                  value={siteId}
-                  readOnly
-                />
+                <div className="mt-4 max-w-md">
+                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                    Display name
+                  </label>
+                  <input
+                    className="mt-2 w-full border border-gray-200 bg-white px-3 py-2 text-sm text-[#1F2937]"
+                    style={fontBody}
+                    value={siteNameDraft}
+                    onChange={(event) => setSiteNameDraft(event.target.value)}
+                    placeholder={fallbackSiteDisplayName(siteId)}
+                  />
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void saveSiteName()}
+                    disabled={!hasSiteNameChanges || siteNameStatus === "saving"}
+                    className="border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
+                    style={fontBody}
+                  >
+                    {siteNameStatus === "saving" ? "Saving..." : "Save name"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSiteNameDraft(siteDisplayName);
+                      setSiteNameStatus("idle");
+                      setSiteNameError(null);
+                    }}
+                    disabled={!hasSiteNameChanges || siteNameStatus === "saving"}
+                    className="border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className={`mt-2 text-[11px] ${siteNameStatusClassName}`} style={fontBody}>
+                  {siteNameStatusText}
+                </div>
+                <div className="mt-4 text-[11px] text-gray-500" style={fontBody}>
+                  Tracking site ID: <span className="meta-number text-[#7B8190]">{siteId}</span>
+                </div>
               </div>
 
               <div className="border border-gray-200 bg-white p-5">

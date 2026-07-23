@@ -66,6 +66,7 @@ export type TimePartingDayType = "all" | "weekday" | "weekend";
 
 export interface SiteSettings {
   site_id: string;
+  site_name: string;
   timezone: string;
 }
 
@@ -417,6 +418,19 @@ export async function updateSiteTimezone(timezone: string, token?: string, siteI
   const response = await api.put(
     "/api/site-settings",
     { timezone },
+    {
+      headers: authHeaders(token),
+      params: { site_id: resolvedSiteId },
+    }
+  );
+  return response.data;
+}
+
+export async function updateSiteName(siteName: string, token?: string, siteId?: string): Promise<SiteSettings> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.put(
+    "/api/site-settings",
+    { site_name: siteName },
     {
       headers: authHeaders(token),
       params: { site_id: resolvedSiteId },
