@@ -3,7 +3,7 @@ import type { BreakdownMetricKey } from "../api";
 import { breakdownMetricInlineLabels } from "../constants";
 import { CloseIcon, ExpandIcon } from "./icons";
 import { fontBody, fontMetric } from "../styles/typography";
-import type { ActiveFilter, BreakdownTableRow } from "../types";
+import type { ActiveFilter, BreakdownMetricTotals, BreakdownTableRow } from "../types";
 import { formatMetricValue } from "../utils/format";
 import {
   getBreakdownBarColor,
@@ -19,15 +19,37 @@ export const TableBlock: React.FC<{
   metricKeys: BreakdownMetricKey[];
   primaryMetric: BreakdownMetricKey;
   total?: number;
+  totalsByMetric?: BreakdownMetricTotals;
   emptyState?: string;
   error?: string | null;
   rowDimension?: string;
   activeFilters?: ActiveFilter[];
   onToggleFilter?: (dimension: string, row: BreakdownTableRow, total: number, primaryMetric: BreakdownMetricKey) => void;
-}> = ({ title, header, rows, metricKeys, primaryMetric, total, emptyState, error, rowDimension, activeFilters, onToggleFilter }) => {
+}> = ({
+  title,
+  header,
+  rows,
+  metricKeys,
+  primaryMetric,
+  total,
+  totalsByMetric,
+  emptyState,
+  error,
+  rowDimension,
+  activeFilters,
+  onToggleFilter,
+}) => {
   const [expanded, setExpanded] = useState(false);
-  const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, primaryMetric)), 0);
-  const totalValue = total ?? rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, primaryMetric), 0);
+  const shareMetric = chooseShareMetric(rowDimension, metricKeys, primaryMetric);
+  const valueMetric = chooseValueMetric(rowDimension, metricKeys, shareMetric, primaryMetric);
+  const maxValue = rows.reduce((max, row) => Math.max(max, getBreakdownMetricValue(row, shareMetric)), 0);
+  const shareMetricTotal = totalsByMetric?.[shareMetric];
+  const shareTotal =
+    Number.isFinite(shareMetricTotal ?? Number.NaN)
+      ? shareMetricTotal ?? 0
+      : shareMetric === primaryMetric && Number.isFinite(total ?? Number.NaN)
+        ? total ?? 0
+        : rows.reduce((sum, row) => sum + getBreakdownMetricValue(row, shareMetric), 0);
 
   useEffect(() => {
     if (!expanded) return;
@@ -59,10 +81,12 @@ export const TableBlock: React.FC<{
       );
     }
     const dimensionLabel = getBreakdownDimensionHeaderLabel(title, rowDimension);
-    const metricMinWidth = compact ? "minmax(64px,auto)" : "minmax(86px,auto)";
-    const gridTemplateColumns = `minmax(0,1fr) ${metricKeys.map(() => metricMinWidth).join(" ")}`;
+    const gridTemplateColumns = compact
+      ? "minmax(0,1fr) minmax(58px,auto) minmax(96px,0.8fr)"
+      : "minmax(0,1.25fr) minmax(86px,auto) minmax(160px,1fr)";
     const gridStyle: React.CSSProperties = { gridTemplateColumns };
     const barColor = getBreakdownBarColor(rowDimension);
+    const shareLabel = `Share of ${breakdownMetricInlineLabels[shareMetric].toLowerCase()}`;
     return (
       <div className="space-y-1.5">
         <div
@@ -72,15 +96,13 @@ export const TableBlock: React.FC<{
           style={{ ...fontBody, ...gridStyle }}
         >
           <div className="uppercase tracking-[0.06em]">{dimensionLabel}</div>
-          {metricKeys.map((metricKey) => (
-            <div key={metricKey} className="text-right uppercase tracking-[0.06em]">
-              {breakdownMetricInlineLabels[metricKey]}
-            </div>
-          ))}
+          <div className="text-right uppercase tracking-[0.06em]">{breakdownMetricInlineLabels[valueMetric]}</div>
+          <div className="text-right uppercase tracking-[0.06em]">{shareLabel}</div>
         </div>
         {rows.map((row) => {
-          const primaryValue = getBreakdownMetricValue(row, primaryMetric);
-          const width = maxValue > 0 ? Math.max(5, (primaryValue / maxValue) * 100) : 0;
+          const shareValue = getBreakdownMetricValue(row, shareMetric);
+          const width = maxValue > 0 ? Math.max(1, (shareValue / maxValue) * 100) : 0;
+          const share = shareTotal > 0 ? shareValue / shareTotal : 0;
           const isActive = Boolean(
             rowDimension && activeFilters?.some((f) => f.dimension === rowDimension && f.value === row.label)
           );
@@ -93,36 +115,38 @@ export const TableBlock: React.FC<{
               <div className="grid items-center gap-2" style={gridStyle}>
                 <button
                   type="button"
-                  className={`relative min-w-0 overflow-hidden rounded-sm px-2 py-1.5 text-left ${textSize} text-[#374151] transition-colors ${
+                  className={`flex min-w-0 items-center gap-2 rounded-sm py-1.5 text-left ${textSize} text-[#374151] transition-colors ${
                     rowDimension && onToggleFilter
                       ? isActive
-                        ? "text-[#4338ca] underline decoration-[#4338ca] underline-offset-2"
-                        : "hover:text-[#4338ca] hover:underline hover:decoration-[#4338ca] hover:underline-offset-2"
+                        ? "text-[#4338ca]"
+                        : "hover:text-[#4338ca]"
                       : ""
                   }`}
                   style={fontBody}
                   onClick={() => {
                     if (!rowDimension || !onToggleFilter) return;
-                    onToggleFilter(rowDimension, row, totalValue, primaryMetric);
+                    onToggleFilter(rowDimension, row, shareTotal, shareMetric);
                   }}
                 >
-                  <span
-                    className="pointer-events-none absolute inset-y-0 left-0 rounded-sm"
-                    style={{ width: `${width}%`, backgroundColor: barColor }}
-                  />
-                  <span className={`relative z-10 block min-w-0 ${labelClass}`}>
+                  <span className={`h-5 w-1 shrink-0 rounded-full ${isActive ? "bg-[#4F46E5]" : "bg-[#E0E7FF]"}`} />
+                  <span className={`block min-w-0 ${labelClass}`}>
                     {renderBreakdownLabel(rowDimension, row.label)}
                   </span>
                 </button>
-                {metricKeys.map((metricKey) => (
-                  <div
-                    key={metricKey}
-                    className={`${textSize} whitespace-nowrap text-right font-medium text-[#111827] metric-number`}
-                    style={fontMetric}
-                  >
-                    {formatMetricValue(metricKey, getBreakdownMetricValue(row, metricKey))}
+                <div
+                  className={`${textSize} whitespace-nowrap text-right font-medium text-[#111827] metric-number`}
+                  style={fontMetric}
+                >
+                  {formatMetricValue(valueMetric, getBreakdownMetricValue(row, valueMetric))}
+                </div>
+                <div className="min-w-0">
+                  <div className="mb-1 text-right text-[11px] text-[#6B7280] metric-number" style={fontMetric}>
+                    {formatBreakdownShare(share)}
                   </div>
-                ))}
+                  <div className="h-1.5 rounded-full bg-[#EEF2F7]">
+                    <div className="h-1.5 rounded-full" style={{ width: `${width}%`, backgroundColor: barColor }} />
+                  </div>
+                </div>
               </div>
             </div>
           );
@@ -185,4 +209,35 @@ export const TableBlock: React.FC<{
       )}
     </div>
   );
+};
+
+const chooseShareMetric = (
+  rowDimension: string | undefined,
+  metricKeys: BreakdownMetricKey[],
+  primaryMetric: BreakdownMetricKey
+): BreakdownMetricKey => {
+  if (rowDimension === "page") return metricKeys.includes("pageviews") ? "pageviews" : primaryMetric;
+  if (rowDimension === "goal") return metricKeys.includes("conversions") ? "conversions" : primaryMetric;
+  if (metricKeys.includes("sessions")) return "sessions";
+  return primaryMetric;
+};
+
+const chooseValueMetric = (
+  rowDimension: string | undefined,
+  metricKeys: BreakdownMetricKey[],
+  shareMetric: BreakdownMetricKey,
+  primaryMetric: BreakdownMetricKey
+): BreakdownMetricKey => {
+  if (rowDimension === "page") return metricKeys.includes("pageviews") ? "pageviews" : shareMetric;
+  if (rowDimension === "goal") return metricKeys.includes("conversions") ? "conversions" : shareMetric;
+  if (metricKeys.includes("uniques")) return "uniques";
+  return metricKeys.includes(shareMetric) ? shareMetric : primaryMetric;
+};
+
+const formatBreakdownShare = (share: number): string => {
+  if (!Number.isFinite(share) || share <= 0) return "0%";
+  const pct = share * 100;
+  if (pct < 0.5) return "<1%";
+  if (pct < 10) return `${pct.toFixed(1)}%`;
+  return `${Math.round(pct)}%`;
 };

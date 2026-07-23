@@ -38,6 +38,7 @@ export interface BreakdownData {
   total: number;
   primaryMetric: BreakdownMetricKey;
   metricKeys: BreakdownMetricKey[];
+  totalsByMetric: BreakdownMetricTotals;
 }
 
 export type BreakdownErrorMap = Partial<Record<BreakdownDimension, string>>;

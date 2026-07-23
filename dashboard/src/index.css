@@ -126,6 +126,14 @@ html[data-theme="dark"] .bg-\[\#eef2ff\] {
   background-color: var(--surface-active);
 }
 
+html[data-theme="dark"] .bg-\[\#E0E7FF\] {
+  background-color: rgba(99, 102, 241, 0.3);
+}
+
+html[data-theme="dark"] .bg-\[\#EEF2F7\] {
+  background-color: rgba(249, 250, 251, 0.08);
+}
+
 html[data-theme="dark"] .hover\:bg-\[\#F9FAFB\]:hover {
   background-color: var(--surface-hover);
 }

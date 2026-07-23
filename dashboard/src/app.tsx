@@ -138,6 +138,15 @@ const goalLabel = (goal: Pick<MetricGoal, "metric" | "conversionType">): string 
     ? `Conversions · ${goal.conversionType}`
     : metricLabels[goal.metric] ?? goal.metric;
 
+const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="mb-3">
+    <div className="mb-3 h-0.5 w-11 rounded-full bg-[#4F46E5]" />
+    <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
+      {children}
+    </div>
+  </div>
+);
+
 const titleCaseSiteName = (value: string): string =>
   value
     .split(/\s+/)
@@ -422,6 +431,7 @@ const createEmptyBreakdownData = (
   total: 0,
   primaryMetric,
   metricKeys,
+  totalsByMetric: {},
 });
 
 const createEmptyBreakdownMap = (): Record<BreakdownDimension, BreakdownData> => ({
@@ -1316,6 +1326,7 @@ const Overview: React.FC = () => {
             total: result.value.response.total ?? 0,
             primaryMetric: result.value.response.primary_metric,
             metricKeys: result.value.response.metric_keys ?? [result.value.response.primary_metric],
+            totalsByMetric: result.value.response.totals ?? {},
           };
         });
         setBreakdownData(next);
@@ -2031,6 +2042,7 @@ const Overview: React.FC = () => {
       ? ("sessions" as BreakdownMetricKey)
       : breakdownData.sources.primaryMetric;
   const acquisitionTotal = showSeededBreakdowns ? scaledTotals.sessions : breakdownData.sources.total;
+  const acquisitionTotalsByMetric = showSeededBreakdowns ? seededBreakdownTotals : breakdownData.sources.totalsByMetric;
   const acquisitionEmptyState =
     acquisitionTab === "campaigns"
       ? "Campaign and UTM metadata will appear after campaign parameters are collected."
@@ -2151,6 +2163,9 @@ const Overview: React.FC = () => {
           ? (["uniques", "sessions", "pageviews"] as BreakdownMetricKey[])
           : breakdownData.pages.metricKeys,
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.pages.total,
+        totalsByMetric: showSeededBreakdowns
+          ? ({ uniques: scaledTotals.uniques, sessions: scaledTotals.sessions, pageviews: scaledTotals.pageviews } as BreakdownMetricTotals)
+          : breakdownData.pages.totalsByMetric,
       },
       {
         title: "Countries",
@@ -2163,6 +2178,7 @@ const Overview: React.FC = () => {
           ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
           : breakdownData.countries.metricKeys,
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.countries.total,
+        totalsByMetric: showSeededBreakdowns ? seededBreakdownTotals : breakdownData.countries.totalsByMetric,
       },
       {
         title: "Devices",
@@ -2175,6 +2191,7 @@ const Overview: React.FC = () => {
           ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
           : breakdownData.devices.metricKeys,
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.devices.total,
+        totalsByMetric: showSeededBreakdowns ? seededBreakdownTotals : breakdownData.devices.totalsByMetric,
       },
       {
         title: "Goal events",
@@ -2187,6 +2204,9 @@ const Overview: React.FC = () => {
           ? (["uniques", "sessions", "conversions"] as BreakdownMetricKey[])
           : breakdownData.conversions.metricKeys,
         total: showSeededBreakdowns ? scaledTotals.conversions : breakdownData.conversions.total,
+        totalsByMetric: showSeededBreakdowns
+          ? ({ uniques: scaledTotals.uniques, sessions: scaledTotals.sessions, conversions: scaledTotals.conversions } as BreakdownMetricTotals)
+          : breakdownData.conversions.totalsByMetric,
       },
     ];
   }, [
@@ -2195,6 +2215,8 @@ const Overview: React.FC = () => {
     deviceRows,
     goalRows,
     showSeededBreakdowns,
+    scaledTotals.uniques,
+    scaledTotals.sessions,
     scaledTotals.pageviews,
     scaledTotals.conversions,
     breakdownErrors.pages,
@@ -2204,15 +2226,19 @@ const Overview: React.FC = () => {
     breakdownData.pages.primaryMetric,
     breakdownData.pages.metricKeys,
     breakdownData.pages.total,
+    breakdownData.pages.totalsByMetric,
     breakdownData.countries.primaryMetric,
     breakdownData.countries.metricKeys,
     breakdownData.countries.total,
+    breakdownData.countries.totalsByMetric,
     breakdownData.devices.primaryMetric,
     breakdownData.devices.metricKeys,
     breakdownData.devices.total,
+    breakdownData.devices.totalsByMetric,
     breakdownData.conversions.primaryMetric,
     breakdownData.conversions.metricKeys,
     breakdownData.conversions.total,
+    breakdownData.conversions.totalsByMetric,
   ]);
 
   // URL persistence: mirror dashboard state back into the query params (initial state is hydrated
@@ -3602,9 +3628,7 @@ const Overview: React.FC = () => {
           </div>
         </section>
         <section>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-            Insights
-          </div>
+          <SectionLabel>Insights</SectionLabel>
           <div className="rounded-lg border border-[var(--color-border-subtle)] bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
             <div className="space-y-4">
               {insightItems.map((item) => (
@@ -3622,9 +3646,7 @@ const Overview: React.FC = () => {
         </section>
 
         <section>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-            Breakdowns
-          </div>
+          <SectionLabel>Breakdowns</SectionLabel>
           <div className="grid gap-4 md:grid-cols-2">
             <TableBlock
               title="Traffic Sources"
@@ -3698,6 +3720,7 @@ const Overview: React.FC = () => {
               metricKeys={acquisitionMetricKeys}
               primaryMetric={acquisitionPrimaryMetric}
               total={acquisitionTotal}
+              totalsByMetric={acquisitionTotalsByMetric}
               rowDimension={acquisitionDimensionKey}
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
@@ -3710,6 +3733,7 @@ const Overview: React.FC = () => {
               metricKeys={breakdownCards[0]?.metricKeys ?? (["pageviews"] as BreakdownMetricKey[])}
               primaryMetric={breakdownCards[0]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[0]?.total}
+              totalsByMetric={breakdownCards[0]?.totalsByMetric}
               emptyState={breakdownCards[0]?.empty}
               error={breakdownCards[0]?.error}
               rowDimension={breakdownCards[0]?.dimension}
@@ -3722,6 +3746,7 @@ const Overview: React.FC = () => {
               metricKeys={breakdownCards[1]?.metricKeys ?? (["pageviews"] as BreakdownMetricKey[])}
               primaryMetric={breakdownCards[1]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[1]?.total}
+              totalsByMetric={breakdownCards[1]?.totalsByMetric}
               emptyState={breakdownCards[1]?.empty}
               error={breakdownCards[1]?.error}
               rowDimension={breakdownCards[1]?.dimension}
@@ -3734,6 +3759,7 @@ const Overview: React.FC = () => {
               metricKeys={breakdownCards[2]?.metricKeys ?? (["pageviews"] as BreakdownMetricKey[])}
               primaryMetric={breakdownCards[2]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[2]?.total}
+              totalsByMetric={breakdownCards[2]?.totalsByMetric}
               emptyState={breakdownCards[2]?.empty}
               error={breakdownCards[2]?.error}
               rowDimension={breakdownCards[2]?.dimension}
@@ -3743,9 +3769,7 @@ const Overview: React.FC = () => {
           </div>
         </section>
         <section>
-          <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.22em] text-[#7B8190]" style={fontBody}>
-            Goals & Timing
-          </div>
+          <SectionLabel>Goals & Timing</SectionLabel>
           <div className="grid gap-4 md:grid-cols-2">
             <GoalsProgressCard
               goals={dashboardGoals}
@@ -3760,6 +3784,7 @@ const Overview: React.FC = () => {
               metricKeys={breakdownCards[3]?.metricKeys ?? (["conversions"] as BreakdownMetricKey[])}
               primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
               total={breakdownCards[3]?.total}
+              totalsByMetric={breakdownCards[3]?.totalsByMetric}
               emptyState={breakdownCards[3]?.empty}
               error={breakdownCards[3]?.error}
               rowDimension={breakdownCards[3]?.dimension}
