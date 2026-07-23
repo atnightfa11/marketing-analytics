@@ -129,6 +129,31 @@ def _format_percent(value: float) -> str:
     return f"{round(value * 100):.0f}%"
 
 
+def _format_day(day: dt.date) -> str:
+    return f"{day.strftime('%b')} {day.day}"
+
+
+def _format_day_ranges(days: list[dt.date]) -> str:
+    if not days:
+        return "selected days"
+    ranges: list[tuple[dt.date, dt.date]] = []
+    start = days[0]
+    end = days[0]
+    for day in days[1:]:
+        if day == end + dt.timedelta(days=1):
+            end = day
+            continue
+        ranges.append((start, end))
+        start = end = day
+    ranges.append((start, end))
+    parts = [_format_day(start) if start == end else f"{_format_day(start)}-{_format_day(end)}" for start, end in ranges]
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return " and ".join(parts)
+    return f"{', '.join(parts[:-1])}, and {parts[-1]}"
+
+
 def _metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " ").title())
 
@@ -197,6 +222,73 @@ async def _metric_totals(
         if metric in totals:
             totals[metric] = max(0.0, float(value or 0.0))
     return totals
+
+
+async def _daily_metric_totals(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    metric: Metric,
+    start_day: dt.date,
+    end_day: dt.date,
+) -> dict[dt.date, float]:
+    rows = (
+        await session.execute(
+            select(func.date(DpWindow.window_start), func.sum(DpWindow.value))
+            .where(
+                DpWindow.site_id == site_id,
+                DpWindow.plan == plan,
+                DpWindow.metric == metric,
+                DpWindow.window_start >= _day_start(start_day),
+                DpWindow.window_start < _day_start(end_day + dt.timedelta(days=1)),
+            )
+            .group_by(func.date(DpWindow.window_start))
+        )
+    ).all()
+    daily = {day: 0.0 for day in _enumerate_days(start_day, end_day)}
+    for raw_day, value in rows:
+        day = raw_day if isinstance(raw_day, dt.date) else dt.date.fromisoformat(str(raw_day))
+        daily[day] = max(0.0, float(value or 0.0))
+    return daily
+
+
+async def _aggregate_only_days(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    metric: Metric,
+    daily_totals: dict[dt.date, float],
+) -> list[dt.date]:
+    dimensions = [dimension for dimension in INSIGHT_DIMENSIONS if metric in breakdown_logic.BREAKDOWN_METRIC_ORDER[dimension]]
+    if not dimensions:
+        return []
+    active_days = [day for day, value in daily_totals.items() if value >= MIN_ROW_DELTA.get(metric, 1.0)]
+    if not active_days:
+        return []
+    rollup_rows = (
+        await session.execute(
+            select(BreakdownRollup.day, func.count(BreakdownRollup.id), func.sum(BreakdownRollup.value))
+            .where(
+                BreakdownRollup.site_id == site_id,
+                BreakdownRollup.plan == plan,
+                BreakdownRollup.metric == metric,
+                BreakdownRollup.dimension.in_(dimensions),
+                BreakdownRollup.hostname == "",
+                BreakdownRollup.day_type == "all",
+                BreakdownRollup.day.in_(active_days),
+            )
+            .group_by(BreakdownRollup.day)
+        )
+    ).all()
+    rollup_coverage = {day: (int(row_count or 0), float(value or 0.0)) for day, row_count, value in rollup_rows}
+    aggregate_only: list[dt.date] = []
+    for day in active_days:
+        row_count, rollup_value = rollup_coverage.get(day, (0, 0.0))
+        if row_count == 0 or rollup_value < daily_totals[day] * 0.1:
+            aggregate_only.append(day)
+    return sorted(aggregate_only)
 
 
 async def _dimension_buckets(
@@ -370,6 +462,44 @@ def _conversion_rate_insight(
     )
 
 
+def _aggregate_only_insight(
+    *,
+    metric: Metric,
+    current_totals: dict[str, float],
+    previous_totals: dict[str, float],
+    current_daily: dict[dt.date, float],
+    aggregate_only_days: list[dt.date],
+) -> InsightItem | None:
+    if not aggregate_only_days:
+        return None
+    current_value = current_totals.get(metric, 0.0)
+    previous_value = previous_totals.get(metric, 0.0)
+    total_delta = current_value - previous_value
+    if current_value < MIN_TOTAL_VOLUME.get(metric, 10.0) or abs(total_delta) < MIN_ROW_DELTA.get(metric, 5.0):
+        return None
+    if previous_value > 0 and abs(total_delta / previous_value) < MIN_RELATIVE_CHANGE:
+        return None
+    aggregate_only_total = sum(current_daily.get(day, 0.0) for day in aggregate_only_days)
+    if aggregate_only_total < max(MIN_ROW_DELTA.get(metric, 5.0), abs(total_delta) * 0.25):
+        return None
+    metric_label = _metric_label(metric)
+    direction = "up" if total_delta >= 0 else "down"
+    change = _format_percent(abs(total_delta / previous_value)) if previous_value > 0 else _format_value(metric, abs(total_delta))
+    share = min(1.0, aggregate_only_total / max(abs(total_delta), 1.0))
+    return InsightItem(
+        type="attribution_limited",
+        severity="warning",
+        label="Attribution",
+        text=(
+            f"{metric_label} are {direction} {change} vs the prior period, with a large part of the change concentrated on "
+            f"{_format_day_ranges(aggregate_only_days)}. Those days currently have aggregate KPI data without matching "
+            "source/page/device breakdowns, so Valid cannot honestly attribute the spike yet."
+        ),
+        metric=metric,
+        contribution_share=share,
+    )
+
+
 def _status_insight(metric: Metric, current_totals: dict[str, float], previous_totals: dict[str, float]) -> InsightItem:
     current_value = current_totals.get(metric, 0.0)
     previous_value = previous_totals.get(metric, 0.0)
@@ -432,6 +562,21 @@ async def insights(
         start_day=compare_start_day,
         end_day=compare_end_day,
     )
+    current_daily = await _daily_metric_totals(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        metric=selected_metric,
+        start_day=start_day,
+        end_day=end_day,
+    )
+    aggregate_only = await _aggregate_only_days(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        metric=selected_metric,
+        daily_totals=current_daily,
+    )
 
     insights_out: list[InsightItem] = []
     for dimension in INSIGHT_DIMENSIONS:
@@ -465,6 +610,15 @@ async def insights(
     conversion_rate = _conversion_rate_insight(current_totals, previous_totals)
     if conversion_rate is not None:
         insights_out.append(conversion_rate)
+    limited_attribution = _aggregate_only_insight(
+        metric=selected_metric,
+        current_totals=current_totals,
+        previous_totals=previous_totals,
+        current_daily=current_daily,
+        aggregate_only_days=aggregate_only,
+    )
+    if limited_attribution is not None:
+        insights_out.append(limited_attribution)
 
     insights_out.sort(key=lambda item: (-(item.contribution_share or 0.0), 0 if item.severity == "warning" else 1))
     if not insights_out:

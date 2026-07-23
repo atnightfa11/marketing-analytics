@@ -4788,6 +4788,116 @@ async def test_insights_identify_source_driver_for_metric_decline(client):
 
 
 @pytest.mark.asyncio
+async def test_insights_warn_when_metric_spike_is_aggregate_only(client):
+    site_id = "insight-aggregate-only-site"
+    owner = "insight-aggregate-owner"
+    current_start = date(2026, 7, 8)
+    current_end = date(2026, 7, 14)
+    previous_start = date(2026, 7, 1)
+    previous_end = date(2026, 7, 7)
+
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="insight-aggregate-owner@example.com",
+                password_hash="hash",
+            )
+        )
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username=owner,
+                site_name="Insight Aggregate Only Site",
+                allowed_origin="https://aggregate-only.example.com",
+            )
+        )
+        session.add(SitePlan(site_id=site_id, plan="standard"))
+        for offset in range(7):
+            current_day = current_start + timedelta(days=offset)
+            previous_day = previous_start + timedelta(days=offset)
+            for day, value in ((previous_day, 100.0), (current_day, 100.0)):
+                window_start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+                session.add(
+                    DpWindow(
+                        site_id=site_id,
+                        plan="standard",
+                        window_start=window_start,
+                        window_end=window_start + timedelta(days=1),
+                        metric="uniques",
+                        value=value,
+                        variance=value,
+                        ci80_low=value,
+                        ci80_high=value,
+                        ci95_low=value,
+                        ci95_high=value,
+                    )
+                )
+                session.add(
+                    ReducerWatermark(
+                        site_id=site_id,
+                        plan="standard",
+                        day=day,
+                        reducer_version=REDUCER_VERSION,
+                        status="success",
+                        raw_report_count=10,
+                        dp_window_count=1,
+                        breakdown_rollup_count=1,
+                        reduced_at=window_start,
+                    )
+                )
+                session.add(
+                    BreakdownRollup(
+                        site_id=site_id,
+                        plan="standard",
+                        day=day,
+                        dimension="sources",
+                        hostname="",
+                        day_type="all",
+                        label="Direct",
+                        metric="uniques",
+                        value=value,
+                    )
+                )
+            if offset == 6:
+                spike_day = current_day
+                window_start = datetime.combine(spike_day, datetime.min.time(), tzinfo=timezone.utc)
+                session.add(
+                    DpWindow(
+                        site_id=site_id,
+                        plan="standard",
+                        window_start=window_start + timedelta(hours=1),
+                        window_end=window_start + timedelta(days=1),
+                        metric="uniques",
+                        value=1000.0,
+                        variance=1000.0,
+                        ci80_low=1000.0,
+                        ci80_high=1000.0,
+                        ci95_low=1000.0,
+                        ci95_high=1000.0,
+                    )
+                )
+        await session.commit()
+
+    response = client.get(
+        "/api/insights",
+        params={
+            "site_id": site_id,
+            "metric": "uniques",
+            "start": current_start.isoformat(),
+            "end": current_end.isoformat(),
+            "compare_start": previous_start.isoformat(),
+            "compare_end": previous_end.isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    insights = response.json()["insights"]
+    attribution = next((item for item in insights if item["type"] == "attribution_limited"), None)
+    assert attribution is not None
+    assert "aggregate KPI data without matching" in attribution["text"]
+
+
+@pytest.mark.asyncio
 async def test_public_signup_solo_returns_checkout_and_keeps_internal_free_plan(client, monkeypatch):
     from app.routers import public_signup as public_signup_router
 
