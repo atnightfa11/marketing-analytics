@@ -147,6 +147,19 @@ const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   </div>
 );
 
+const settingsPanels = [
+  { id: "general", label: "General" },
+  { id: "targets", label: "Performance targets" },
+  { id: "alerts", label: "Anomaly alerts" },
+  { id: "shields", label: "Shields" },
+  { id: "billing", label: "Plan & billing" },
+  { id: "imports", label: "Imports & exports" },
+] as const;
+
+type SettingsPanel = (typeof settingsPanels)[number]["id"];
+
+const isSettingsPanel = (value: string): value is SettingsPanel => settingsPanels.some((panel) => panel.id === value);
+
 const titleCaseSiteName = (value: string): string =>
   value
     .split(/\s+/)
@@ -301,6 +314,13 @@ const formatCompactCurrency = (value: number) => {
   if (absValue >= 1_000_000) return `${sign}$${format(absValue / 1_000_000)}m`;
   if (absValue >= 1_000) return `${sign}$${format(absValue / 1_000)}k`;
   return `${sign}$${Math.round(absValue)}`;
+};
+
+const formatInsightPercent = (value: number, digits = 1): string => {
+  if (!Number.isFinite(value)) return "—";
+  const pct = value * 100;
+  const rounded = Number(pct.toFixed(digits));
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(digits)}%`;
 };
 
 // Returns the ISO date (YYYY-MM-DD) marking the start of the bucket that contains `day`.
@@ -2535,9 +2555,9 @@ const Overview: React.FC = () => {
     if (Number.isFinite(selectedMetricDeltaPct)) {
       items.push({
         label: "Trend",
-        text: `${selectedMetricLabel} is ${selectedMetricDeltaPct >= 0 ? "up" : "down"} ${Math.abs(
-          selectedMetricDeltaPct * 100
-        ).toFixed(1)}% ${periodDeltaNote}.`,
+        text: `${selectedMetricLabel} is ${selectedMetricDeltaPct >= 0 ? "up" : "down"} ${formatInsightPercent(
+          Math.abs(selectedMetricDeltaPct)
+        )} ${periodDeltaNote}.`,
       });
     }
     if (forecastSummary) {
@@ -2555,7 +2575,10 @@ const Overview: React.FC = () => {
       items.push({ label: "Goal", text: "Goals are being tracked against the selected period below." });
     }
     if (items.length === 0) {
-      items.push({ label: "Status", text: "No major changes detected for this period." });
+      items.push({
+        label: "Status",
+        text: `${selectedMetricLabel} is steady for this period. No unusual traffic pattern has been detected yet.`,
+      });
     }
     return items.slice(0, 5);
   }, [
@@ -3872,6 +3895,28 @@ const Settings: React.FC = () => {
   const [goalConversionTypes, setGoalConversionTypes] = useState<string[]>([]);
   const [goalTargetInput, setGoalTargetInput] = useState<string>("");
   const [goalStatus, setGoalStatus] = useState<string | null>(null);
+  const [activeSettingsPanel, setActiveSettingsPanel] = useState<SettingsPanel>(() => {
+    if (typeof window === "undefined") return "general";
+    const initialHash = window.location.hash.replace(/^#/, "");
+    return isSettingsPanel(initialHash) ? initialHash : "general";
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onHashChange = () => {
+      const nextHash = window.location.hash.replace(/^#/, "");
+      if (isSettingsPanel(nextHash)) setActiveSettingsPanel(nextHash);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const selectSettingsPanel = useCallback((panel: SettingsPanel) => {
+    setActiveSettingsPanel(panel);
+    if (typeof window === "undefined") return;
+    const nextUrl = `${window.location.pathname}${window.location.search}#${panel}`;
+    window.history.replaceState(null, "", nextUrl);
+  }, []);
 
   const refreshSiteGoals = useCallback(async () => {
     if (!canQuery) {
@@ -4129,6 +4174,19 @@ const Settings: React.FC = () => {
       }),
     [goals]
   );
+  const groupedGoals = useMemo(() => {
+    const groups: { label: string; goals: MetricGoal[] }[] = [];
+    sortedGoals.forEach((goal) => {
+      const label = goalLabel(goal);
+      const existing = groups.find((group) => group.label === label);
+      if (existing) {
+        existing.goals.push(goal);
+      } else {
+        groups.push({ label, goals: [goal] });
+      }
+    });
+    return groups;
+  }, [sortedGoals]);
   const conversionGoalOptions = useMemo(
     () =>
       Array.from(
@@ -4539,6 +4597,25 @@ const Settings: React.FC = () => {
     }
   };
 
+  const editGoal = (goal: MetricGoal) => {
+    setGoalMetric(goal.metric);
+    setGoalConversionType(goal.metric === "conversions" ? goal.conversionType ?? "" : "");
+    setGoalTargetInput(String(goal.target));
+    setGoalStatus(null);
+  };
+
+  const removeConfiguredGoal = async (goal: MetricGoal) => {
+    setGoalStatus("Removing target...");
+    try {
+      const result = await deleteSiteGoal(goal.metric, goal.metric === "conversions" ? goal.conversionType ?? null : null, token ?? undefined, siteId);
+      setGoals(mapServerGoals(result.goals));
+      setGoalStatus(`${goalLabel(goal)} target removed.`);
+      if (goalKey(goal.metric, goal.conversionType) === selectedGoalKey) setGoalTargetInput("");
+    } catch (error) {
+      setGoalStatus(extractApiErrorMessage(error) ?? "Unable to remove that target right now.");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F9FAFB] print-bg">
       <header className="border-b border-gray-200 bg-white">
@@ -4553,35 +4630,43 @@ const Settings: React.FC = () => {
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-6 pb-10 pt-6">
-        <a href={`/site/${encodeURIComponent(siteId)}`} className="text-sm font-semibold text-[#4f46e5]" style={fontBody}>
-          Back to stats
-        </a>
         <div className="mt-2 border-b border-gray-200 pb-5">
           <h1 className="text-2xl font-semibold text-[#111827]" style={fontHeading}>
-            Settings for {siteId}
+            Settings
           </h1>
+          <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+            {fallbackSiteDisplayName(siteId)}
+          </div>
         </div>
 
         <div className="mt-7 grid gap-6 lg:grid-cols-[230px_1fr]">
           <aside className="lg:sticky lg:top-4 lg:self-start">
+            <a href={`/site/${encodeURIComponent(siteId)}`} className="text-sm font-semibold text-[#4f46e5]" style={fontBody}>
+              ← Back to stats
+            </a>
+            <div className="mt-5 text-sm font-semibold text-[#7B8190]" style={fontBody}>
+              {siteId}
+            </div>
             <nav className="grid gap-1 text-sm" style={fontBody}>
-              {[
-                ["#general", "General"],
-                ["#targets", "Performance targets"],
-                ["#alerts", "Anomaly alerts"],
-                ["#shields", "Shields"],
-                ["#billing", "Plan & billing"],
-                ["#imports", "Imports & exports"],
-              ].map(([href, label]) => (
-                <a key={href} href={href} className="rounded px-3 py-2 text-gray-700 hover:bg-gray-100 hover:text-[#111827]">
+              {settingsPanels.map(({ id, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => selectSettingsPanel(id)}
+                  className={`border-l-2 px-3 py-2 text-left transition-colors ${
+                    activeSettingsPanel === id
+                      ? "border-[#4f46e5] bg-[#F1F3F6] font-semibold text-[#111827]"
+                      : "border-transparent text-gray-700 hover:bg-gray-100 hover:text-[#111827]"
+                  }`}
+                >
                   {label}
-                </a>
+                </button>
               ))}
             </nav>
           </aside>
 
           <div className="space-y-5">
-            <section id="general" className="scroll-mt-6 space-y-5">
+            <section id="general" className={`${activeSettingsPanel === "general" ? "" : "hidden"} scroll-mt-6 space-y-5`}>
               <div className="border border-gray-200 bg-white p-5">
                 <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
                   General
@@ -4950,127 +5035,203 @@ const Settings: React.FC = () => {
               </div>
             </section>
 
-            <section id="targets" className="scroll-mt-6 border border-gray-200 bg-white p-5">
-              <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
-                Performance targets
-              </div>
-              <div className="mt-1 text-sm text-gray-500" style={fontBody}>
-                Set monthly targets for the metrics you want to pace against.
-              </div>
-              <form
-                className={`mt-4 grid items-end gap-3 ${
-                  goalMetric === "conversions"
-                    ? "md:grid-cols-[minmax(0,220px)_minmax(0,240px)_140px_auto_auto]"
-                    : "md:grid-cols-[minmax(0,220px)_140px_auto_auto]"
-                }`}
-                onSubmit={submitGoal}
-              >
-                <div>
-                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                    Metric
-                  </label>
-                  <select
-                    className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
-                    style={fontBody}
-                    value={goalMetric}
-                    onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}
-                  >
-                    {goalEligibleMetrics.map((metric) => (
-                      <option key={metric} value={metric}>
-                        {metricLabels[metric] ?? metric}
-                      </option>
-                    ))}
-                  </select>
+            <section id="targets" className={`${activeSettingsPanel === "targets" ? "" : "hidden"} scroll-mt-6`}>
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#7B8190]" style={fontMeta}>
+                  Settings / Performance targets
                 </div>
-                {goalMetric === "conversions" ? (
+                <h2 className="mt-3 text-2xl font-semibold text-[#111827]" style={fontHeading}>
+                  Performance targets
+                </h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#4B5563]" style={fontBody}>
+                  Set the monthly pace you want each metric to hit. Valid prorates monthly targets against the selected dashboard period,
+                  so a 30-day target still works cleanly for shorter or longer date ranges.
+                </p>
+              </div>
+
+              <div className="mt-7 border border-gray-200 bg-white p-5">
+                <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                  Add a target
+                </div>
+                <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                  Pick a metric and save the monthly target you want to pace against.
+                </div>
+                <form
+                  className={`mt-5 grid items-end gap-3 ${
+                    goalMetric === "conversions"
+                      ? "lg:grid-cols-[minmax(0,220px)_minmax(0,220px)_150px_150px_auto_auto]"
+                      : "lg:grid-cols-[minmax(0,240px)_150px_150px_auto_auto]"
+                  }`}
+                  onSubmit={submitGoal}
+                >
                   <div>
                     <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                      Conversion type
+                      Metric
                     </label>
                     <select
                       className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
                       style={fontBody}
-                      value={goalConversionType}
-                      onChange={(event) => setGoalConversionType(event.target.value)}
+                      value={goalMetric}
+                      onChange={(event) => setGoalMetric(event.target.value as GoalMetric)}
                     >
-                      <option value="">All conversions</option>
-                      {conversionGoalOptions.map((conversionType) => (
-                        <option key={conversionType} value={conversionType}>
-                          {conversionType}
+                      {goalEligibleMetrics.map((metric) => (
+                        <option key={metric} value={metric}>
+                          {metricLabels[metric] ?? metric}
                         </option>
                       ))}
                     </select>
                   </div>
-                ) : null}
-                <div>
-                  <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                    Monthly target
-                  </label>
-                  <input
-                    type="text"
-                    inputMode={goalMetric === "revenue" ? "numeric" : "decimal"}
-                    autoComplete="off"
-                    className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
-                    style={fontBody}
-                    value={goalTargetInput}
-                    onChange={(event) => setGoalTargetInput(event.target.value)}
-                    placeholder={goalMetric === "revenue" ? "10000" : "250"}
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="h-10 whitespace-nowrap border border-[#4f46e5] bg-[#4f46e5] px-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
-                  style={fontBody}
-                >
-                  Save target
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void clearGoal()}
-                  className="h-10 whitespace-nowrap border border-gray-300 bg-white px-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-700 hover:border-gray-400"
-                  style={fontBody}
-                  disabled={!existingGoal}
-                >
-                  Remove
-                </button>
-              </form>
-              {goalStatus && (
-                <div className="mt-2 text-[12px] text-[#4B5563]" style={fontBody}>
-                  {goalStatus}
-                </div>
-              )}
-              <div className="mt-5">
-                <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
-                  Configured targets
-                </div>
-                {sortedGoals.length > 0 ? (
-                  <div className="mt-2 space-y-2">
-                    {sortedGoals.map((goal) => (
-                      <div
-                        key={goalKey(goal.metric, goal.conversionType)}
-                        className="flex items-center justify-between border border-[var(--color-border-subtle)] bg-[#FCFEFE] px-3 py-2"
+                  {goalMetric === "conversions" ? (
+                    <div>
+                      <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                        Conversion type
+                      </label>
+                      <select
+                        className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
+                        style={fontBody}
+                        value={goalConversionType}
+                        onChange={(event) => setGoalConversionType(event.target.value)}
                       >
-                        <div className="text-sm text-[#1F2937]" style={fontBody}>
-                          {goalLabel(goal)}
+                        <option value="">All conversions</option>
+                        {conversionGoalOptions.map((conversionType) => (
+                          <option key={conversionType} value={conversionType}>
+                            {conversionType}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Applies to
+                    </label>
+                    <div className="mt-1 flex h-10 items-center border border-gray-200 bg-[#FCFEFE] px-3 text-sm font-semibold text-[#4B5563]" style={fontBody}>
+                      Every month
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      Target
+                    </label>
+                    <input
+                      type="text"
+                      inputMode={goalMetric === "revenue" ? "numeric" : "decimal"}
+                      autoComplete="off"
+                      className="mt-1 h-10 w-full border border-gray-200 bg-white px-3 text-sm text-[#1F2937]"
+                      style={fontBody}
+                      value={goalTargetInput}
+                      onChange={(event) => setGoalTargetInput(event.target.value)}
+                      placeholder={goalMetric === "revenue" ? "10000" : "250"}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="h-10 whitespace-nowrap border border-[#4f46e5] bg-[#4f46e5] px-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-white hover:bg-[#3730a3]"
+                    style={fontBody}
+                  >
+                    Save target
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void clearGoal()}
+                    className="h-10 whitespace-nowrap border border-gray-300 bg-white px-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                    style={fontBody}
+                    disabled={!existingGoal}
+                  >
+                    Remove
+                  </button>
+                </form>
+                {goalStatus && (
+                  <div className="mt-3 text-[12px] text-[#4B5563]" style={fontBody}>
+                    {goalStatus}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 border border-gray-200 bg-white p-4">
+                <div className="flex gap-3 border-l-2 border-[#4f46e5] pl-4 text-sm leading-6 text-[#4B5563]" style={fontBody}>
+                  <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-gray-300 text-[11px] font-semibold text-[#7B8190]">
+                    i
+                  </span>
+                  <div>
+                    Targets are saved as monthly defaults. The dashboard prorates them for the selected date range, and conversion
+                    targets can apply to all conversions or one conversion event.
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 border border-gray-200 bg-white p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
+                      Configured targets
+                    </div>
+                    <div className="mt-1 text-sm text-gray-500" style={fontBody}>
+                      Grouped by metric. Each saved row applies as a recurring monthly target.
+                    </div>
+                  </div>
+                  {sortedGoals.length > 0 ? (
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
+                      {formatNumber(sortedGoals.length)} set
+                    </div>
+                  ) : null}
+                </div>
+
+                {groupedGoals.length > 0 ? (
+                  <div className="mt-5 space-y-6">
+                    {groupedGoals.map((group) => (
+                      <div key={group.label}>
+                        <div className="flex items-center justify-between gap-3 border-b border-gray-100 pb-2">
+                          <div className="text-sm font-semibold text-[#111827]" style={fontBody}>
+                            {group.label}
+                          </div>
+                          <div className="text-[10px] uppercase tracking-[0.14em] text-gray-400" style={fontMeta}>
+                            {formatNumber(group.goals.length)} set
+                          </div>
                         </div>
-                        <div className="text-sm metric-number text-[#1F2937]" style={fontMetric}>
-                          {formatMetricValue(goal.metric, goal.target)}
-                          <span className="ml-1 text-[11px] font-normal text-[#7B8190]" style={fontBody}>
-                            per month
-                          </span>
+                        <div className="divide-y divide-gray-100">
+                          {group.goals.map((goal) => (
+                            <div
+                              key={goalKey(goal.metric, goal.conversionType)}
+                              className="grid items-center gap-3 py-3 text-sm md:grid-cols-[130px_minmax(130px,180px)_1fr_auto]"
+                            >
+                              <div>
+                                <span className="inline-flex rounded border border-gray-300 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#4B5563]" style={fontMeta}>
+                                  Default
+                                </span>
+                              </div>
+                              <div className="font-semibold text-[#111827]" style={fontBody}>
+                                Every month
+                              </div>
+                              <div className="text-[#4B5563]" style={fontBody}>
+                                <span className="metric-number font-semibold text-[#111827]" style={fontMetric}>
+                                  {formatMetricValue(goal.metric, goal.target)}
+                                </span>{" "}
+                                <span className="text-[#7B8190]">/ mo · prorated for selected dashboard ranges</span>
+                              </div>
+                              <div className="flex justify-end gap-4 text-[12px] font-semibold text-gray-500" style={fontBody}>
+                                <button type="button" onClick={() => editGoal(goal)} className="hover:text-[#4f46e5]">
+                                  Edit
+                                </button>
+                                <button type="button" onClick={() => void removeConfiguredGoal(goal)} className="hover:text-[#8B2635]">
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="mt-2 text-[12px] text-[#6B7280]" style={fontBody}>
+                  <div className="mt-5 text-sm text-[#6B7280]" style={fontBody}>
                     No targets configured yet for this site.
                   </div>
                 )}
               </div>
             </section>
 
-            <section id="alerts" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+            <section id="alerts" className={`${activeSettingsPanel === "alerts" ? "" : "hidden"} scroll-mt-6 border border-gray-200 bg-white p-5`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
@@ -5236,7 +5397,7 @@ const Settings: React.FC = () => {
               )}
             </section>
 
-            <section id="shields" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+            <section id="shields" className={`${activeSettingsPanel === "shields" ? "" : "hidden"} scroll-mt-6 border border-gray-200 bg-white p-5`}>
               <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
                 Shields
               </div>
@@ -5320,7 +5481,7 @@ const Settings: React.FC = () => {
               </div>
             </section>
 
-            <section id="billing" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+            <section id="billing" className={`${activeSettingsPanel === "billing" ? "" : "hidden"} scroll-mt-6 border border-gray-200 bg-white p-5`}>
               <div className="text-lg font-semibold text-[#111827]" style={fontBody}>
                 Plan & billing
               </div>
@@ -5372,7 +5533,7 @@ const Settings: React.FC = () => {
               </div>
             </section>
 
-            <section id="imports" className="scroll-mt-6 border border-gray-200 bg-white p-5">
+            <section id="imports" className={`${activeSettingsPanel === "imports" ? "" : "hidden"} scroll-mt-6 border border-gray-200 bg-white p-5`}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold text-[#111827]" style={fontBody}>

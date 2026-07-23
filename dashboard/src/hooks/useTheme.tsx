@@ -1,20 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark";
+type ThemePreference = ThemeMode | "system";
 
 const STORAGE_KEY = "valid.theme";
 
-const readInitialTheme = (): ThemeMode => {
-  if (typeof window === "undefined") return "light";
+const readThemePreference = (): ThemePreference => {
+  if (typeof window === "undefined") return "system";
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored === "system") return stored;
     if (stored === "light" || stored === "dark") return stored;
   } catch {
     // localStorage unavailable (privacy mode, etc.); fall through to media query.
   }
-  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-    return "dark";
-  }
+  return "system";
+};
+
+const getSystemTheme = (): ThemeMode => {
+  if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches) return "dark";
   return "light";
 };
 
@@ -24,39 +28,42 @@ const applyTheme = (mode: ThemeMode) => {
 };
 
 export const useTheme = (): { theme: ThemeMode; toggleTheme: () => void; setTheme: (mode: ThemeMode) => void } => {
-  const [theme, setThemeState] = useState<ThemeMode>(() => {
-    const initial = readInitialTheme();
-    applyTheme(initial);
-    return initial;
-  });
+  const [preference, setPreference] = useState<ThemePreference>(() => readThemePreference());
+  const [systemTheme, setSystemTheme] = useState<ThemeMode>(() => getSystemTheme());
+  const theme = preference === "system" ? systemTheme : preference;
 
   useEffect(() => {
     applyTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, theme);
+      if (preference === "system") {
+        window.localStorage.removeItem(STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(STORAGE_KEY, preference);
+      }
     } catch {
       // ignore write failures; theme state still lives in memory for this session
     }
-  }, [theme]);
+  }, [preference]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = (event: MediaQueryListEvent) => {
-      try {
-        if (window.localStorage.getItem(STORAGE_KEY)) return;
-      } catch {
-        // ignore; treat as unset and follow system preference
-      }
-      setThemeState(event.matches ? "dark" : "light");
+      setSystemTheme(event.matches ? "dark" : "light");
     };
     media.addEventListener("change", handler);
     return () => media.removeEventListener("change", handler);
   }, []);
 
-  const setTheme = useCallback((mode: ThemeMode) => setThemeState(mode), []);
+  const setTheme = useCallback((mode: ThemeMode) => setPreference(mode), []);
   const toggleTheme = useCallback(() => {
-    setThemeState((prev) => (prev === "dark" ? "light" : "dark"));
+    setPreference((prev) => {
+      const resolved = prev === "system" ? getSystemTheme() : prev;
+      return resolved === "dark" ? "light" : "dark";
+    });
   }, []);
 
   return { theme, toggleTheme, setTheme };

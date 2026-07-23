@@ -26,6 +26,7 @@
   --surface-page: #f9fafb;
   --surface-card: #ffffff;
   --surface-card-muted: #f7f8fa;
+  --surface-highlight: #f8f9ff;
   --surface-hover: #f9fafb;
   --surface-active: #eef2ff;
   --text-primary: #111827;
@@ -40,16 +41,17 @@
 
 html[data-theme="dark"] {
   color-scheme: dark;
-  --surface-page: #0b0d12;
-  --surface-card: #1f2937;
-  --surface-card-muted: #1e2330;
-  --surface-hover: #1e2330;
-  --surface-active: #4338ca;
-  --text-primary: #f9fafb;
-  --text-secondary: rgba(249, 250, 251, 0.82);
-  --text-muted: rgba(249, 250, 251, 0.58);
-  --text-soft: rgba(249, 250, 251, 0.4);
-  --border-default: rgba(249, 250, 251, 0.12);
+  --surface-page: #111318;
+  --surface-card: #171b24;
+  --surface-card-muted: #1d2330;
+  --surface-highlight: rgba(99, 102, 241, 0.14);
+  --surface-hover: #202736;
+  --surface-active: rgba(99, 102, 241, 0.28);
+  --text-primary: #e8ecf3;
+  --text-secondary: rgba(232, 236, 243, 0.78);
+  --text-muted: rgba(232, 236, 243, 0.58);
+  --text-soft: rgba(232, 236, 243, 0.42);
+  --border-default: rgba(232, 236, 243, 0.12);
   --border-strong: rgba(99, 102, 241, 0.35);
   --tooltip-bg: #4338ca;
   --tooltip-text: #f9fafb;

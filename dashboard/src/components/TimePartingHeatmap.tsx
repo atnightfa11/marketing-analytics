@@ -94,7 +94,7 @@ export const TimePartingHeatmap: FC<{
     const share = total > 0 ? value / total : 0;
     const width = max > 0 ? Math.max(3, (value / max) * 100) : 0;
     return (
-      <tr key={label} className={isPeak ? "bg-[#F8F9FF]" : undefined} title={isPeak ? "Highest value in this group" : undefined}>
+      <tr key={label} className={isPeak ? "bg-[var(--surface-highlight)]" : undefined} title={isPeak ? "Highest value in this group" : undefined}>
         <td className={`py-2.5 pr-3 text-[12px] ${isPeak ? "font-semibold text-[#111827]" : "text-[#374151]"}`} style={fontBody}>
           {label}
         </td>
