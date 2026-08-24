@@ -69,8 +69,11 @@ Breakdown definitions:
 
 - `pages`: from pageview `payload.url`, normalized to a path.
 - `sources`: from session/pageview/conversion attribution labels using `referrer_source` first, then `referrer_bucket`.
-  - Common normalization examples: `google.com -> Google`, `duckduckgo.com -> DuckDuckGo`, `reddit.com -> Reddit`, `x.com`/`t.co -> X`, `linkedin.com -> LinkedIn`
-  - Fallback bucket mapping: `direct -> Direct`, `external/referral -> Referral`, `organic -> Organic`, `social -> Social`, `email -> Email`, `paid -> Paid`
+  - Common normalization examples: `google.com -> Google`, `duckduckgo.com -> DuckDuckGo`, `reddit.com -> Reddit`, `x.com`/`t.co -> X`, `linkedin.com -> LinkedIn`, `chatgpt.com -> ChatGPT`, `perplexity.ai -> Perplexity`
+  - Fallback bucket mapping: `direct -> Direct`, `external/referral -> Referral`, `organic -> Organic`, `social -> Social`, `email -> Email`, `paid -> Paid`, `ai -> AI Assistants`
+  - Dashboard channel grouping is derived from these aggregate source labels. Known search engines become `Organic Search`, known social sites become `Organic Social`, known AI assistant tools become `AI Assistants`, and email/newsletter labels become `Email`.
+  - Paid channels require explicit paid evidence such as paid UTM medium (`cpc`, `ppc`, `paid`, `display`, etc.), Google/Bing ad click IDs, or known ad-source labels such as `googleads`/`bingads`. Generic campaign naming does not classify traffic as paid.
+  - The dashboard's `Source / Medium` tab is currently an inferred reporting label built from source/channel classification. It is not yet a durable raw `utm_medium` rollup.
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
 - `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`) and, when headers are unavailable, optional server-side GeoIP country lookup from request IP. Fallback `Unknown`.
 - `hostnames`: from normalized request hostname (`_hostname`) for subdomain-aware reporting.

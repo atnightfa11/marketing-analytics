@@ -71,6 +71,30 @@ describe("source classification", () => {
     expect(email.bucket).toBe("email");
   });
 
+  it("does not treat organic social click IDs as paid traffic", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/blog?utm_source=facebook&fbclid=abc123",
+      ""
+    );
+    expect(result.bucket).toBe("social");
+    expect(result.source).toBe("facebook");
+  });
+
+  it("classifies AI assistant sources separately", () => {
+    const referrer = classifyReferrerBucket(
+      "https://example.com/blog",
+      "https://www.perplexity.ai/search/example"
+    );
+    const tagged = classifyReferrerBucket(
+      "https://example.com/blog?utm_source=chatgpt",
+      ""
+    );
+    expect(referrer.bucket).toBe("ai");
+    expect(referrer.source).toBe("perplexity.ai");
+    expect(tagged.bucket).toBe("ai");
+    expect(tagged.source).toBe("chatgpt");
+  });
+
   it("classifies source params even without medium", () => {
     const organic = classifyReferrerBucket(
       "https://example.com/blog?source=google",

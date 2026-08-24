@@ -55,6 +55,15 @@ const EMAIL_HOSTS = [
   "protonmail.com",
 ];
 
+const AI_ASSISTANT_HOSTS = [
+  "chatgpt.com",
+  "chat.openai.com",
+  "claude.ai",
+  "perplexity.ai",
+  "gemini.google.com",
+  "copilot.microsoft.com",
+];
+
 const SEARCH_SOURCE_HINTS = [
   "google",
   "bing",
@@ -67,7 +76,14 @@ const SEARCH_SOURCE_HINTS = [
   "baidu",
   "qwant",
   "naver",
+];
+
+const AI_ASSISTANT_SOURCE_HINTS = [
+  "chatgpt",
+  "claude",
   "perplexity",
+  "gemini",
+  "copilot",
 ];
 
 const SOCIAL_SOURCE_HINTS = [
@@ -109,6 +125,13 @@ const CLICK_ID_QUERY_PARAMS = new Set([
   "li_fat_id",
   "yclid",
   "srsltid",
+]);
+
+const SEARCH_AD_CLICK_ID_QUERY_PARAMS = new Set([
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "msclkid",
 ]);
 
 const PAID_MEDIUM_HINTS = [
@@ -520,11 +543,24 @@ function sourceLabelFromHost(hostname: string): string {
   return host || "Unknown";
 }
 
+function paidSourceFromClickId(currentUrl: URL, utmSource: string): string | null {
+  for (const key of SEARCH_AD_CLICK_ID_QUERY_PARAMS) {
+    if (!currentUrl.searchParams.get(key)) continue;
+    if (utmSource) return utmSource;
+    return key === "msclkid" ? "bingads" : "googleads";
+  }
+  if (currentUrl.searchParams.get("dclid")) {
+    return utmSource || "paid";
+  }
+  return null;
+}
+
 function classifyBySource(utmSource: string): string | null {
   if (!utmSource) return null;
   const source = utmSource.trim().toLowerCase();
   if (!source) return null;
   if (source === "direct" || source === "(direct)") return "direct";
+  if (AI_ASSISTANT_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "ai";
   if (EMAIL_SOURCE_HINTS.some((hint) => source.includes(hint))) return "email";
   if (SOCIAL_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "social";
   if (SEARCH_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "organic";
@@ -563,16 +599,10 @@ export function classifyReferrerBucket(
     ?? currentUrl.searchParams.get("medium")
     ?? ""
   ).trim().toLowerCase();
-  const hasPaidClickId = [
-    "gclid",
-    "msclkid",
-    "fbclid",
-    "ttclid",
-    "li_fat_id",
-  ].some((key) => Boolean(currentUrl.searchParams.get(key)));
+  const paidClickSource = paidSourceFromClickId(currentUrl, utmSource);
 
-  if (hasPaidClickId) {
-    return { bucket: "paid", source: utmSource || "Paid" };
+  if (paidClickSource) {
+    return { bucket: "paid", source: paidClickSource };
   }
 
   const mediumBucket = classifyByMedium(utmMedium);
@@ -611,6 +641,9 @@ export function classifyReferrerBucket(
     return resolveCarryoverAttribution(options) ?? directSource();
   }
 
+  if (hostMatches(referrerUrl.hostname, AI_ASSISTANT_HOSTS)) {
+    return { bucket: "ai", source: sourceLabelFromHost(referrerUrl.hostname) };
+  }
   if (hostMatches(referrerUrl.hostname, SEARCH_ENGINE_HOSTS)) {
     return { bucket: "organic", source: sourceLabelFromHost(referrerUrl.hostname) };
   }

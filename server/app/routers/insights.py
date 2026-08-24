@@ -84,12 +84,28 @@ SEARCH_SOURCE_SET = {
     "baidu.com",
     "yandex.com",
 }
+AI_ASSISTANT_SOURCE_SET = {
+    "chatgpt",
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude",
+    "claude.ai",
+    "perplexity",
+    "perplexity.ai",
+    "gemini",
+    "gemini.google.com",
+    "copilot",
+    "copilot.microsoft.com",
+    "openai.com",
+}
 SOCIAL_SOURCE_SET = {
     "reddit",
     "reddit.com",
     "x",
     "x.com",
     "t.co",
+    "twitter",
+    "twitter.com",
     "linkedin",
     "linkedin.com",
     "facebook",
@@ -103,6 +119,9 @@ SOCIAL_SOURCE_SET = {
     "threads.net",
     "pinterest.com",
 }
+EMAIL_SOURCE_SET = {"email", "e-mail", "e_mail", "e mail", "gmail", "newsletter"}
+PAID_SEARCH_SOURCE_SET = {"adwords", "bing ads", "bingads", "google ads", "googleads", "microsoft ads", "microsoftads"}
+PAID_SIGNAL_TOKENS = {"cpc", "ppc", "paid", "retargeting", "remarketing", "sponsored", "display", "cpm"}
 
 
 def _day_start(day: dt.date) -> dt.datetime:
@@ -209,6 +228,29 @@ def _primary_metric_for_dimension(dimension: InsightDimension) -> str:
     return breakdown_logic.BREAKDOWN_PRIMARY_METRIC[dimension]
 
 
+def _source_key(label: str) -> str:
+    value = label.strip().lower()
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if value.startswith("www."):
+        value = value[4:]
+    return value
+
+
+def _matches_source_set(label: str, candidates: set[str]) -> bool:
+    value = _source_key(label)
+    return any(value == candidate or value.endswith(f".{candidate}") for candidate in candidates)
+
+
+def _has_paid_signal(label: str) -> bool:
+    value = label.strip().lower()
+    source_key = _source_key(value)
+    normalized = " ".join(value.replace("_", " ").replace("-", " ").replace("/", " ").split())
+    tokens = set(normalized.split())
+    return source_key in PAID_SEARCH_SOURCE_SET or bool(tokens & PAID_SIGNAL_TOKENS)
+
+
 def _classify_channel_label(label: str) -> str:
     normalized = label.strip().lower()
     if not normalized or normalized in {"unknown", "referral"}:
@@ -221,15 +263,23 @@ def _classify_channel_label(label: str) -> str:
         return "Organic Social"
     if normalized == "email":
         return "Email"
-    is_paid = any(token in normalized for token in ("paid", "cpc", "ppc", "adwords", "sponsored", "campaign"))
-    if is_paid and normalized in SOCIAL_SOURCE_SET:
+    if normalized == "ai":
+        return "AI Assistants"
+    if _matches_source_set(normalized, AI_ASSISTANT_SOURCE_SET):
+        return "AI Assistants"
+    is_paid = _has_paid_signal(normalized)
+    if is_paid and _matches_source_set(normalized, SOCIAL_SOURCE_SET):
         return "Paid Social"
-    if is_paid:
+    if is_paid and (_matches_source_set(normalized, SEARCH_SOURCE_SET) or _source_key(normalized) in PAID_SEARCH_SOURCE_SET):
         return "Paid Search"
-    if normalized in SOCIAL_SOURCE_SET:
+    if is_paid:
+        return "Paid Other"
+    if _matches_source_set(normalized, SOCIAL_SOURCE_SET):
         return "Organic Social"
-    if normalized in SEARCH_SOURCE_SET:
+    if _matches_source_set(normalized, SEARCH_SOURCE_SET):
         return "Organic Search"
+    if normalized in EMAIL_SOURCE_SET:
+        return "Email"
     return "Referral"
 
 

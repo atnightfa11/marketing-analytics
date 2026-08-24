@@ -102,12 +102,38 @@ BREAKDOWN_MIN_PRIMARY_THRESHOLD: dict[BreakdownDimension, float] = {
 }
 
 COMMON_SOURCE_HOST_MAP = {
+    "adwords": "Google Ads",
+    "bing.com": "Bing",
+    "bingads": "Bing Ads",
+    "chat.openai.com": "ChatGPT",
+    "chatgpt": "ChatGPT",
+    "chatgpt.com": "ChatGPT",
+    "claude": "Claude",
+    "claude.ai": "Claude",
+    "copilot": "Copilot",
+    "copilot.microsoft.com": "Copilot",
+    "ecosia.org": "Ecosia",
+    "facebook.com": "Facebook",
+    "gemini": "Gemini",
+    "gemini.google.com": "Gemini",
     "google.com": "Google",
+    "googleads": "Google Ads",
+    "instagram.com": "Instagram",
     "duckduckgo.com": "DuckDuckGo",
+    "microsoftads": "Microsoft Ads",
+    "openai.com": "ChatGPT",
+    "perplexity": "Perplexity",
+    "perplexity.ai": "Perplexity",
+    "pinterest.com": "Pinterest",
     "reddit.com": "Reddit",
+    "threads.net": "Threads",
+    "tiktok.com": "TikTok",
+    "twitter.com": "X",
     "x.com": "X",
     "t.co": "X",
     "linkedin.com": "LinkedIn",
+    "yahoo.com": "Yahoo",
+    "youtube.com": "YouTube",
 }
 
 
@@ -185,6 +211,7 @@ def normalize_source_bucket(raw_value: object) -> str:
         "social": "Social",
         "email": "Email",
         "paid": "Paid",
+        "ai": "AI Assistants",
     }
     return mapping.get(value, "Unknown")
 

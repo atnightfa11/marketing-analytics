@@ -16,6 +16,7 @@ import {
   BillingStatus,
   BreakdownDimension,
   BreakdownMetricKey,
+  BreakdownResponse,
   BreakdownRow,
   createCheckoutSession,
   createDashboardNote,
@@ -94,6 +95,7 @@ import type {
   ActiveFilter,
   BreakdownData,
   BreakdownErrorMap,
+  BreakdownComparisonContext,
   BreakdownMetricTotals,
   BreakdownTableRow,
   ChartGranularity,
@@ -468,6 +470,17 @@ const createEmptyBreakdownMap = (): Record<BreakdownDimension, BreakdownData> =>
   hostnames: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
 });
 
+const breakdownResponseToData = (response: BreakdownResponse): BreakdownData => ({
+  rows: response.rows.map((row: BreakdownRow) => ({
+    label: row.label,
+    metrics: row.metrics ?? {},
+  })),
+  total: response.total ?? 0,
+  primaryMetric: response.primary_metric,
+  metricKeys: response.metric_keys ?? [response.primary_metric],
+  totalsByMetric: response.totals ?? {},
+});
+
 const breakdownSectionLabels: Record<BreakdownDimension, string> = {
   sources: "Traffic sources",
   pages: "Top pages",
@@ -748,6 +761,10 @@ const Overview: React.FC = () => {
   const [remoteInsights, setRemoteInsights] = useState<InsightItem[]>([]);
   const [remoteInsightsStatus, setRemoteInsightsStatus] = useState<"fallback" | "loading" | "loaded" | "error">("fallback");
   const [breakdownData, setBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>(() => createEmptyBreakdownMap());
+  const [comparisonBreakdownData, setComparisonBreakdownData] = useState<Record<BreakdownDimension, BreakdownData>>(() =>
+    createEmptyBreakdownMap()
+  );
+  const [comparisonBreakdownsReady, setComparisonBreakdownsReady] = useState(false);
   const [breakdownErrors, setBreakdownErrors] = useState<BreakdownErrorMap>({});
   const [hostnameOptions, setHostnameOptions] = useState<string[]>([]);
   const [hostnameError, setHostnameError] = useState<string | null>(null);
@@ -1343,16 +1360,7 @@ const Overview: React.FC = () => {
             nextErrors[dimension] = message ?? `Unable to load ${breakdownSectionLabels[dimension].toLowerCase()} right now.`;
             return;
           }
-          next[result.value.dimension] = {
-            rows: result.value.response.rows.map((row: BreakdownRow) => ({
-              label: row.label,
-              metrics: row.metrics ?? {},
-            })),
-            total: result.value.response.total ?? 0,
-            primaryMetric: result.value.response.primary_metric,
-            metricKeys: result.value.response.metric_keys ?? [result.value.response.primary_metric],
-            totalsByMetric: result.value.response.totals ?? {},
-          };
+          next[result.value.dimension] = breakdownResponseToData(result.value.response);
         });
         setBreakdownData(next);
         setBreakdownErrors(nextErrors);
@@ -1600,6 +1608,59 @@ const Overview: React.FC = () => {
     setCompareRange({ start: formatIsoDate(compareStart), end: formatIsoDate(compareEnd) });
   }, [compareEnabled, compareMode, primaryRangeBounds, compareRange.start]);
 
+  useEffect(() => {
+    if (!canQuery || showSeededBreakdowns || !compareEnabled || !comparisonBounds) {
+      setComparisonBreakdownData(createEmptyBreakdownMap());
+      setComparisonBreakdownsReady(false);
+      return;
+    }
+
+    let cancelled = false;
+    setComparisonBreakdownsReady(false);
+    Promise.allSettled(
+      breakdownDimensions.map((dimension) =>
+        fetchBreakdown(
+          dimension,
+          token ?? undefined,
+          siteId,
+          comparisonBounds.start,
+          comparisonBounds.end,
+          dimension === "hour_of_day" ? 24 : dimension === "day_of_week" ? 7 : 50,
+          hostnameFilter,
+          dimension === "hour_of_day" || dimension === "day_of_week" ? timePartingDayType : undefined
+        ).then((response) => ({
+          dimension,
+          response,
+        }))
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const next = createEmptyBreakdownMap();
+      results.forEach((result) => {
+        if (result.status === "rejected") {
+          console.error(result.reason);
+          return;
+        }
+        next[result.value.dimension] = breakdownResponseToData(result.value.response);
+      });
+      setComparisonBreakdownData(next);
+      setComparisonBreakdownsReady(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canQuery,
+    showSeededBreakdowns,
+    compareEnabled,
+    comparisonBounds,
+    token,
+    siteId,
+    hostnameFilter,
+    timePartingDayType,
+  ]);
+
   const filterByWindow = (entries: { day: string; value: number }[], start: string, end: string) => {
     if (entries.length === 0) return entries;
     const minDate = parseDay(entries[0].day);
@@ -1686,6 +1747,23 @@ const Overview: React.FC = () => {
   const comparisonRangeLabel = compareEnabled && comparisonBounds
     ? formatRangeLabel(comparisonBounds.start, comparisonBounds.end)
     : null;
+  const comparisonContextFor = useCallback(
+    (
+      rows: BreakdownTableRow[],
+      total: number,
+      totalsByMetric: BreakdownMetricTotals
+    ): BreakdownComparisonContext | null => {
+      if (!compareEnabled || !comparisonBounds || !comparisonRangeLabel || !comparisonBreakdownsReady) return null;
+      return {
+        rows,
+        total,
+        totalsByMetric,
+        currentLabel: currentRangeLabel ?? range,
+        comparisonLabel: comparisonRangeLabel,
+      };
+    },
+    [compareEnabled, comparisonBounds, comparisonRangeLabel, comparisonBreakdownsReady, currentRangeLabel, range]
+  );
   const insightComparisonBounds = comparisonBounds ?? previousBounds;
   useEffect(() => {
     if (
@@ -2061,6 +2139,13 @@ const Overview: React.FC = () => {
         : breakdownData.sources.rows.map((row) => ({ ...row, label: normalizeSourceLabel(row.label) })),
     [showSeededBreakdowns, seededBreakdownTotals, breakdownData.sources.rows]
   );
+  const comparisonSourceRows = useMemo(
+    () =>
+      showSeededBreakdowns
+        ? []
+        : comparisonBreakdownData.sources.rows.map((row) => ({ ...row, label: normalizeSourceLabel(row.label) })),
+    [showSeededBreakdowns, comparisonBreakdownData.sources.rows]
+  );
   const channelRows = useMemo(
     () =>
       aggregateRowsByLabel(
@@ -2071,6 +2156,16 @@ const Overview: React.FC = () => {
       ),
     [sourceRows]
   );
+  const comparisonChannelRows = useMemo(
+    () =>
+      aggregateRowsByLabel(
+        comparisonSourceRows.map((row) => ({
+          label: classifyChannelLabel(row.label),
+          metrics: row.metrics,
+        }))
+      ),
+    [comparisonSourceRows]
+  );
   const sourceMediumRows = useMemo(
     () =>
       aggregateRowsByLabel(
@@ -2080,6 +2175,16 @@ const Overview: React.FC = () => {
         }))
       ),
     [sourceRows]
+  );
+  const comparisonSourceMediumRows = useMemo(
+    () =>
+      aggregateRowsByLabel(
+        comparisonSourceRows.map((row) => ({
+          label: buildSourceMediumLabel(row.label),
+          metrics: row.metrics,
+        }))
+      ),
+    [comparisonSourceRows]
   );
   const campaignRows = useMemo(() => {
     if (!showSeededBreakdowns) return [] as BreakdownTableRow[];
@@ -2109,6 +2214,12 @@ const Overview: React.FC = () => {
     if (acquisitionTab === "campaigns") return campaignRows;
     return channelRows;
   }, [acquisitionTab, sourceRows, sourceMediumRows, campaignRows, channelRows]);
+  const acquisitionComparisonRows = useMemo(() => {
+    if (acquisitionTab === "sources") return comparisonSourceRows;
+    if (acquisitionTab === "source_medium") return comparisonSourceMediumRows;
+    if (acquisitionTab === "campaigns") return [] as BreakdownTableRow[];
+    return comparisonChannelRows;
+  }, [acquisitionTab, comparisonSourceRows, comparisonSourceMediumRows, comparisonChannelRows]);
   const acquisitionMetricKeys = showSeededBreakdowns
     ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
     : acquisitionTab === "campaigns"
@@ -2121,6 +2232,8 @@ const Overview: React.FC = () => {
       : breakdownData.sources.primaryMetric;
   const acquisitionTotal = showSeededBreakdowns ? scaledTotals.sessions : breakdownData.sources.total;
   const acquisitionTotalsByMetric = showSeededBreakdowns ? seededBreakdownTotals : breakdownData.sources.totalsByMetric;
+  const acquisitionComparisonTotal = comparisonBreakdownData.sources.total;
+  const acquisitionComparisonTotalsByMetric = comparisonBreakdownData.sources.totalsByMetric;
   const acquisitionEmptyState =
     acquisitionTab === "campaigns"
       ? "Campaign and UTM metadata will appear after campaign parameters are collected."
@@ -2174,6 +2287,7 @@ const Overview: React.FC = () => {
         : breakdownData.pages.rows,
     [showSeededBreakdowns, scaledTotals.uniques, scaledTotals.sessions, scaledTotals.pageviews, breakdownData.pages.rows]
   );
+  const comparisonPageRows = showSeededBreakdowns ? [] : comparisonBreakdownData.pages.rows;
   const deviceRows = useMemo(
     () =>
       showSeededBreakdowns
@@ -2181,6 +2295,7 @@ const Overview: React.FC = () => {
         : breakdownData.devices.rows,
     [showSeededBreakdowns, seededBreakdownTotals, breakdownData.devices.rows]
   );
+  const comparisonDeviceRows = showSeededBreakdowns ? [] : comparisonBreakdownData.devices.rows;
   const countryRows = useMemo(
     () =>
       showSeededBreakdowns
@@ -2192,6 +2307,7 @@ const Overview: React.FC = () => {
         : breakdownData.countries.rows,
     [showSeededBreakdowns, seededBreakdownTotals, breakdownData.countries.rows]
   );
+  const comparisonCountryRows = showSeededBreakdowns ? [] : comparisonBreakdownData.countries.rows;
   const goalRows = useMemo(
     () =>
       showSeededBreakdowns
@@ -2203,6 +2319,7 @@ const Overview: React.FC = () => {
         : breakdownData.conversions.rows,
     [showSeededBreakdowns, scaledTotals.uniques, scaledTotals.sessions, scaledTotals.conversions, breakdownData.conversions.rows]
   );
+  const comparisonGoalRows = showSeededBreakdowns ? [] : comparisonBreakdownData.conversions.rows;
   const seededHourRows = useMemo(
     () =>
       buildMetricRows(
@@ -2244,6 +2361,11 @@ const Overview: React.FC = () => {
         totalsByMetric: showSeededBreakdowns
           ? ({ uniques: scaledTotals.uniques, sessions: scaledTotals.sessions, pageviews: scaledTotals.pageviews } as BreakdownMetricTotals)
           : breakdownData.pages.totalsByMetric,
+        comparison: comparisonContextFor(
+          comparisonPageRows,
+          comparisonBreakdownData.pages.total,
+          comparisonBreakdownData.pages.totalsByMetric
+        ),
       },
       {
         title: "Countries",
@@ -2257,6 +2379,11 @@ const Overview: React.FC = () => {
           : breakdownData.countries.metricKeys,
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.countries.total,
         totalsByMetric: showSeededBreakdowns ? seededBreakdownTotals : breakdownData.countries.totalsByMetric,
+        comparison: comparisonContextFor(
+          comparisonCountryRows,
+          comparisonBreakdownData.countries.total,
+          comparisonBreakdownData.countries.totalsByMetric
+        ),
       },
       {
         title: "Devices",
@@ -2270,6 +2397,11 @@ const Overview: React.FC = () => {
           : breakdownData.devices.metricKeys,
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.devices.total,
         totalsByMetric: showSeededBreakdowns ? seededBreakdownTotals : breakdownData.devices.totalsByMetric,
+        comparison: comparisonContextFor(
+          comparisonDeviceRows,
+          comparisonBreakdownData.devices.total,
+          comparisonBreakdownData.devices.totalsByMetric
+        ),
       },
       {
         title: "Goal completions",
@@ -2285,13 +2417,22 @@ const Overview: React.FC = () => {
         totalsByMetric: showSeededBreakdowns
           ? ({ uniques: scaledTotals.uniques, sessions: scaledTotals.sessions, conversions: scaledTotals.conversions } as BreakdownMetricTotals)
           : breakdownData.conversions.totalsByMetric,
+        comparison: comparisonContextFor(
+          comparisonGoalRows,
+          comparisonBreakdownData.conversions.total,
+          comparisonBreakdownData.conversions.totalsByMetric
+        ),
       },
     ];
   }, [
     pageRows,
+    comparisonPageRows,
     countryRows,
+    comparisonCountryRows,
     deviceRows,
+    comparisonDeviceRows,
     goalRows,
+    comparisonGoalRows,
     showSeededBreakdowns,
     scaledTotals.uniques,
     scaledTotals.sessions,
@@ -2317,6 +2458,15 @@ const Overview: React.FC = () => {
     breakdownData.conversions.metricKeys,
     breakdownData.conversions.total,
     breakdownData.conversions.totalsByMetric,
+    comparisonBreakdownData.pages.total,
+    comparisonBreakdownData.pages.totalsByMetric,
+    comparisonBreakdownData.countries.total,
+    comparisonBreakdownData.countries.totalsByMetric,
+    comparisonBreakdownData.devices.total,
+    comparisonBreakdownData.devices.totalsByMetric,
+    comparisonBreakdownData.conversions.total,
+    comparisonBreakdownData.conversions.totalsByMetric,
+    comparisonContextFor,
   ]);
 
   // URL persistence: mirror dashboard state back into the query params (initial state is hydrated
@@ -3824,6 +3974,11 @@ const Overview: React.FC = () => {
               primaryMetric={acquisitionPrimaryMetric}
               total={acquisitionTotal}
               totalsByMetric={acquisitionTotalsByMetric}
+              comparison={comparisonContextFor(
+                acquisitionComparisonRows,
+                acquisitionComparisonTotal,
+                acquisitionComparisonTotalsByMetric
+              )}
               rowDimension={acquisitionDimensionKey}
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
@@ -3837,6 +3992,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[0]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[0]?.total}
               totalsByMetric={breakdownCards[0]?.totalsByMetric}
+              comparison={breakdownCards[0]?.comparison}
               emptyState={breakdownCards[0]?.empty}
               error={breakdownCards[0]?.error}
               rowDimension={breakdownCards[0]?.dimension}
@@ -3850,6 +4006,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[1]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[1]?.total}
               totalsByMetric={breakdownCards[1]?.totalsByMetric}
+              comparison={breakdownCards[1]?.comparison}
               emptyState={breakdownCards[1]?.empty}
               error={breakdownCards[1]?.error}
               rowDimension={breakdownCards[1]?.dimension}
@@ -3863,6 +4020,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[2]?.primaryMetric ?? "pageviews"}
               total={breakdownCards[2]?.total}
               totalsByMetric={breakdownCards[2]?.totalsByMetric}
+              comparison={breakdownCards[2]?.comparison}
               emptyState={breakdownCards[2]?.empty}
               error={breakdownCards[2]?.error}
               rowDimension={breakdownCards[2]?.dimension}
@@ -3888,6 +4046,7 @@ const Overview: React.FC = () => {
               primaryMetric={breakdownCards[3]?.primaryMetric ?? "conversions"}
               total={breakdownCards[3]?.total}
               totalsByMetric={breakdownCards[3]?.totalsByMetric}
+              comparison={breakdownCards[3]?.comparison}
               emptyState={breakdownCards[3]?.empty}
               error={breakdownCards[3]?.error}
               rowDimension={breakdownCards[3]?.dimension}

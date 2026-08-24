@@ -27,6 +27,14 @@ export interface BreakdownTableRow {
   metrics: BreakdownMetricTotals;
 }
 
+export interface BreakdownComparisonContext {
+  rows: BreakdownTableRow[];
+  total: number;
+  totalsByMetric: BreakdownMetricTotals;
+  currentLabel?: string | null;
+  comparisonLabel?: string | null;
+}
+
 export interface ActiveFilter {
   dimension: string;
   value: string;

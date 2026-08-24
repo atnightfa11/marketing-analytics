@@ -1736,6 +1736,73 @@ async def test_free_raw_purge_keeps_rollup_backed_dashboard_paths_available(clie
 
 
 @pytest.mark.asyncio
+async def test_free_source_rollups_preserve_direct_and_organic_counts(client):
+    site_id = "site-free-source-rollup-attribution"
+    target_day = date(2026, 5, 8)
+    await _set_site_plan(site_id, "free")
+
+    source_cases = [
+        ("direct-sess-a", "direct-visitor-a", "direct", "direct"),
+        ("direct-sess-b", "direct-visitor-b", "direct", "direct"),
+        ("organic-sess-a", "organic-visitor-a", "organic", "google.com"),
+        ("organic-sess-b", "organic-visitor-b", "organic", "google.com"),
+        ("organic-sess-c", "organic-visitor-c", "organic", "google.com"),
+    ]
+    for index, (session_id, visitor_id, referrer_bucket, referrer_source) in enumerate(source_cases):
+        timestamp = datetime(2026, 5, 8, 16, index, tzinfo=timezone.utc)
+        common_payload = {
+            "_device_bucket": "desktop",
+            "_country_code": "US",
+            "_session_hmac": session_id,
+            "_visitor_day_hmac": visitor_id,
+            "_hostname": "neurotypicaltranslator.com",
+        }
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={
+                **common_payload,
+                "referrer_bucket": referrer_bucket,
+                "referrer_source": referrer_source,
+            },
+            day=target_day,
+            server_received_at=timestamp,
+        )
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={**common_payload, "url": "/"},
+            day=target_day,
+            server_received_at=timestamp + timedelta(seconds=10),
+        )
+
+    original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+    reduce_settings.MIN_REPORTS_PER_WINDOW = 1
+    try:
+        async with async_session_factory() as session:
+            await reduce_reports(session, start_day=target_day, end_day=target_day)
+    finally:
+        reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+
+    sources_resp = client.get(
+        "/api/breakdown",
+        params={
+            "site_id": site_id,
+            "dimension": "sources",
+            "start": target_day.isoformat(),
+            "end": target_day.isoformat(),
+            "limit": 10,
+        },
+    )
+    assert sources_resp.status_code == 200
+    rows_by_label = {row["label"]: row["metrics"] for row in sources_resp.json()["rows"]}
+    assert rows_by_label["Google"]["sessions"] == 3.0
+    assert rows_by_label["Google"]["pageviews"] == 3.0
+    assert rows_by_label["Direct"]["sessions"] == 2.0
+    assert rows_by_label["Direct"]["pageviews"] == 2.0
+
+
+@pytest.mark.asyncio
 async def test_breakdown_mixes_reduced_rollups_with_unreduced_raw_fallback(client):
     site_id = "site-breakdown-mixed-fallback"
     reduced_day = date(2026, 5, 8)
