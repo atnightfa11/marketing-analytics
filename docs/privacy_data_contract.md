@@ -29,7 +29,7 @@ This contract defines what each analytics table is allowed to contain and how it
 
 - KPI trend endpoints read from `dp_windows`.
 - Breakdown endpoints read from `breakdown_rollups` for days with successful reducer watermarks, falling back to bounded `raw_reports` only for unreduced days.
-- Sparse breakdown output remains threshold-gated before response.
+- Low-dimensional breakdown output is served from aggregate rollups without k-threshold response gates.
 - Historical import rows are aggregate-only and excluded from dimension rollups.
 - Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
 - Insight endpoints may use `dp_windows`, `breakdown_rollups`, and dashboard notes. If KPI aggregates exist without matching breakdown coverage for the selected period, Insights must say attribution is limited instead of inventing a driver from incomplete data.
@@ -44,7 +44,7 @@ Solo serves 12 months of durable aggregate analytics history. Standard is intend
 
 Standard can claim differential privacy controls only for selected KPI aggregates released through `dp_windows`.
 
-Current breakdown outputs use aggregation and suppression thresholds. They should not be described as differentially private unless a DP mechanism, contribution bounds, and accounting are added for those dimensions.
+Current breakdown outputs use low-dimensional aggregate rollups. They should not be described as differentially private unless a DP mechanism, contribution bounds, and accounting are added for those dimensions.
 
 ## Purge Invariant
 

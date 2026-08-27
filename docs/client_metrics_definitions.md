@@ -48,7 +48,7 @@ Expected investigation checklist for large aggregate gaps:
 4. Check whether consent, ad blockers, tag managers, or CSP rules affect one script but not the other.
 5. Confirm conversion/revenue events are configured on the same user actions.
 6. Check bot filtering and data-center traffic differences.
-7. For Standard, account for aggregate noise, suppression gates, and daily publishing.
+7. For Standard, account for aggregate noise, daily publishing, and metric definition differences.
 
 Primary GA4 reference: [Google Analytics dimensions and metrics](https://support.google.com/analytics/answer/9143382).
 
@@ -84,18 +84,11 @@ Current caveats:
 
 - Existing historical data may show `Unknown` for device/country until new traffic is ingested.
 - Historical import rows are excluded from breakdown dimensions.
-- Breakdown rollups are aggregate reporting tables, not raw event storage. They preserve low-dimensional counts by day and continue to enforce response thresholds before returning rows.
-- Time-parting (`hour_of_day`, `day_of_week`) has server-side privacy gates:
+- Breakdown rollups are aggregate reporting tables, not raw event storage. They preserve low-dimensional counts by day for customer-facing reporting.
+- Time-parting (`hour_of_day`, `day_of_week`) has a minimum range guard:
   - minimum selected range: 7 days
-  - bucket suppression: rows require at least 10 sessions
-  - `day_type=weekday` and `day_type=weekend` filter rows before privacy gating.
-- All breakdown dimensions have suppression gates before response rows are returned:
-  - `pages`: minimum 2 pageviews
-  - `sources`: minimum 2 sessions
-  - `devices`: minimum 2 pageviews
-  - `countries`: minimum 1 pageview
-  - `conversions`: minimum 2 conversions
-  - `hostnames`: minimum 1 session
+  - `day_type=weekday` and `day_type=weekend` filter rows before aggregation.
+- Low-dimensional breakdown rows are not hidden behind k-threshold suppression gates.
 - Pro plan currently returns empty dimension rows (aggregate totals only). v2 target: local-DP sparse histograms with top-N + "Insufficient data for privacy" gating.
 
 Quality notes:
@@ -106,7 +99,7 @@ Quality notes:
 - Dashboard date labels preserve the date stamped on full-day aggregate windows. Shorter free/live windows are grouped into days using the site's reporting timezone.
 - `conversion_rate` is derived from already published aggregates.
 - Standard session dedupe is replay-resistant and based on short-lived, server-derived `standard-id-v2` HMAC keys.
-- Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups plus suppression thresholds unless a future dimension-level DP mechanism is added.
+- Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups unless a future dimension-level DP mechanism is added.
 - Forecast training uses completed daily aggregate windows only; the current partial day is excluded from training and backtest scoring.
 - Forecast fitting detects large completed-day spikes/drops and excludes those anomaly days from normal seasonality fitting. If the latest completed day is anomalous, `/api/forecast/{metric}` returns `has_anomaly=true`.
 - Forecast accuracy is based on count-domain backtesting after any model transform. The dashboard should display an accuracy percentage only when recent backtests are within a useful range; otherwise it should show a building/unstable state.

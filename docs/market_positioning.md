@@ -79,4 +79,4 @@ Avoid:
 
 - "No cookies anywhere." Dashboard login uses a first-party `HttpOnly` auth cookie.
 - "Anonymous analytics" unless the statement is scoped to specific outputs after raw processing has been purged.
-- "Differential privacy for the whole dashboard." Breakdowns currently use rollups and suppression thresholds, not dimension-level DP.
+- "Differential privacy for the whole dashboard." Breakdowns currently use aggregate rollups, not dimension-level DP.

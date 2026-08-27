@@ -89,17 +89,6 @@ BREAKDOWN_DIMENSIONS: tuple[BreakdownDimension, ...] = tuple(BREAKDOWN_METRIC_OR
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
 TIME_PARTING_STORAGE_DAY_TYPES: tuple[TimePartingDayType, ...] = ("weekday", "weekend")
 TIME_PARTING_MIN_DAYS = 7
-TIME_PARTING_MIN_SESSIONS = 10.0
-BREAKDOWN_MIN_PRIMARY_THRESHOLD: dict[BreakdownDimension, float] = {
-    "pages": 2.0,
-    "sources": 2.0,
-    "devices": 2.0,
-    "countries": 1.0,
-    "conversions": 2.0,
-    "hour_of_day": TIME_PARTING_MIN_SESSIONS,
-    "day_of_week": TIME_PARTING_MIN_SESSIONS,
-    "hostnames": 1.0,
-}
 
 COMMON_SOURCE_HOST_MAP = {
     "adwords": "Google Ads",
@@ -508,27 +497,11 @@ def build_breakdown_response_from_buckets(
 ) -> BreakdownResponse:
     metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
     primary_metric = BREAKDOWN_PRIMARY_METRIC[dimension]
-    min_primary_threshold = BREAKDOWN_MIN_PRIMARY_THRESHOLD[dimension]
-    gated_buckets = {
+    buckets = {
         label: metrics
         for label, metrics in buckets.items()
-        if metrics.get(primary_metric, 0.0) >= min_primary_threshold
+        if metrics.get(primary_metric, 0.0) > 0
     }
-    if dimension in TIME_PARTING_DIMENSIONS:
-        gated_buckets = {
-            label: metrics
-            for label, metrics in gated_buckets.items()
-            if metrics.get("sessions", 0.0) >= TIME_PARTING_MIN_SESSIONS
-        }
-    if min_primary_threshold > 0:
-        if not gated_buckets:
-            return empty_breakdown_response(
-                site_id=site_id,
-                dimension=dimension,
-                primary_metric=primary_metric,
-                metric_keys=metric_keys,
-            )
-        buckets = gated_buckets
 
     totals = blank_metric_map(metric_keys)
     for metrics in buckets.values():

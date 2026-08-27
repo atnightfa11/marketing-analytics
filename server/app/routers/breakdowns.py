@@ -88,17 +88,6 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
 }
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
 TIME_PARTING_MIN_DAYS = 7
-TIME_PARTING_MIN_SESSIONS = 10.0
-BREAKDOWN_MIN_PRIMARY_THRESHOLD: dict[BreakdownDimension, float] = {
-    "pages": 2.0,
-    "sources": 2.0,
-    "devices": 2.0,
-    "countries": 1.0,
-    "conversions": 2.0,
-    "hour_of_day": TIME_PARTING_MIN_SESSIONS,
-    "day_of_week": TIME_PARTING_MIN_SESSIONS,
-    "hostnames": 1.0,
-}
 
 COMMON_SOURCE_HOST_MAP = {
     "adwords": "Google Ads",
@@ -672,29 +661,18 @@ async def breakdown(
             seen_visitors_by_label[label].add(visitor_marker)
             _increment_metric(buckets, totals, label, "uniques")
 
-    min_primary_threshold = BREAKDOWN_MIN_PRIMARY_THRESHOLD[dimension]
-    gated_buckets = {
-        label: metrics
-        for label, metrics in buckets.items()
-        if metrics.get(primary_metric, 0.0) >= min_primary_threshold
-    }
-    if dimension in TIME_PARTING_DIMENSIONS:
-        gated_buckets = {
-            label: metrics for label, metrics in gated_buckets.items() if metrics.get("sessions", 0.0) >= TIME_PARTING_MIN_SESSIONS
-        }
-    if min_primary_threshold > 0:
-        if not gated_buckets:
-            return _empty_breakdown_response(
-                site_id=site_id,
-                dimension=dimension,
-                primary_metric=primary_metric,
-                metric_keys=metric_keys,
-            )
-        buckets = defaultdict(lambda: _blank_metric_map(metric_keys), gated_buckets)
-        totals = _blank_metric_map(metric_keys)
-        for metrics in buckets.values():
-            for metric in metric_keys:
-                totals[metric] += metrics.get(metric, 0.0)
+    buckets = defaultdict(
+        lambda: _blank_metric_map(metric_keys),
+        {
+            label: metrics
+            for label, metrics in buckets.items()
+            if metrics.get(primary_metric, 0.0) > 0
+        },
+    )
+    totals = _blank_metric_map(metric_keys)
+    for metrics in buckets.values():
+        for metric in metric_keys:
+            totals[metric] += metrics.get(metric, 0.0)
 
     ordered = _ordered_buckets(dimension, dict(buckets), primary_metric, limit)
     rows = [

@@ -74,4 +74,4 @@ Use precise privacy claims:
 - Aggregate reporting.
 - Differential privacy controls for selected high-volume Standard KPI metrics.
 
-Avoid broad claims such as "no cookies anywhere," "anonymous analytics" without context, or "differential privacy across the whole dashboard." Dashboard authentication uses a first-party `HttpOnly` cookie, and breakdowns currently use aggregate rollups plus suppression thresholds.
+Avoid broad claims such as "no cookies anywhere," "anonymous analytics" without context, or "differential privacy across the whole dashboard." Dashboard authentication uses a first-party `HttpOnly` cookie, and breakdowns currently use aggregate rollups rather than dimension-level DP.
