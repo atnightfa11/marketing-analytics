@@ -149,6 +149,51 @@ class BreakdownRollup(Base):
     )
 
 
+class SegmentRollup(Base):
+    __tablename__ = "segment_rollups"
+    __table_args__ = (
+        UniqueConstraint(
+            "site_id",
+            "plan",
+            "day",
+            "grain",
+            "hostname",
+            "channel",
+            "source",
+            "source_medium",
+            "country",
+            "device",
+            "page",
+            "conversion_type",
+            "metric",
+            name="uq_segment_rollup",
+        ),
+        Index("ix_segment_rollups_lookup", "site_id", "plan", "metric", "grain", "day"),
+        Index("ix_segment_rollups_day", "site_id", "plan", "day"),
+        Index("ix_segment_rollups_channel_country_day", "site_id", "plan", "channel", "country", "day"),
+        Index("ix_segment_rollups_source_medium_day", "site_id", "plan", "source_medium", "day"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    plan: Mapped[str] = mapped_column(String, nullable=False)
+    day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    grain: Mapped[str] = mapped_column(String, nullable=False)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    channel: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    source_medium: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    country: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    device: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    page: Mapped[str] = mapped_column(String(220), nullable=False, default="")
+    conversion_type: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    metric: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class ReducerWatermark(Base):
     __tablename__ = "reducer_watermarks"
     __table_args__ = (

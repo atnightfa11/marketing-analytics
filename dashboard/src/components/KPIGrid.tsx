@@ -15,7 +15,7 @@ interface Props {
 }
 
 const cards = [
-  { key: "uniques", label: "Unique Visitors", tier: "primary" as const },
+  { key: "uniques", label: "Visitors", tier: "primary" as const },
   { key: "sessions", label: "Sessions", tier: "primary" as const },
   { key: "conversions", label: "Conversions", tier: "primary" as const },
   { key: "revenue", label: "Revenue", tier: "primary" as const },

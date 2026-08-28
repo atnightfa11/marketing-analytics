@@ -96,7 +96,7 @@ Set these environment variables on the backend service:
 
 Optional tuning:
 
-- `MIN_REPORTS_PER_WINDOW=40`
+- `MIN_REPORTS_PER_WINDOW=40` (Pro/LDP utility gate only; Solo and Standard publish daily aggregate windows without this threshold)
 - `RATE_LIMIT_BUCKET_PER_MIN=200`
 - `LIVE_WATERMARK_SECONDS=120`
 

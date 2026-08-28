@@ -9,10 +9,12 @@ flowchart LR
     Ldp --> Reduce
     Reduce --> Windows["dp_windows"]
     Reduce --> Rollups["breakdown_rollups"]
+    Reduce --> Segments["segment_rollups"]
     Reduce --> Watermarks["reducer_watermarks"]
     Windows --> Forecast["Forecast training"]
     Windows --> API["Metrics API + Dashboard"]
     Rollups --> API
+    Segments --> API
 ```
 
 Valid uses plan-aware ingest and reduction:
@@ -52,6 +54,10 @@ Raw IP address and raw User-Agent are used transiently to derive keyed `standard
 - Reducer writes low-dimensional breakdown aggregates to `breakdown_rollups`.
   - Rollups are keyed by site, plan, day, dimension, hostname scope, day type, label, and metric.
   - Dashboard breakdowns prefer rollups and fall back to raw only for windows that have not been reduced yet.
+- Reducer writes supported multi-filter aggregate combinations to `segment_rollups`.
+  - Segment rollups are keyed by site, plan, day, grain, normalized dimensions, metric, and value.
+  - Dashboard filtered KPI/trend views use these rows instead of share-based approximation.
+  - Unsupported combinations fail explicitly rather than silently estimating values.
 - Reducer writes successful site/day status to `reducer_watermarks`.
   - Standard raw purge uses these watermarks so rows are deleted only after successful reduction.
 - Forecast job trains and writes forecast rows from `dp_windows`.
@@ -71,6 +77,7 @@ Raw IP address and raw User-Agent are used transiently to derive keyed `standard
 - KPI/time series:
   - `GET /api/metrics`
   - `GET /api/aggregate`
+  - `GET /api/aggregate/segments`
   - `GET /api/forecast/{metric}`
 - Annotations:
   - `GET /api/notes`

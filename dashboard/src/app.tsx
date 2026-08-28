@@ -32,6 +32,7 @@ import {
   fetchInsights,
   fetchMetrics,
   fetchImportHistory,
+  fetchSegmentAggregate,
   fetchSiteAlertSettings,
   fetchSiteIpBlocks,
   fetchSiteAccess,
@@ -74,6 +75,7 @@ import { TableBlock } from "./components/TableBlock";
 import { TimePartingHeatmap } from "./components/TimePartingHeatmap";
 import {
   aggregateMetricKeys,
+  engagementAggregateMetricKeys,
   breakdownDimensions,
   dayOfWeekLabels,
   ENABLE_DEMO_MODE,
@@ -389,16 +391,9 @@ const formatRangeLabel = (start: string, end: string) => {
 const safeRatio = (numerator: number, denominator: number) =>
   Number.isFinite(numerator) && Number.isFinite(denominator) && denominator > 0 ? numerator / denominator : Number.NaN;
 
-const deriveBounceRate = (sessions: number, pageviews: number) => {
-  if (!Number.isFinite(sessions) || sessions <= 0) return Number.NaN;
-  const extraPageviews = Math.max(0, pageviews - sessions);
-  const engagedSessions = Math.min(sessions, extraPageviews);
-  return clamp(1 - engagedSessions / sessions, 0, 1);
-};
-
-const deriveVisitDurationSeconds = (avgPagesPerVisit: number, bounceRate: number) => {
-  if (!Number.isFinite(avgPagesPerVisit) || !Number.isFinite(bounceRate)) return Number.NaN;
-  return clamp((avgPagesPerVisit - 1) * 45 + (1 - bounceRate) * 30, 0, 1800);
+const deriveBounceRate = (bouncedSessions: number, sessions: number) => {
+  if (!Number.isFinite(bouncedSessions) || !Number.isFinite(sessions) || sessions <= 0) return Number.NaN;
+  return clamp(bouncedSessions / sessions, 0, 1);
 };
 
 const parseDay = (day: string) => new Date(`${day}T00:00:00`);
@@ -626,6 +621,8 @@ const buildSeededDailySeries = (days: number = 180) => {
     conversions: [] as { day: string; value: number }[],
     revenue: [] as { day: string; value: number }[],
     visit_duration: [] as { day: string; value: number }[],
+    bounced_sessions: [] as { day: string; value: number }[],
+    visit_duration_seconds: [] as { day: string; value: number }[],
   };
 
   allDays.forEach((day, index) => {
@@ -638,6 +635,7 @@ const buildSeededDailySeries = (days: number = 180) => {
     const conversions = Math.max(0, Math.round(sessions * 0.043));
     const revenue = Math.max(0, Math.round(conversions * 42));
     const visitDuration = 112 + Math.round((index % 9) * 4);
+    const bouncedSessions = Math.max(0, Math.round(sessions * 0.44));
 
     seeded.pageviews.push({ day, value: pageviews });
     seeded.uniques.push({ day, value: uniques });
@@ -645,6 +643,8 @@ const buildSeededDailySeries = (days: number = 180) => {
     seeded.conversions.push({ day, value: conversions });
     seeded.revenue.push({ day, value: revenue });
     seeded.visit_duration.push({ day, value: visitDuration });
+    seeded.bounced_sessions.push({ day, value: bouncedSessions });
+    seeded.visit_duration_seconds.push({ day, value: visitDuration * sessions });
   });
 
   return seeded;
@@ -820,6 +820,12 @@ const Overview: React.FC = () => {
   const chartAxisTick = isDark ? "rgba(249,250,251,0.55)" : "#6B7280";
   const chartReferenceStroke = isDark ? "rgba(249,250,251,0.25)" : "#D1D5DB";
   const hostnameFilter = !showSeededBreakdowns && selectedHostname !== "all" ? selectedHostname : undefined;
+  const segmentAggregateFilters = useMemo(() => {
+    const filters = activeFilters.map((filter) => ({ dimension: filter.dimension, value: filter.value }));
+    if (hostnameFilter) filters.push({ dimension: "hostname", value: hostnameFilter });
+    return filters;
+  }, [activeFilters, hostnameFilter]);
+  const useSegmentAggregates = !showSeededBreakdowns && segmentAggregateFilters.length > 0;
   const [siteName, setSiteName] = useState<string | null>(null);
   const siteDisplayName = useMemo(() => dashboardSiteDisplayName(siteId, siteName), [siteId, siteName]);
   const selectedRangeBounds = useMemo(
@@ -935,17 +941,28 @@ const Overview: React.FC = () => {
     }
     let cancelled = false;
     setKpiError(null);
-    const metricsToFetch = [...aggregateMetricKeys];
+    const metricsToFetch = [...aggregateMetricKeys, ...engagementAggregateMetricKeys];
     Promise.all(
       metricsToFetch.map((metric) =>
-        fetchAggregate(
-          metric,
-          "standard",
-          token ?? undefined,
-          siteId,
-          hostnameFilter,
-          aggregateFetchBounds.start,
-          aggregateFetchBounds.end
+        (useSegmentAggregates
+          ? fetchSegmentAggregate(
+              metric,
+              "standard",
+              segmentAggregateFilters,
+              token ?? undefined,
+              siteId,
+              aggregateFetchBounds.start,
+              aggregateFetchBounds.end
+            )
+          : fetchAggregate(
+              metric,
+              "standard",
+              token ?? undefined,
+              siteId,
+              hostnameFilter,
+              aggregateFetchBounds.start,
+              aggregateFetchBounds.end
+            )
         ).then((data) => ({
           metric,
           data,
@@ -972,7 +989,16 @@ const Overview: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [canQuery, token, siteId, hostnameFilter, aggregateFetchBounds?.start, aggregateFetchBounds?.end]);
+  }, [
+    canQuery,
+    token,
+    siteId,
+    hostnameFilter,
+    aggregateFetchBounds?.start,
+    aggregateFetchBounds?.end,
+    useSegmentAggregates,
+    segmentAggregateFilters,
+  ]);
 
   useEffect(() => {
     if (!aggregateMetricKeys.includes(selectedMetric as (typeof aggregateMetricKeys)[number])) {
@@ -1063,7 +1089,15 @@ const Overview: React.FC = () => {
     rangeKey: RangeOption = range,
     custom: DateRange = customRange
   ): DailyValuePoint[] => {
-    const isCountMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(metric);
+    const isCountMetric = [
+      "pageviews",
+      "uniques",
+      "sessions",
+      "conversions",
+      "revenue",
+      "bounced_sessions",
+      "visit_duration_seconds",
+    ].includes(metric);
     if (!isCountMetric) return entries;
     const bounds = resolveRangeBounds(rangeKey, custom, siteTimezone);
     if (!bounds) return entries;
@@ -1125,9 +1159,16 @@ const Overview: React.FC = () => {
     () => (showSeededBreakdowns ? seededSeries.revenue : toDaily(aggregateMap.revenue ?? [])),
     [showSeededBreakdowns, seededSeries.revenue, aggregateMap, siteTimezone]
   );
-  const durationAll = useMemo(
-    () => (showSeededBreakdowns ? seededSeries.visit_duration : toDaily(aggregateMap.avg_time_on_site ?? [])),
-    [showSeededBreakdowns, seededSeries.visit_duration, aggregateMap, siteTimezone]
+  const bouncedSessionsAll = useMemo(
+    () => (showSeededBreakdowns ? seededSeries.bounced_sessions : toDaily(aggregateMap.bounced_sessions ?? [])),
+    [showSeededBreakdowns, seededSeries.bounced_sessions, aggregateMap, siteTimezone]
+  );
+  const visitDurationSecondsAll = useMemo(
+    () =>
+      showSeededBreakdowns
+        ? seededSeries.visit_duration_seconds
+        : toDaily(aggregateMap.visit_duration_seconds ?? []),
+    [showSeededBreakdowns, seededSeries.visit_duration_seconds, aggregateMap, siteTimezone]
   );
   const observedCountDayList = useMemo(() => {
     const set = new Set<string>();
@@ -1161,6 +1202,20 @@ const Overview: React.FC = () => {
     () => maybeFillMissingDailyZeros("revenue", filterByRange(revenueAll, range, customRange), range, customRange),
     [revenueAll, range, customRange, observedCountDayList]
   );
+  const dailyBouncedSessions = useMemo(
+    () => maybeFillMissingDailyZeros("bounced_sessions", filterByRange(bouncedSessionsAll, range, customRange), range, customRange),
+    [bouncedSessionsAll, range, customRange, observedCountDayList]
+  );
+  const dailyVisitDurationSeconds = useMemo(
+    () =>
+      maybeFillMissingDailyZeros(
+        "visit_duration_seconds",
+        filterByRange(visitDurationSecondsAll, range, customRange),
+        range,
+        customRange
+      ),
+    [visitDurationSecondsAll, range, customRange, observedCountDayList]
+  );
   const avgPagesPerVisitAll = useMemo(() => {
     const pageviewsMap = mapByDay(pageviewsAll);
     const sessionsMap = mapByDay(sessionsAll);
@@ -1174,27 +1229,28 @@ const Overview: React.FC = () => {
   );
 
   const bounceRateAll = useMemo(() => {
-    const pageviewsMap = mapByDay(pageviewsAll);
+    const bouncedSessionsMap = mapByDay(bouncedSessionsAll);
     const sessionsMap = mapByDay(sessionsAll);
-    const days = Array.from(new Set([...sessionsMap.keys(), ...pageviewsMap.keys()])).sort((a, b) =>
+    const days = Array.from(new Set([...sessionsMap.keys(), ...bouncedSessionsMap.keys()])).sort((a, b) =>
       a.localeCompare(b)
     );
     return makeDerivedSeries(days, (day) =>
-      deriveBounceRate(sessionsMap.get(day) ?? Number.NaN, pageviewsMap.get(day) ?? Number.NaN)
+      deriveBounceRate(bouncedSessionsMap.get(day) ?? Number.NaN, sessionsMap.get(day) ?? Number.NaN)
     );
-  }, [pageviewsAll, sessionsAll]);
+  }, [bouncedSessionsAll, sessionsAll]);
 
   const dailyBounceRate = useMemo(() => filterByRange(bounceRateAll, range, customRange), [bounceRateAll, range, customRange]);
 
   const visitDurationAll = useMemo(() => {
-    if (durationAll.length > 0) return durationAll;
-    const avgPagesMap = mapByDay(avgPagesPerVisitAll);
-    const bounceMap = mapByDay(bounceRateAll);
-    const days = Array.from(new Set([...avgPagesMap.keys(), ...bounceMap.keys()])).sort((a, b) => a.localeCompare(b));
-    return makeDerivedSeries(days, (day) =>
-      deriveVisitDurationSeconds(avgPagesMap.get(day) ?? Number.NaN, bounceMap.get(day) ?? Number.NaN)
+    const durationSecondsMap = mapByDay(visitDurationSecondsAll);
+    const sessionsMap = mapByDay(sessionsAll);
+    const days = Array.from(new Set([...durationSecondsMap.keys(), ...sessionsMap.keys()])).sort((a, b) =>
+      a.localeCompare(b)
     );
-  }, [durationAll, avgPagesPerVisitAll, bounceRateAll]);
+    return makeDerivedSeries(days, (day) =>
+      safeRatio(durationSecondsMap.get(day) ?? Number.NaN, sessionsMap.get(day) ?? Number.NaN)
+    );
+  }, [visitDurationSecondsAll, sessionsAll]);
 
   const dailyVisitDuration = useMemo(
     () => filterByRange(visitDurationAll, range, customRange),
@@ -1213,6 +1269,10 @@ const Overview: React.FC = () => {
         return dailyConversions;
       case "revenue":
         return dailyRevenue;
+      case "bounced_sessions":
+        return dailyBouncedSessions;
+      case "visit_duration_seconds":
+        return dailyVisitDurationSeconds;
       case "avg_pages_per_visit":
         return dailyAvgPagesPerVisit;
       case "visit_duration":
@@ -1236,6 +1296,10 @@ const Overview: React.FC = () => {
         return conversionsAll;
       case "revenue":
         return revenueAll;
+      case "bounced_sessions":
+        return bouncedSessionsAll;
+      case "visit_duration_seconds":
+        return visitDurationSecondsAll;
       case "avg_pages_per_visit":
         return avgPagesPerVisitAll;
       case "visit_duration":
@@ -1389,22 +1453,20 @@ const Overview: React.FC = () => {
     sessions: { day: string; value: number }[];
     conversions: { day: string; value: number }[];
     revenue: { day: string; value: number }[];
-    visitDuration: { day: string; value: number }[];
+    bouncedSessions: { day: string; value: number }[];
+    visitDurationSeconds: { day: string; value: number }[];
   }) => {
     const pageviews = series.pageviews.reduce((sum, row) => sum + row.value, 0);
     const uniques = series.uniques.reduce((sum, row) => sum + row.value, 0);
     const sessions = series.sessions.reduce((sum, row) => sum + row.value, 0);
     const conversions = series.conversions.reduce((sum, row) => sum + row.value, 0);
     const revenue = series.revenue.reduce((sum, row) => sum + row.value, 0);
+    const bouncedSessions = series.bouncedSessions.reduce((sum, row) => sum + row.value, 0);
+    const visitDurationSeconds = series.visitDurationSeconds.reduce((sum, row) => sum + row.value, 0);
     const avgPagesPerVisit = safeRatio(pageviews, sessions);
-    const bounceRate = deriveBounceRate(sessions, pageviews);
-    const durationAverage =
-      series.visitDuration.length > 0
-        ? series.visitDuration.reduce((sum, row) => sum + row.value, 0) / series.visitDuration.length
-        : Number.NaN;
-    const visitDuration = Number.isFinite(durationAverage)
-      ? durationAverage
-      : deriveVisitDurationSeconds(avgPagesPerVisit, bounceRate);
+    const bounceRate = series.bouncedSessions.length > 0 ? deriveBounceRate(bouncedSessions, sessions) : Number.NaN;
+    const visitDuration =
+      series.visitDurationSeconds.length > 0 ? safeRatio(visitDurationSeconds, sessions) : Number.NaN;
     return {
       pageviews,
       uniques,
@@ -1423,23 +1485,10 @@ const Overview: React.FC = () => {
     sessions: dailySessions,
     conversions: dailyConversions,
     revenue: dailyRevenue,
-    visitDuration: dailyVisitDuration,
+    bouncedSessions: dailyBouncedSessions,
+    visitDurationSeconds: dailyVisitDurationSeconds,
   });
-  const activeFilterScale = useMemo(
-    () => activeFilters.reduce((acc, filter) => acc * filter.share, 1),
-    [activeFilters]
-  );
-  const scaledTotals = useMemo(() => {
-    if (activeFilterScale >= 0.999) return totals;
-    return {
-      ...totals,
-      pageviews: totals.pageviews * activeFilterScale,
-      uniques: totals.uniques * activeFilterScale,
-      sessions: totals.sessions * activeFilterScale,
-      conversions: totals.conversions * activeFilterScale,
-      revenue: totals.revenue * activeFilterScale,
-    };
-  }, [totals, activeFilterScale]);
+  const scaledTotals = totals;
   const availableBounds = useMemo(() => {
     if (dailySelectedAll.length === 0) return null;
     return {
@@ -1681,7 +1730,15 @@ const Overview: React.FC = () => {
     if (!bounds) return [];
     const entries = getUnfilteredSeries(metric);
     const filtered = filterByWindow(entries, bounds.start, bounds.end);
-    const isCountMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(metric);
+    const isCountMetric = [
+      "pageviews",
+      "uniques",
+      "sessions",
+      "conversions",
+      "revenue",
+      "bounced_sessions",
+      "visit_duration_seconds",
+    ].includes(metric);
     if (!isCountMetric) return filtered;
     return fillMissingDaysWithZero(
       filtered,
@@ -1722,7 +1779,8 @@ const Overview: React.FC = () => {
         sessions: getComparisonSeries("sessions"),
         conversions: getComparisonSeries("conversions"),
         revenue: getComparisonSeries("revenue"),
-        visitDuration: getComparisonSeries("visit_duration"),
+        bouncedSessions: getComparisonSeries("bounced_sessions"),
+        visitDurationSeconds: getComparisonSeries("visit_duration_seconds"),
       })
     : null;
   const previousTotals = previousBounds
@@ -1732,7 +1790,8 @@ const Overview: React.FC = () => {
         sessions: getSeriesForBounds("sessions", previousBounds),
         conversions: getSeriesForBounds("conversions", previousBounds),
         revenue: getSeriesForBounds("revenue", previousBounds),
-        visitDuration: getSeriesForBounds("visit_duration", previousBounds),
+        bouncedSessions: getSeriesForBounds("bounced_sessions", previousBounds),
+        visitDurationSeconds: getSeriesForBounds("visit_duration_seconds", previousBounds),
       })
     : null;
   const kpiComparisonValues = compareEnabled ? comparisonTotals : previousTotals;
@@ -1830,13 +1889,15 @@ const Overview: React.FC = () => {
     return null;
   }, [dailySelected, todayKey]);
   const forecastCandidates = useMemo(
-    () =>
-      forecastHorizon.filter((entry) => {
+    () => {
+      if (useSegmentAggregates) return [];
+      return forecastHorizon.filter((entry) => {
         if (hasTodayActual) return entry.day >= todayKey;
         if (!lastActualDay) return true;
         return entry.day > lastActualDay;
-      }),
-    [forecastHorizon, hasTodayActual, todayKey, lastActualDay]
+      });
+    },
+    [forecastHorizon, hasTodayActual, todayKey, lastActualDay, useSegmentAggregates]
   );
   const forecastSummary = useMemo(() => {
     if (forecastCandidates.length === 0) return null;
@@ -1927,24 +1988,11 @@ const Overview: React.FC = () => {
 
   const scaledKpiComparisonValues = useMemo(() => {
     if (!kpiComparisonValues) return null;
-    if (activeFilterScale >= 0.999) return kpiComparisonValues;
-    return {
-      ...kpiComparisonValues,
-      pageviews: (kpiComparisonValues.pageviews ?? 0) * activeFilterScale,
-      uniques: (kpiComparisonValues.uniques ?? 0) * activeFilterScale,
-      sessions: (kpiComparisonValues.sessions ?? 0) * activeFilterScale,
-      conversions: (kpiComparisonValues.conversions ?? 0) * activeFilterScale,
-      revenue: (kpiComparisonValues.revenue ?? 0) * activeFilterScale,
-    };
-  }, [kpiComparisonValues, activeFilterScale]);
-
-  const isCountTrendMetric = ["pageviews", "uniques", "sessions", "conversions", "revenue"].includes(selectedMetric);
-  const trendScale = isCountTrendMetric ? activeFilterScale : 1;
+    return kpiComparisonValues;
+  }, [kpiComparisonValues]);
 
   // Auto-select chart granularity. Only metrics whose daily values are safely additive
-  // roll up to week/month; uniques (can't dedupe across days) and rate metrics
-  // (bounce_rate, avg_pages_per_visit, visit_duration — the reducer doesn't expose
-  // numerator/denominator) stay daily regardless of range.
+  // roll up to week/month; visitors and rate/average metrics stay daily.
   const chartGranularity: ChartGranularity = useMemo(() => {
     const canAggregate = ["pageviews", "sessions", "conversions", "revenue"].includes(selectedMetric);
     if (!canAggregate) return "day";
@@ -2030,41 +2078,7 @@ const Overview: React.FC = () => {
       });
   }, [baseChartData, chartGranularity]);
 
-  const chartData = useMemo(
-    () =>
-      bucketedChartData.map((point) => {
-        if (trendScale >= 0.999) return point;
-        const scaleRange = (range: [number, number] | null): [number, number] | null =>
-          range ? [range[0] * trendScale, range[1] * trendScale] : null;
-        return {
-          ...point,
-          actual: Number.isFinite(point.actual ?? Number.NaN) ? (point.actual ?? 0) * trendScale : point.actual,
-          todaySoFar: Number.isFinite(point.todaySoFar ?? Number.NaN)
-            ? (point.todaySoFar ?? 0) * trendScale
-            : point.todaySoFar,
-          todayBridge: Number.isFinite(point.todayBridge ?? Number.NaN)
-            ? (point.todayBridge ?? 0) * trendScale
-            : point.todayBridge,
-          compare: Number.isFinite(point.compare ?? Number.NaN) ? (point.compare ?? 0) * trendScale : point.compare,
-          forecast: Number.isFinite(point.forecast ?? Number.NaN) ? (point.forecast ?? 0) * trendScale : point.forecast,
-          forecastLine: Number.isFinite(point.forecastLine ?? Number.NaN)
-            ? (point.forecastLine ?? 0) * trendScale
-            : point.forecastLine,
-          forecastLower: Number.isFinite(point.forecastLower ?? Number.NaN)
-            ? (point.forecastLower ?? 0) * trendScale
-            : point.forecastLower,
-          forecastUpper: Number.isFinite(point.forecastUpper ?? Number.NaN)
-            ? (point.forecastUpper ?? 0) * trendScale
-            : point.forecastUpper,
-          forecastBandSpan: Number.isFinite(point.forecastBandSpan ?? Number.NaN)
-            ? (point.forecastBandSpan ?? 0) * trendScale
-            : point.forecastBandSpan,
-          deltaPositiveRange: scaleRange(point.deltaPositiveRange),
-          deltaNegativeRange: scaleRange(point.deltaNegativeRange),
-        };
-      }),
-    [bucketedChartData, trendScale]
-  );
+  const chartData = bucketedChartData;
   const notesByMarkerDay = useMemo(() => {
     const notesByDay = new Map<string, DashboardNote[]>();
     if (dashboardNotes.length === 0 || chartData.length === 0) return notesByDay;
@@ -2104,9 +2118,11 @@ const Overview: React.FC = () => {
   const hasForecast = chartData.some((point) => point.forecast !== null);
   const hasForecastBand = chartData.some((point) => point.forecastBandSpan !== null);
   const hasCurrentForecastRows = forecast.length > 0;
-  const forecastMutedNote = hasCurrentForecastRows
-    ? "Forecast unavailable in selected date range."
-    : "Forecast building - needs about 60 complete days of history.";
+  const forecastMutedNote = useSegmentAggregates
+    ? "Forecasts are site-level. Clear the segment to view the forecast."
+    : hasCurrentForecastRows
+      ? "Forecast unavailable in selected date range."
+      : "Forecast building - needs about 60 complete days of history.";
   const forecastFreshnessText = hasForecast
     ? forecastMeta?.trained_at
       ? `Updated ${formatRelativeTime(forecastMeta.trained_at)}`
@@ -2751,7 +2767,7 @@ const Overview: React.FC = () => {
   }, [goalRows, scaledTotals]);
   const fallbackInsightItems = useMemo(() => {
     const items: { label: string; text: string }[] = [];
-    if (forecastMeta?.has_anomaly) {
+    if (!useSegmentAggregates && forecastMeta?.has_anomaly) {
       items.push({
         label: "Anomaly",
         text: `${selectedMetricLabel} was unusually different from the site's recent pattern. Forecasts may be wider while the trend stabilizes.`,
@@ -2804,6 +2820,7 @@ const Overview: React.FC = () => {
     return items.slice(0, 5);
   }, [
     forecastMeta?.has_anomaly,
+    useSegmentAggregates,
     metricAnomalies,
     selectedMetricLabel,
     topChannelLabel,
@@ -3260,7 +3277,8 @@ const Overview: React.FC = () => {
           onSelectMetric={setSelectedMetric}
           error={kpiError}
         />
-        {forecastMeta?.has_anomaly &&
+        {!useSegmentAggregates &&
+          forecastMeta?.has_anomaly &&
           !dismissedAnomalies.has(`${siteId}:${selectedMetric}`) && (
             <div
               role="status"
@@ -3338,7 +3356,7 @@ const Overview: React.FC = () => {
                 Clear all
               </button>
               <span className="ml-auto text-[11px] text-white/70">
-                Trend & KPI views scaled by dimension share (approx).
+                Trend and KPI views use stored segment rollups where available.
               </span>
             </div>
           </div>

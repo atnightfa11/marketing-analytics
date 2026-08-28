@@ -47,12 +47,11 @@ from sqlalchemy import select  # noqa: E402
 from argon2 import PasswordHasher  # noqa: E402
 
 from app.config import Settings  # noqa: E402
-from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SiteAlertSettings, SiteApiKey, SiteGoal, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SegmentRollup, SiteAlertSettings, SiteApiKey, SiteGoal, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
 from app.routers import shuffle as shuffle_router  # noqa: E402
-from app.routers.aggregates import settings as aggregate_settings  # noqa: E402
 from app.routers.shuffle import STANDARD_ID_VERSION, _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import REDUCER_VERSION, purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
@@ -1518,6 +1517,76 @@ async def test_standard_reducer_publishes_daily_windows_and_replaces_old_minute_
 
 
 @pytest.mark.asyncio
+async def test_free_reducer_publishes_sparse_daily_windows_without_minute_threshold(client):
+    site_id = "site-free-sparse-daily"
+    target_day = date(2026, 5, 4)
+    await _set_site_plan(site_id, "free")
+    await _insert_raw_report(
+        site_id=site_id,
+        kind="pageviews",
+        payload={"url": "/solo"},
+        day=target_day,
+        server_received_at=datetime(2026, 5, 4, 12, 30, tzinfo=timezone.utc),
+    )
+
+    async with async_session_factory() as session:
+        original_min_reports = reduce_settings.MIN_REPORTS_PER_WINDOW
+        reduce_settings.MIN_REPORTS_PER_WINDOW = 40
+        try:
+            await reduce_reports(session, start_day=target_day, end_day=target_day)
+        finally:
+            reduce_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+
+        rows = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == site_id,
+                    DpWindow.plan == "free",
+                    DpWindow.metric == "pageviews",
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].window_start.replace(tzinfo=timezone.utc) == datetime(2026, 5, 4, 0, 0, tzinfo=timezone.utc)
+        assert rows[0].window_end.replace(tzinfo=timezone.utc) == datetime(2026, 5, 5, 0, 0, tzinfo=timezone.utc)
+        assert rows[0].value == 1.0
+
+
+@pytest.mark.asyncio
+async def test_reducer_publishes_measured_bounce_and_visit_duration(client):
+    site_id = "site-measured-engagement"
+    target_day = date(2026, 5, 7)
+    await _set_site_plan(site_id, "free")
+    reports = [
+        ("sessions", {"_session_hmac": "sess-a"}, datetime(2026, 5, 7, 9, 0, tzinfo=timezone.utc)),
+        ("pageviews", {"url": "/", "_session_hmac": "sess-a", "_client_timestamp": "2026-05-07T09:00:00+00:00"}, datetime(2026, 5, 7, 9, 0, tzinfo=timezone.utc)),
+        ("pageviews", {"url": "/pricing", "_session_hmac": "sess-a", "_client_timestamp": "2026-05-07T09:02:00+00:00"}, datetime(2026, 5, 7, 9, 2, tzinfo=timezone.utc)),
+        ("sessions", {"_session_hmac": "sess-b"}, datetime(2026, 5, 7, 10, 0, tzinfo=timezone.utc)),
+        ("pageviews", {"url": "/contact", "_session_hmac": "sess-b", "_client_timestamp": "2026-05-07T10:00:00+00:00"}, datetime(2026, 5, 7, 10, 0, tzinfo=timezone.utc)),
+    ]
+    for kind, payload, received_at in reports:
+        await _insert_raw_report(
+            site_id=site_id,
+            kind=kind,
+            payload=payload,
+            day=target_day,
+            server_received_at=received_at,
+        )
+
+    async with async_session_factory() as session:
+        await reduce_reports(session, start_day=target_day, end_day=target_day)
+        rows = (
+            await session.execute(select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.plan == "free"))
+        ).scalars().all()
+        by_metric = {row.metric: row for row in rows}
+        assert by_metric["bounced_sessions"].value == 1.0
+        assert by_metric["visit_duration_seconds"].value == 120.0
+        assert by_metric["bounced_sessions"].window_start.replace(tzinfo=timezone.utc) == datetime(
+            2026, 5, 7, 0, 0, tzinfo=timezone.utc
+        )
+
+
+@pytest.mark.asyncio
 async def test_reducer_rollups_watermark_and_raw_purge_keep_breakdowns_available(client):
     site_id = "site-rollup-purge"
     target_day = date(2026, 5, 6)
@@ -1800,6 +1869,151 @@ async def test_free_source_rollups_preserve_direct_and_organic_counts(client):
     assert rows_by_label["Google"]["pageviews"] == 3.0
     assert rows_by_label["Direct"]["sessions"] == 2.0
     assert rows_by_label["Direct"]["pageviews"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_segment_rollups_preserve_filtered_aggregates_after_raw_purge(client):
+    site_id = "site-segment-rollup-purge"
+    target_day = date(2026, 5, 9)
+    await _set_site_plan(site_id, "standard")
+
+    cases = [
+        ("direct-a", "visitor-direct-a", "direct", "direct", "US", "mobile", "/"),
+        ("direct-b", "visitor-direct-b", "direct", "direct", "US", "mobile", "/"),
+        ("organic-a", "visitor-organic-a", "organic", "google.com", "US", "mobile", "/lake-level"),
+        ("organic-b", "visitor-organic-b", "organic", "google.com", "US", "mobile", "/lake-level"),
+        ("organic-c", "visitor-organic-c", "organic", "google.com", "US", "mobile", "/webcam"),
+        ("organic-d", "visitor-organic-d", "organic", "google.com", "CA", "desktop", "/webcam"),
+    ]
+    for index, (session_id, visitor_id, bucket, source, country, device, page) in enumerate(cases):
+        timestamp = datetime(2026, 5, 9, 14, index, tzinfo=timezone.utc)
+        common_payload = {
+            "_device_bucket": device,
+            "_country_code": country,
+            "_hostname": "golaketravis.com",
+            "_session_hmac": session_id,
+            "_visitor_day_hmac": visitor_id,
+        }
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={**common_payload, "referrer_bucket": bucket, "referrer_source": source},
+            day=target_day,
+            server_received_at=timestamp,
+        )
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={**common_payload, "url": page},
+            day=target_day,
+            server_received_at=timestamp + timedelta(seconds=10),
+        )
+
+    original_retention = reduce_settings.RAW_REPORT_RETENTION_HOURS
+    original_epsilon = reduce_settings.AGGREGATE_DP_EPSILON
+    reduce_settings.RAW_REPORT_RETENTION_HOURS = 0
+    reduce_settings.AGGREGATE_DP_EPSILON = 100.0
+    try:
+        async with async_session_factory() as session:
+            await reduce_reports(session, start_day=target_day, end_day=target_day)
+    finally:
+        reduce_settings.RAW_REPORT_RETENTION_HOURS = original_retention
+        reduce_settings.AGGREGATE_DP_EPSILON = original_epsilon
+
+    async with async_session_factory() as session:
+        raw_rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        segment_rows = (
+            await session.execute(
+                select(SegmentRollup).where(
+                    SegmentRollup.site_id == site_id,
+                    SegmentRollup.grain == "channel+country+device",
+                    SegmentRollup.channel == "Organic Search",
+                    SegmentRollup.country == "US",
+                    SegmentRollup.device == "Mobile",
+                    SegmentRollup.metric == "pageviews",
+                )
+            )
+        ).scalars().all()
+    assert raw_rows == []
+    assert len(segment_rows) == 1
+    assert segment_rows[0].value == pytest.approx(3.0)
+
+    params = [
+        ("site_id", site_id),
+        ("metric", "pageviews"),
+        ("window", "standard"),
+        ("start", target_day.isoformat()),
+        ("end", target_day.isoformat()),
+        ("filter", "channel:Organic Search"),
+        ("filter", "country:US"),
+        ("filter", "device:Mobile"),
+    ]
+    response = client.get("/api/aggregate/segments", params=params)
+    assert response.status_code == 200
+    assert sum(row["value"] for row in response.json()["windows"]) == pytest.approx(3.0)
+
+    source_medium_response = client.get(
+        "/api/aggregate/segments",
+        params=[
+            ("site_id", site_id),
+            ("metric", "sessions"),
+            ("window", "standard"),
+            ("start", target_day.isoformat()),
+            ("end", target_day.isoformat()),
+            ("filter", "source_medium:Google/Organic"),
+            ("filter", "country:US"),
+            ("filter", "device:Mobile"),
+        ],
+    )
+    assert source_medium_response.status_code == 200
+    assert sum(row["value"] for row in source_medium_response.json()["windows"]) == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_segment_aggregate_uses_raw_only_for_unreduced_days(client):
+    site_id = "site-segment-raw-fallback"
+    target_day = date(2026, 5, 10)
+    await _set_site_plan(site_id, "free")
+
+    for index, session_id in enumerate(("sess-raw-a", "sess-raw-b")):
+        timestamp = datetime(2026, 5, 10, 11, index, tzinfo=timezone.utc)
+        payload = {
+            "_device_bucket": "mobile",
+            "_country_code": "US",
+            "_hostname": "example.com",
+            "_session_hmac": session_id,
+            "_visitor_day_hmac": f"visitor-raw-{index}",
+        }
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="sessions",
+            payload={**payload, "referrer_bucket": "organic", "referrer_source": "google.com"},
+            day=target_day,
+            server_received_at=timestamp,
+        )
+        await _insert_raw_report(
+            site_id=site_id,
+            kind="pageviews",
+            payload={**payload, "url": "/raw-fallback"},
+            day=target_day,
+            server_received_at=timestamp + timedelta(seconds=5),
+        )
+
+    response = client.get(
+        "/api/aggregate/segments",
+        params=[
+            ("site_id", site_id),
+            ("metric", "pageviews"),
+            ("window", "standard"),
+            ("start", target_day.isoformat()),
+            ("end", target_day.isoformat()),
+            ("filter", "channel:Organic Search"),
+            ("filter", "country:US"),
+            ("filter", "device:Mobile"),
+        ],
+    )
+    assert response.status_code == 200
+    assert sum(row["value"] for row in response.json()["windows"]) == pytest.approx(2.0)
 
 
 @pytest.mark.asyncio
@@ -3236,6 +3450,13 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
     await _insert_dp_window(
         site_id=site_id,
         plan="free",
+        metric="sessions",
+        value=5.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
         metric="conversions",
         value=2.0,
         window_start=base_start,
@@ -3245,6 +3466,13 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
         plan="standard",
         metric="pageviews",
         value=100.0,
+        window_start=base_start,
+    )
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="standard",
+        metric="sessions",
+        value=50.0,
         window_start=base_start,
     )
     await _insert_dp_window(
@@ -3269,8 +3497,9 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
     assert free_metrics_resp.status_code == 200
     free_metrics = {row["metric"]: row for row in free_metrics_resp.json()["metrics"]}
     assert free_metrics["pageviews"]["value"] == 10.0
+    assert free_metrics["sessions"]["value"] == 5.0
     assert free_metrics["conversions"]["value"] == 2.0
-    assert free_metrics["conversion_rate"]["value"] == 0.2
+    assert free_metrics["conversion_rate"]["value"] == 0.4
 
     await _set_site_plan(site_id, "standard")
     standard_aggregate = client.get(
@@ -3286,8 +3515,9 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
     assert standard_metrics_resp.status_code == 200
     standard_metrics = {row["metric"]: row for row in standard_metrics_resp.json()["metrics"]}
     assert standard_metrics["pageviews"]["value"] == 100.0
+    assert standard_metrics["sessions"]["value"] == 50.0
     assert standard_metrics["conversions"]["value"] == 25.0
-    assert standard_metrics["conversion_rate"]["value"] == 0.25
+    assert standard_metrics["conversion_rate"]["value"] == 0.5
 
 
 @pytest.mark.asyncio
@@ -3459,6 +3689,14 @@ async def test_metrics_sums_windows_within_selected_range(client):
         value=4.0,
         window_start=start + timedelta(minutes=15),
     )
+    await _insert_dp_window(site_id=site_id, plan="free", metric="sessions", value=2.0, window_start=start)
+    await _insert_dp_window(
+        site_id=site_id,
+        plan="free",
+        metric="sessions",
+        value=4.0,
+        window_start=start + timedelta(minutes=15),
+    )
     await _insert_dp_window(site_id=site_id, plan="free", metric="conversions", value=1.0, window_start=start)
     await _insert_dp_window(
         site_id=site_id,
@@ -3472,8 +3710,9 @@ async def test_metrics_sums_windows_within_selected_range(client):
     assert metrics_resp.status_code == 200
     metrics_map = {row["metric"]: row for row in metrics_resp.json()["metrics"]}
     assert metrics_map["pageviews"]["value"] == 7.0
+    assert metrics_map["sessions"]["value"] == 6.0
     assert metrics_map["conversions"]["value"] == 3.0
-    assert metrics_map["conversion_rate"]["value"] == pytest.approx(3.0 / 7.0, rel=1e-6)
+    assert metrics_map["conversion_rate"]["value"] == pytest.approx(3.0 / 6.0, rel=1e-6)
 
 
 @pytest.mark.asyncio
@@ -3683,41 +3922,36 @@ async def test_hostname_filter_scopes_free_aggregate_and_breakdown(client):
             server_received_at=datetime(2026, 4, 20, 10, 1, tzinfo=timezone.utc),
         )
 
-        original_min_reports = aggregate_settings.MIN_REPORTS_PER_WINDOW
-        aggregate_settings.MIN_REPORTS_PER_WINDOW = 1
-        try:
-            agg_resp = client.get(
-                "/api/aggregate",
-                params={
-                    "site_id": site_id,
-                    "metric": "pageviews",
-                    "window": "standard",
-                    "hostname": "app.neurotypicaltranslator.com",
-                    "start": "2026-04-20",
-                    "end": "2026-04-20",
-                },
-            )
-            assert agg_resp.status_code == 200
-            agg_total = sum(row["value"] for row in agg_resp.json()["windows"])
-            assert agg_total == 2.0
+        agg_resp = client.get(
+            "/api/aggregate",
+            params={
+                "site_id": site_id,
+                "metric": "pageviews",
+                "window": "standard",
+                "hostname": "app.neurotypicaltranslator.com",
+                "start": "2026-04-20",
+                "end": "2026-04-20",
+            },
+        )
+        assert agg_resp.status_code == 200
+        agg_total = sum(row["value"] for row in agg_resp.json()["windows"])
+        assert agg_total == 2.0
 
-            uniques_resp = client.get(
-                "/api/aggregate",
-                params={
-                    "site_id": site_id,
-                    "metric": "uniques",
-                    "window": "standard",
-                    "hostname": "app.neurotypicaltranslator.com",
-                    "start": "2026-04-20",
-                    "end": "2026-04-20",
-                },
-            )
-            assert uniques_resp.status_code == 200
-            uniques_total = sum(row["value"] for row in uniques_resp.json()["windows"])
-            # Deduped by visitor-day marker, so duplicate unique reports collapse.
-            assert uniques_total == 2.0
-        finally:
-            aggregate_settings.MIN_REPORTS_PER_WINDOW = original_min_reports
+        uniques_resp = client.get(
+            "/api/aggregate",
+            params={
+                "site_id": site_id,
+                "metric": "uniques",
+                "window": "standard",
+                "hostname": "app.neurotypicaltranslator.com",
+                "start": "2026-04-20",
+                "end": "2026-04-20",
+            },
+        )
+        assert uniques_resp.status_code == 200
+        uniques_total = sum(row["value"] for row in uniques_resp.json()["windows"])
+        # Deduped by visitor-day marker, so duplicate unique reports collapse.
+        assert uniques_total == 2.0
 
         hosts_resp = client.get(
             "/api/breakdown",

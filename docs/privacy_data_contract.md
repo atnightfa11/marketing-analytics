@@ -13,10 +13,11 @@ This contract defines what each analytics table is allowed to contain and how it
 
 | Table | Class | Allowed contents | Retention target |
 |---|---|---|---|
-| `raw_reports` | Processing material | Site, metric kind, event day, coarse payload fields, rotating `standard-id-v2` session/day HMACs, device bucket, country code, timezone hint, hostname, normalized page/source/conversion fields | Rows purge after successful reducer watermark and retention window. Default primary retention is 72 hours after reduction. Solo/internal `free` raw purge is guarded by `FREE_RAW_PURGE_ENABLED` until verified in production. |
+| `raw_reports` | Processing material | Site, metric kind, event day, short-lived event timestamp, coarse payload fields, rotating `standard-id-v2` session/day HMACs, device bucket, country code, timezone hint, hostname, normalized page/source/conversion fields | Rows purge after successful reducer watermark and retention window. Default primary retention is 72 hours after reduction. Solo/internal `free` raw purge is guarded by `FREE_RAW_PURGE_ENABLED` until verified in production. |
 | `ldp_reports` | Processing material | Local-DP randomized-response payloads for Pro when enabled | Retention policy to be finalized before Pro public claims. |
 | `dp_windows` | Durable analytics output | Daily/windowed KPI aggregates, variance, confidence intervals, plan, metric | Business reporting retention. |
 | `breakdown_rollups` | Durable analytics output | Low-dimensional aggregate rows by site, plan, day, dimension, hostname scope, day type, label, metric, value | Business reporting retention. This table must not contain raw payloads, IPs, User-Agent strings, visitor IDs, session IDs, upload token IDs, full referrer URLs, or full query strings. |
+| `segment_rollups` | Durable analytics output | Daily aggregate rows for supported filter combinations such as channel, source, source/medium, country, device, page, conversion type, and hostname, plus metric/value | Business reporting retention. This table must not contain raw payloads, IPs, User-Agent strings, visitor IDs, session IDs, upload token IDs, full referrer URLs, or full query strings. |
 | `reducer_watermarks` | Operational accountability | Site/day/plan reducer status, reducer version, raw count, output counts, reduction time, purge time | Operational retention. |
 | `historical_import_batches` | Operational accountability | Import batch ID, site, source, status, aggregate row count, date range, metric names, dashboard username, timestamps, error text | Operational retention. This table must not contain imported raw payloads, visitor data, IPs, User-Agent strings, or customer analytics values. |
 | `forecasts` / `model_store` | Durable analytics output | Forecast outputs and model metadata derived from aggregate windows | Business reporting retention. |
@@ -29,6 +30,7 @@ This contract defines what each analytics table is allowed to contain and how it
 
 - KPI trend endpoints read from `dp_windows`.
 - Breakdown endpoints read from `breakdown_rollups` for days with successful reducer watermarks, falling back to bounded `raw_reports` only for unreduced days.
+- Filtered KPI/trend endpoints read from `segment_rollups` for supported segment combinations, falling back to bounded `raw_reports` only for unreduced days.
 - Low-dimensional breakdown output is served from aggregate rollups without k-threshold response gates.
 - Historical import rows are aggregate-only and excluded from dimension rollups.
 - Historical import rollback is available only while tagged processing rows remain in `raw_reports`. After purge, `historical_import_batches` is an audit record only.
@@ -60,6 +62,6 @@ This prevents late-arriving rows from being deleted before a later reducer pass 
 
 ## Backup Boundary
 
-After raw purge, `dp_windows`, `breakdown_rollups`, `reducer_watermarks`, `forecasts`, `historical_import_batches`, dashboard notes, site goals, and access/billing records are the durable source of truth. They must be covered by database backups before broad commercial launch.
+After raw purge, `dp_windows`, `breakdown_rollups`, `segment_rollups`, `reducer_watermarks`, `forecasts`, `historical_import_batches`, dashboard notes, site goals, and access/billing records are the durable source of truth. They must be covered by database backups before broad commercial launch.
 
 Backup retention is separate from primary-table raw retention. Backups may contain rows that have already been purged from the primary database, so privacy language must describe the backup retention window and limit backup restores to operational recovery.

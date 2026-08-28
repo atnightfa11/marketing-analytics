@@ -4,7 +4,7 @@ export const LAST_SITE_ID_STORAGE_KEY = "valid_last_site_id";
 export const ENABLE_DEMO_MODE = import.meta.env.VITE_ENABLE_DEMO_MODE === "true";
 
 export const metricLabels: Record<string, string> = {
-  uniques: "Unique Visitors",
+  uniques: "Visitors",
   sessions: "Sessions",
   pageviews: "Pageviews",
   conversions: "Conversions",
@@ -52,7 +52,7 @@ export const hourOfDayLabels = [
 export const dayOfWeekLabels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
 export const metricOptions = [
-  { key: "uniques", label: "Unique Visitors" },
+  { key: "uniques", label: "Visitors" },
   { key: "pageviews", label: "Pageviews" },
   { key: "sessions", label: "Sessions" },
   { key: "conversions", label: "Conversions" },
@@ -63,6 +63,7 @@ export const metricOptions = [
 ] as const;
 
 export const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "conversions", "revenue"] as const;
+export const engagementAggregateMetricKeys = ["bounced_sessions", "visit_duration_seconds"] as const;
 
 export const breakdownDimensions: BreakdownDimension[] = [
   "sources",

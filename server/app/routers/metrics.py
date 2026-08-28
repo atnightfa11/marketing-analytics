@@ -103,10 +103,10 @@ async def get_metrics(
             if metric in metric_map and forecast_is_fresh(forecast_row):
                 metric_map[metric].has_anomaly = bool(forecast_row.has_anomaly)
 
-    if "conversions" in metric_map and "pageviews" in metric_map and metric_map["pageviews"].value > 0:
+    if "conversions" in metric_map and "sessions" in metric_map and metric_map["sessions"].value > 0:
         conversions = metric_map["conversions"].value
-        pageviews = metric_map["pageviews"].value
-        conversion_rate = conversions / pageviews
+        sessions = metric_map["sessions"].value
+        conversion_rate = conversions / sessions
         metric_map["conversion_rate"] = MetricStatistic(
             metric="conversion_rate",
             value=conversion_rate,

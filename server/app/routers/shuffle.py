@@ -690,6 +690,7 @@ async def ingest_reports(
                 raw_payload.setdefault("_timezone_hint", timezone_hint)
             if request_hostname:
                 raw_payload.setdefault("_hostname", request_hostname)
+            raw_payload.setdefault("_client_timestamp", payload_time.isoformat())
             record = RawReport(
                 site_id=collect.site_id,
                 kind=report.kind,

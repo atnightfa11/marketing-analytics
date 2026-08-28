@@ -55,6 +55,11 @@ export interface AggregateWindow {
   ci95: { low: number; high: number };
 }
 
+export interface SegmentAggregateFilter {
+  dimension: string;
+  value: string;
+}
+
 export interface BreakdownRow {
   label: string;
   value: number;
@@ -397,6 +402,32 @@ export async function fetchAggregate(
   const response = await api.get("/api/aggregate", {
     headers: authHeaders(token),
     params: { site_id: resolvedSiteId, metric, window, hostname, start, end },
+  });
+  return response.data.windows ?? [];
+}
+
+export async function fetchSegmentAggregate(
+  metric: string,
+  window: "live" | "standard",
+  filters: SegmentAggregateFilter[],
+  token?: string,
+  siteId?: string,
+  start?: string,
+  end?: string
+): Promise<AggregateWindow[]> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const params = new URLSearchParams();
+  params.set("site_id", resolvedSiteId);
+  params.set("metric", metric);
+  params.set("window", window);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  filters.forEach((filter) => {
+    params.append("filter", `${filter.dimension}:${filter.value}`);
+  });
+  const response = await api.get("/api/aggregate/segments", {
+    headers: authHeaders(token),
+    params,
   });
   return response.data.windows ?? [];
 }

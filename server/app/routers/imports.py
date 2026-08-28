@@ -5,12 +5,12 @@ import datetime as dt
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth
 from ..entitlements import require_historical_imports
-from ..models import HistoricalImportBatch, RawReport, SitePlan, get_session
+from ..models import BreakdownRollup, DpWindow, HistoricalImportBatch, RawReport, SegmentRollup, SitePlan, get_session
 from ..scheduler.nightly_reduce import reduce_reports
 from ..scheduler.prophet_job import refresh_site_metric_forecast
 from ..schemas import (
@@ -373,6 +373,33 @@ async def rollback_import_batch(
     batch.status = "rolled_back"
     batch.rolled_back_at = dt.datetime.now(dt.timezone.utc)
     batch.error = None
+    await session.flush()
+    rebuild_start = dt.datetime.combine(start_day, dt.time.min, tzinfo=dt.timezone.utc)
+    rebuild_end = dt.datetime.combine(end_day + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc)
+    await session.execute(
+        delete(DpWindow).where(
+            DpWindow.site_id == site_id,
+            DpWindow.plan == target_plan,
+            DpWindow.window_start >= rebuild_start,
+            DpWindow.window_start < rebuild_end,
+        )
+    )
+    await session.execute(
+        delete(BreakdownRollup).where(
+            BreakdownRollup.site_id == site_id,
+            BreakdownRollup.plan == target_plan,
+            BreakdownRollup.day >= start_day,
+            BreakdownRollup.day <= end_day,
+        )
+    )
+    await session.execute(
+        delete(SegmentRollup).where(
+            SegmentRollup.site_id == site_id,
+            SegmentRollup.plan == target_plan,
+            SegmentRollup.day >= start_day,
+            SegmentRollup.day <= end_day,
+        )
+    )
 
     await reduce_reports(session, start_day=start_day, end_day=end_day)
     await _refresh_forecasts(session, site_id=site_id, plan=target_plan)

@@ -13,9 +13,16 @@ from ..dependencies import get_site_plan, require_site_access
 from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..ldp.rr_decoder import confidence_interval, standard_error
-from ..models import BreakdownRollup, DpWindow, RawReport, ReducerWatermark, get_session
+from ..models import BreakdownRollup, DpWindow, RawReport, ReducerWatermark, SegmentRollup, get_session
 from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import AggregateResponse, WindowAggregate
+from ..segment_rollups import (
+    SEGMENT_DIMENSIONS,
+    SEGMENT_METRICS,
+    aggregate_reports_for_segments,
+    resolve_segment_grain,
+    segment_key_from_filters,
+)
 
 router = APIRouter(tags=["metrics"])
 settings = get_settings()
@@ -85,6 +92,102 @@ def _payload_matches_hostname(payload: dict, hostname_filter: str) -> bool:
     return payload_hostname == hostname_filter
 
 
+def _window_from_rollup(day: dt.date, metric: str, value: float) -> WindowAggregate:
+    value = max(0.0, value)
+    variance = max(1.0, value)
+    se = standard_error(variance)
+    ci80_low, ci80_high = confidence_interval(value, se, 1.2816)
+    ci95_low, ci95_high = confidence_interval(value, se, 1.9599)
+    window_start = _day_start(day)
+    return WindowAggregate(
+        window_start=window_start,
+        window_end=window_start + dt.timedelta(days=1),
+        value=value,
+        variance=variance,
+        ci80={"low": max(0.0, ci80_low), "high": max(0.0, ci80_high)},
+        ci95={"low": max(0.0, ci95_low), "high": max(0.0, ci95_high)},
+    )
+
+
+def _parse_segment_filter_params(filter_params: list[str] | None) -> tuple[tuple[str, str], tuple[str, ...], str]:
+    parsed: list[tuple[str, str]] = []
+    for filter_param in filter_params or []:
+        if ":" not in filter_param:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="segment filters must use dimension:value format",
+            )
+        dimension, value = filter_param.split(":", 1)
+        parsed.append((dimension, value))
+    try:
+        return resolve_segment_grain(parsed)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+async def _aggregate_segment_rollups(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    plan: str,
+    metric: str,
+    reduced_days: set[dt.date],
+    normalized_filters: tuple[tuple[str, str], ...],
+    grain: str,
+) -> list[WindowAggregate]:
+    if not reduced_days:
+        return []
+    key = segment_key_from_filters(normalized_filters, grain)
+    stmt = select(SegmentRollup).where(
+        SegmentRollup.site_id == site_id,
+        SegmentRollup.plan == plan,
+        SegmentRollup.metric == metric,
+        SegmentRollup.grain == grain,
+        SegmentRollup.day.in_(reduced_days),
+    )
+    for dimension in SEGMENT_DIMENSIONS:
+        stmt = stmt.where(getattr(SegmentRollup, dimension) == getattr(key, dimension))
+    rows = (await session.execute(stmt.order_by(SegmentRollup.day))).scalars().all()
+    return [_window_from_rollup(row.day, metric, row.value) for row in rows]
+
+
+async def _aggregate_raw_segments(
+    *,
+    session: AsyncSession,
+    site_id: str,
+    metric: str,
+    raw_days: set[dt.date],
+    normalized_filters: tuple[tuple[str, str], ...],
+    grain: str,
+) -> list[WindowAggregate]:
+    if not raw_days:
+        return []
+    reports = (
+        await session.execute(
+            select(RawReport)
+            .where(
+                RawReport.site_id == site_id,
+                RawReport.day.in_(raw_days),
+            )
+            .order_by(RawReport.server_received_at, RawReport.id)
+        )
+    ).scalars().all()
+    reports_by_day: dict[dt.date, list[RawReport]] = defaultdict(list)
+    for report in reports:
+        reports_by_day[report.day].append(report)
+
+    key = segment_key_from_filters(normalized_filters, grain)
+    max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
+    windows: list[WindowAggregate] = []
+    for day in sorted(raw_days):
+        buckets = aggregate_reports_for_segments(reports_by_day.get(day, []), max_gap_seconds=max_gap_seconds)
+        value = buckets.get(key, {}).get(metric, 0.0)
+        if value <= 0:
+            continue
+        windows.append(_window_from_rollup(day, metric, value))
+    return windows
+
+
 async def _aggregate_free_hostname(
     *,
     session: AsyncSession,
@@ -134,18 +237,14 @@ async def _aggregate_free_hostname(
                     continue
                 seen_unique_markers.add(marker)
 
-        # Free reducer windows are minute-started, with metric-specific window_end.
-        start = report.server_received_at.replace(second=0, microsecond=0)
+        # Historical/reporting aggregates use day buckets to match reducer output;
+        # the live endpoint remains raw-backed and minute-bucketed.
+        start = _bucket_start(report.server_received_at, metric) if window == "live" else _day_start(report.day)
         buckets[start].append(report)
 
     windows: list[WindowAggregate] = []
     for window_start in sorted(buckets.keys()):
         items = buckets[window_start]
-        historical_bucket = any(
-            isinstance(item.payload, dict) and bool(item.payload.get("historical_import")) for item in items
-        )
-        if not historical_bucket and len(items) < settings.MIN_REPORTS_PER_WINDOW:
-            continue
         value = sum(_raw_report_value(item) for item in items)
         if value <= 0:
             continue
@@ -153,7 +252,11 @@ async def _aggregate_free_hostname(
         se = standard_error(variance)
         ci80_low, ci80_high = confidence_interval(value, se, 1.2816)
         ci95_low, ci95_high = confidence_interval(value, se, 1.9599)
-        window_end = window_start + dt.timedelta(minutes=_window_minutes(metric))
+        window_end = (
+            window_start + dt.timedelta(minutes=_window_minutes(metric))
+            if window == "live"
+            else window_start + dt.timedelta(days=1)
+        )
         windows.append(
             WindowAggregate(
                 window_start=window_start,
@@ -169,6 +272,64 @@ async def _aggregate_free_hostname(
         cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=3)
         windows = [entry for entry in windows if entry.window_start >= cutoff]
     return windows
+
+
+@router.get("/aggregate/segments", response_model=AggregateResponse)
+async def segment_aggregate(
+    site_id: str,
+    metric: str,
+    window: str = Query(default="standard", pattern="^(live|standard)$"),
+    start: dt.date | None = None,
+    end: dt.date | None = None,
+    filters: list[str] | None = Query(default=None, alias="filter"),
+    _auth_claims: dict | None = Depends(require_dashboard_auth),
+    _site_access: None = Depends(require_site_access),
+    plan: str = Depends(get_site_plan),
+    session: AsyncSession = Depends(get_session),
+):
+    start_day, end_day = _resolve_date_window(start, end)
+    enforce_aggregate_retention(plan, start_day, end_day)
+    if metric not in SEGMENT_METRICS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="metric is not segment-rollup backed")
+    if plan == "pro":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="segment filters are not available for Pro sites yet")
+
+    normalized_filters, _dimensions, grain = _parse_segment_filter_params(filters)
+    all_days = set(_enumerate_days(start_day, end_day))
+    if window == "live":
+        reduced_days: set[dt.date] = set()
+        raw_days = {dt.datetime.now(dt.timezone.utc).date()}
+    else:
+        reduced_days = await _successful_reduced_days(
+            session=session,
+            site_id=site_id,
+            plan=plan,
+            start_day=start_day,
+            end_day=end_day,
+        )
+        raw_days = all_days - reduced_days
+
+    windows = await _aggregate_segment_rollups(
+        session=session,
+        site_id=site_id,
+        plan=plan,
+        metric=metric,
+        reduced_days=reduced_days,
+        normalized_filters=normalized_filters,
+        grain=grain,
+    )
+    windows.extend(
+        await _aggregate_raw_segments(
+            session=session,
+            site_id=site_id,
+            metric=metric,
+            raw_days=raw_days,
+            normalized_filters=normalized_filters,
+            grain=grain,
+        )
+    )
+    windows.sort(key=lambda entry: entry.window_start)
+    return AggregateResponse(site_id=site_id, metric=metric, windows=windows)
 
 
 async def _successful_reduced_days(

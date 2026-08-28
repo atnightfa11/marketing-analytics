@@ -47,7 +47,7 @@ MIN_ROW_DELTA: dict[str, float] = {
 
 METRIC_LABELS = {
     "pageviews": "Pageviews",
-    "uniques": "Unique visitors",
+    "uniques": "Visitors",
     "sessions": "Sessions",
     "conversions": "Goal completions",
     "revenue": "Revenue",

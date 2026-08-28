@@ -27,9 +27,11 @@ from ..models import (
     LdpReport,
     RawReport,
     ReducerWatermark,
+    SegmentRollup,
     SiteEpsilonLog,
     SitePlan,
 )
+from ..segment_rollups import aggregate_reports_for_segments
 
 settings = get_settings()
 REDUCER_VERSION = "rollups-v1"
@@ -108,6 +110,49 @@ def _bucket_start(timestamp: dt.datetime, bucket_minutes: int) -> dt.datetime:
 
 def _day_start(day: dt.date) -> dt.datetime:
     return dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc)
+
+
+def _event_timestamp(report: RawReport) -> dt.datetime:
+    payload = report.payload if isinstance(report.payload, dict) else {}
+    raw_value = payload.get("_client_timestamp")
+    if isinstance(raw_value, str) and raw_value:
+        try:
+            parsed = dt.datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.astimezone(dt.timezone.utc)
+        except ValueError:
+            pass
+    return report.server_received_at
+
+
+def _engagement_totals(reports: list[RawReport]) -> tuple[int, float, float]:
+    pageview_times_by_session: dict[tuple[dt.datetime, str], list[dt.datetime]] = defaultdict(list)
+    for report in reports:
+        if report.kind != "pageviews":
+            continue
+        payload = report.payload if isinstance(report.payload, dict) else {}
+        if payload.get("historical_import"):
+            continue
+        session_hmac = payload.get("_session_hmac")
+        if not isinstance(session_hmac, str) or not session_hmac:
+            continue
+        session_bucket_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)
+        pageview_times_by_session[(session_bucket_start, session_hmac)].append(_event_timestamp(report))
+
+    bounced_sessions = 0.0
+    visit_duration_seconds = 0.0
+    max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
+    for timestamps in pageview_times_by_session.values():
+        unique_timestamps = sorted(set(timestamps))
+        if len(unique_timestamps) == 1:
+            bounced_sessions += 1.0
+            continue
+        for previous, current in zip(unique_timestamps, unique_timestamps[1:]):
+            gap_seconds = (current - previous).total_seconds()
+            if gap_seconds > 0:
+                visit_duration_seconds += min(gap_seconds, max_gap_seconds)
+    return len(pageview_times_by_session), bounced_sessions, visit_duration_seconds
 
 
 async def _upsert_window(
@@ -224,6 +269,45 @@ async def _replace_breakdown_rollups(
                             )
                         )
                         inserted += 1
+    return inserted
+
+
+async def _replace_segment_rollups(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    plan: str,
+    day: dt.date,
+    reports: list[RawReport],
+) -> int:
+    await session.execute(
+        delete(SegmentRollup).where(
+            SegmentRollup.site_id == site_id,
+            SegmentRollup.plan == plan,
+            SegmentRollup.day == day,
+        )
+    )
+
+    max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
+    buckets = aggregate_reports_for_segments(reports, max_gap_seconds=max_gap_seconds)
+    now = dt.datetime.now(dt.timezone.utc)
+    inserted = 0
+    for key, metrics in buckets.items():
+        for metric, value in metrics.items():
+            if value <= 0:
+                continue
+            session.add(
+                SegmentRollup(
+                    site_id=site_id,
+                    plan=plan,
+                    day=day,
+                    metric=metric,
+                    value=value,
+                    updated_at=now,
+                    **key.as_model_kwargs(),
+                )
+            )
+            inserted += 1
     return inserted
 
 
@@ -440,16 +524,6 @@ async def reduce_reports(
         rec.site_id: rec.timezone
         for rec in (await session.execute(select(DashboardSite))).scalars().all()
     }
-    standard_site_ids = [site_id for site_id, plan in plan_map.items() if plan == "standard"]
-    if standard_site_ids:
-        await session.execute(
-            delete(DpWindow).where(
-                DpWindow.site_id.in_(standard_site_ids),
-                DpWindow.plan == "standard",
-                DpWindow.window_start >= _day_start(start),
-                DpWindow.window_start < _day_start(end + dt.timedelta(days=1)),
-            )
-        )
 
     # Solo/internal free + Standard raw path
     raw_reports = (
@@ -459,6 +533,28 @@ async def reduce_reports(
             .order_by(RawReport.server_received_at, RawReport.id)
         )
     ).scalars().all()
+    affected_site_plans = {
+        (report.site_id, plan_map.get(report.site_id, "free"))
+        for report in raw_reports
+        if plan_map.get(report.site_id, "free") != "pro"
+    }
+    for site_id, plan in affected_site_plans:
+        await session.execute(
+            delete(DpWindow).where(
+                DpWindow.site_id == site_id,
+                DpWindow.plan == plan,
+                DpWindow.window_start >= _day_start(start),
+                DpWindow.window_start < _day_start(end + dt.timedelta(days=1)),
+            )
+        )
+        await session.execute(
+            delete(SegmentRollup).where(
+                SegmentRollup.site_id == site_id,
+                SegmentRollup.plan == plan,
+                SegmentRollup.day >= start,
+                SegmentRollup.day <= end,
+            )
+        )
     raw_buckets: dict[tuple[str, str, dt.datetime], list[RawReport]] = defaultdict(list)
     raw_reports_by_site_day: dict[tuple[str, str, dt.date], list[RawReport]] = defaultdict(list)
     raw_counts_by_site_day: dict[tuple[str, str, dt.date], int] = defaultdict(int)
@@ -488,9 +584,7 @@ async def reduce_reports(
                 if marker in deduped_unique_markers:
                     continue
                 deduped_unique_markers.add(marker)
-        window_start = (
-            _day_start(report.day) if plan == "standard" else report.server_received_at.replace(second=0, microsecond=0)
-        )
+        window_start = _day_start(report.day)
         raw_buckets[(report.site_id, report.kind, window_start)].append(report)
         if plan == "standard":
             epsilon_totals[(report.site_id, report.day)] += min(
@@ -506,17 +600,8 @@ async def reduce_reports(
             standard_pageview_counts[(site_id, window_start)] += count
 
     for (site_id, metric, window_start), items in raw_buckets.items():
-        historical_bucket = any(
-            isinstance(item.payload, dict) and bool(item.payload.get("historical_import")) for item in items
-        )
         plan = plan_map.get(site_id, "free")
-        if plan != "standard" and not historical_bucket and len(items) < settings.MIN_REPORTS_PER_WINDOW:
-            continue
-        window_end = (
-            window_start + dt.timedelta(days=1)
-            if plan == "standard"
-            else window_start + dt.timedelta(minutes=3 if metric == "uniques" else 15)
-        )
+        window_end = window_start + dt.timedelta(days=1)
         base_value = sum(_raw_report_value(item) for item in items)
         if plan == "standard" and metric == "sessions":
             pageview_cap = standard_pageview_counts.get((site_id, window_start))
@@ -551,6 +636,33 @@ async def reduce_reports(
             variance=variance,
         )
 
+    for (site_id, plan, day), reports_for_day in raw_reports_by_site_day.items():
+        engagement_session_count, bounced_sessions, visit_duration_seconds = _engagement_totals(reports_for_day)
+        if engagement_session_count <= 0:
+            continue
+        window_start = _day_start(day)
+        window_end = window_start + dt.timedelta(days=1)
+        await _upsert_window(
+            session,
+            site_id=site_id,
+            plan=plan,
+            metric="bounced_sessions",
+            window_start=window_start,
+            window_end=window_end,
+            value=bounced_sessions,
+            variance=max(1.0, bounced_sessions),
+        )
+        await _upsert_window(
+            session,
+            site_id=site_id,
+            plan=plan,
+            metric="visit_duration_seconds",
+            window_start=window_start,
+            window_end=window_end,
+            value=visit_duration_seconds,
+            variance=max(1.0, visit_duration_seconds),
+        )
+
     breakdown_counts_by_site_day: dict[tuple[str, str, dt.date], int] = defaultdict(int)
     for (site_id, plan, day), reports_for_day in raw_reports_by_site_day.items():
         breakdown_counts_by_site_day[(site_id, plan, day)] = await _replace_breakdown_rollups(
@@ -560,6 +672,13 @@ async def reduce_reports(
             day=day,
             reports=reports_for_day,
             site_timezone=site_timezones.get(site_id, "UTC"),
+        )
+        await _replace_segment_rollups(
+            session,
+            site_id=site_id,
+            plan=plan,
+            day=day,
+            reports=reports_for_day,
         )
 
     # Pro LDP path
