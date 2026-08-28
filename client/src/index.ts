@@ -78,6 +78,16 @@ const SEARCH_SOURCE_HINTS = [
   "naver",
 ];
 
+const PAID_SEARCH_SOURCE_HINTS = [
+  "adwords",
+  "googleads",
+  "google ads",
+  "bingads",
+  "bing ads",
+  "microsoftads",
+  "microsoft ads",
+];
+
 const AI_ASSISTANT_SOURCE_HINTS = [
   "chatgpt",
   "claude",
@@ -125,6 +135,17 @@ const CLICK_ID_QUERY_PARAMS = new Set([
   "li_fat_id",
   "yclid",
   "srsltid",
+]);
+
+const ATTRIBUTION_QUERY_PARAMS = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+  "source",
+  "ref",
+  "medium",
 ]);
 
 const SEARCH_AD_CLICK_ID_QUERY_PARAMS = new Set([
@@ -180,9 +201,15 @@ let conversionDedupCache = new Map<string, number>();
 let inMemoryAttribution: AttributionContext | null = null;
 
 type EnsureResult = { config: ClientConfig; collector: EventCollector };
-type SourceClassification = {
+export type SourceClassification = {
   bucket: string;
   source: string;
+  utmSource?: string;
+  medium?: string;
+  campaign?: string;
+  content?: string;
+  term?: string;
+  paidClickId?: string;
 };
 type AttributionContext = SourceClassification & {
   capturedAtMs: number;
@@ -332,7 +359,8 @@ function normalizePath(
   includeQuery: boolean,
   stripHash: boolean
 ): string {
-  const url = new URL(input, window.location.origin);
+  const base = typeof window !== "undefined" ? window.location.origin : "https://example.invalid";
+  const url = new URL(input, base);
   const query = includeQuery ? stripTrackingIdentifiersFromQuery(url.search) : "";
   const hash = stripHash ? "" : url.hash;
   return `${url.pathname}${query}${hash}`;
@@ -342,8 +370,15 @@ export function stripTrackingIdentifiersFromQuery(search: string): string {
   if (!search) return "";
   const query = search.startsWith("?") ? search.slice(1) : search;
   const params = new URLSearchParams(query);
-  for (const key of CLICK_ID_QUERY_PARAMS) {
-    params.delete(key);
+  for (const key of Array.from(params.keys())) {
+    const normalized = key.toLowerCase();
+    if (
+      CLICK_ID_QUERY_PARAMS.has(normalized)
+      || ATTRIBUTION_QUERY_PARAMS.has(normalized)
+      || normalized.startsWith("utm_")
+    ) {
+      params.delete(key);
+    }
   }
   const serialized = params.toString();
   return serialized ? `?${serialized}` : "";
@@ -466,6 +501,12 @@ function parseStoredAttribution(raw: string | null): AttributionContext | null {
       return {
         bucket: parsed.bucket,
         source: parsed.source,
+        ...(typeof parsed.utmSource === "string" && parsed.utmSource ? { utmSource: parsed.utmSource } : {}),
+        ...(typeof parsed.medium === "string" && parsed.medium ? { medium: parsed.medium } : {}),
+        ...(typeof parsed.campaign === "string" && parsed.campaign ? { campaign: parsed.campaign } : {}),
+        ...(typeof parsed.content === "string" && parsed.content ? { content: parsed.content } : {}),
+        ...(typeof parsed.term === "string" && parsed.term ? { term: parsed.term } : {}),
+        ...(typeof parsed.paidClickId === "string" && parsed.paidClickId ? { paidClickId: parsed.paidClickId } : {}),
         capturedAtMs: parsed.capturedAtMs,
       };
     }
@@ -495,6 +536,12 @@ function setAttributionContext(source: SourceClassification, nowMs: number): voi
   const context: AttributionContext = {
     bucket: source.bucket,
     source: source.source,
+    ...(source.utmSource ? { utmSource: source.utmSource } : {}),
+    ...(source.medium ? { medium: source.medium } : {}),
+    ...(source.campaign ? { campaign: source.campaign } : {}),
+    ...(source.content ? { content: source.content } : {}),
+    ...(source.term ? { term: source.term } : {}),
+    ...(source.paidClickId ? { paidClickId: source.paidClickId } : {}),
     capturedAtMs: nowMs,
   };
   inMemoryAttribution = context;
@@ -519,11 +566,53 @@ function resolveCarryoverAttribution(
   if (nowMs - carryover.capturedAtMs > windowMs) return null;
 
   if (!carryover.bucket || !carryover.source) return null;
-  return { bucket: carryover.bucket, source: carryover.source };
+  return {
+    bucket: carryover.bucket,
+    source: carryover.source,
+    ...(carryover.utmSource ? { utmSource: carryover.utmSource } : {}),
+    ...(carryover.medium ? { medium: carryover.medium } : {}),
+    ...(carryover.campaign ? { campaign: carryover.campaign } : {}),
+    ...(carryover.content ? { content: carryover.content } : {}),
+    ...(carryover.term ? { term: carryover.term } : {}),
+    ...(carryover.paidClickId ? { paidClickId: carryover.paidClickId } : {}),
+  };
 }
 
 function directSource(): SourceClassification {
   return { bucket: "direct", source: "Direct" };
+}
+
+function sanitizeAttributionValue(value: string | null | undefined, lower = false): string | undefined {
+  if (!value) return undefined;
+  const normalized = value
+    .trim()
+    .split("")
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join("")
+    .replace(/\s+/g, " ")
+    .slice(0, 160);
+  if (!normalized) return undefined;
+  return lower ? normalized.toLowerCase() : normalized;
+}
+
+function readAttributionParams(currentUrl: URL): Pick<SourceClassification, "source" | "utmSource" | "medium" | "campaign" | "content" | "term"> {
+  const utmSource = sanitizeAttributionValue(
+    currentUrl.searchParams.get("utm_source")
+    ?? currentUrl.searchParams.get("source")
+    ?? currentUrl.searchParams.get("ref"),
+    true
+  );
+  return {
+    source: utmSource ?? "",
+    utmSource,
+    medium: sanitizeAttributionValue(currentUrl.searchParams.get("utm_medium") ?? currentUrl.searchParams.get("medium"), true),
+    campaign: sanitizeAttributionValue(currentUrl.searchParams.get("utm_campaign")),
+    content: sanitizeAttributionValue(currentUrl.searchParams.get("utm_content")),
+    term: sanitizeAttributionValue(currentUrl.searchParams.get("utm_term")),
+  };
 }
 
 function classifyByMedium(utmMedium: string): string | null {
@@ -543,14 +632,16 @@ function sourceLabelFromHost(hostname: string): string {
   return host || "Unknown";
 }
 
-function paidSourceFromClickId(currentUrl: URL, utmSource: string): string | null {
+type PaidClickSource = { source: string; paidClickId: string };
+
+function paidSourceFromClickId(currentUrl: URL, utmSource: string): PaidClickSource | null {
   for (const key of SEARCH_AD_CLICK_ID_QUERY_PARAMS) {
     if (!currentUrl.searchParams.get(key)) continue;
-    if (utmSource) return utmSource;
-    return key === "msclkid" ? "bingads" : "googleads";
+    if (utmSource) return { source: utmSource, paidClickId: key };
+    return { source: key === "msclkid" ? "bingads" : "googleads", paidClickId: key };
   }
   if (currentUrl.searchParams.get("dclid")) {
-    return utmSource || "paid";
+    return { source: utmSource || "paid", paidClickId: "dclid" };
   }
   return null;
 }
@@ -560,6 +651,7 @@ function classifyBySource(utmSource: string): string | null {
   const source = utmSource.trim().toLowerCase();
   if (!source) return null;
   if (source === "direct" || source === "(direct)") return "direct";
+  if (PAID_SEARCH_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "paid";
   if (AI_ASSISTANT_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "ai";
   if (EMAIL_SOURCE_HINTS.some((hint) => source.includes(hint))) return "email";
   if (SOCIAL_SOURCE_HINTS.some((hint) => source === hint || source.includes(hint))) return "social";
@@ -567,15 +659,32 @@ function classifyBySource(utmSource: string): string | null {
   return null;
 }
 
-export function classifyReferrerBucket(currentHref?: string, referrerHref?: string): {
-  bucket: string;
-  source: string;
-};
-export function classifyReferrerBucket(
-  currentHref?: string,
-  referrerHref?: string,
-  options?: ReferrerClassificationOptions
-): SourceClassification;
+function classifyCurrentAttribution(activeConfig: ClientConfig): SourceClassification {
+  const nowMs = Date.now();
+  const source = classifyReferrerBucket(undefined, undefined, {
+    ignoredReferrers: activeConfig.ignoredReferrers,
+    carryoverAttribution: getAttributionContext(),
+    nowMs,
+    carryoverWindowMs: activeConfig.attributionCarryoverMs ?? DEFAULT_ATTRIBUTION_CARRYOVER_MS,
+  });
+  setAttributionContext(source, nowMs);
+  return source;
+}
+
+function attributionPayload(source: SourceClassification | null | undefined): Record<string, string> {
+  if (!source) return {};
+  return {
+    referrer_bucket: source.bucket,
+    referrer_source: source.source,
+    ...(source.utmSource ? { utm_source: source.utmSource } : {}),
+    ...(source.medium ? { utm_medium: source.medium } : {}),
+    ...(source.campaign ? { utm_campaign: source.campaign } : {}),
+    ...(source.content ? { utm_content: source.content } : {}),
+    ...(source.term ? { utm_term: source.term } : {}),
+    ...(source.paidClickId ? { paid_click_id: source.paidClickId } : {}),
+  };
+}
+
 export function classifyReferrerBucket(
   currentHref?: string,
   referrerHref?: string,
@@ -588,40 +697,48 @@ export function classifyReferrerBucket(
     return directSource();
   }
 
-  const utmSource = (
-    currentUrl.searchParams.get("utm_source")
-    ?? currentUrl.searchParams.get("source")
-    ?? currentUrl.searchParams.get("ref")
-    ?? ""
-  ).trim().toLowerCase();
-  const utmMedium = (
-    currentUrl.searchParams.get("utm_medium")
-    ?? currentUrl.searchParams.get("medium")
-    ?? ""
-  ).trim().toLowerCase();
+  const attribution = readAttributionParams(currentUrl);
+  const utmSource = attribution.source;
+  const utmMedium = attribution.medium ?? "";
   const paidClickSource = paidSourceFromClickId(currentUrl, utmSource);
+  const attributionFields = {
+    ...(attribution.utmSource ? { utmSource: attribution.utmSource } : {}),
+    ...(utmMedium ? { medium: utmMedium } : {}),
+    ...(attribution.campaign ? { campaign: attribution.campaign } : {}),
+    ...(attribution.content ? { content: attribution.content } : {}),
+    ...(attribution.term ? { term: attribution.term } : {}),
+  };
 
   if (paidClickSource) {
-    return { bucket: "paid", source: paidClickSource };
+    return {
+      bucket: "paid",
+      source: paidClickSource.source,
+      paidClickId: paidClickSource.paidClickId,
+      ...attributionFields,
+    };
   }
 
   const mediumBucket = classifyByMedium(utmMedium);
   if (mediumBucket) {
-    return { bucket: mediumBucket, source: utmSource || mediumBucket };
+    return { bucket: mediumBucket, source: utmSource || mediumBucket, ...attributionFields };
   }
 
   const sourceBucket = classifyBySource(utmSource);
   if (sourceBucket) {
-    return { bucket: sourceBucket, source: sourceBucket === "direct" ? "Direct" : utmSource };
+    return {
+      bucket: sourceBucket,
+      source: sourceBucket === "direct" ? "Direct" : utmSource,
+      ...attributionFields,
+    };
   }
 
   if (utmSource) {
-    return { bucket: "referral", source: utmSource };
+    return { bucket: "referral", source: utmSource, ...attributionFields };
   }
 
   const activeReferrer = referrerHref ?? (typeof document !== "undefined" ? document.referrer : "");
   if (!activeReferrer) {
-    return directSource();
+    return resolveCarryoverAttribution(options) ?? directSource();
   }
 
   const referrerUrl = parseUrl(activeReferrer, currentUrl.origin);
@@ -630,10 +747,10 @@ export function classifyReferrerBucket(
   }
 
   if (normalizeHost(referrerUrl.hostname) === normalizeHost(currentUrl.hostname)) {
-    return directSource();
+    return resolveCarryoverAttribution(options) ?? directSource();
   }
   if (registrableDomain(referrerUrl.hostname) === registrableDomain(currentUrl.hostname)) {
-    return directSource();
+    return resolveCarryoverAttribution(options) ?? directSource();
   }
 
   const ignoredReferrers = normalizeIgnoredReferrers(options?.ignoredReferrers);
@@ -669,6 +786,12 @@ function maybeSendSessionStart(sessionInactivityMs: number): void {
     sendSessionStart({
       referrerBucket: source.bucket,
       referrerSource: source.source,
+      utmSource: source.utmSource,
+      utmMedium: source.medium,
+      utmCampaign: source.campaign,
+      utmContent: source.content,
+      utmTerm: source.term,
+      paidClickId: source.paidClickId,
       engagementBucket: "start",
     });
     setAttributionContext(source, now);
@@ -961,11 +1084,18 @@ export function sendPageview(url: string, metadata: Record<string, unknown> = {}
   }
 
   const rr = rrBit(true, activeConfig.epsilon.pageview, activeConfig.samplingRate);
+  const source = classifyCurrentAttribution(activeConfig);
+  const normalizedUrl = normalizePath(
+    url,
+    activeConfig.includeQueryInPath ?? false,
+    activeConfig.stripHashInPath ?? true
+  );
   const envelope = buildEnvelope(
     activeConfig,
     "pageviews",
     {
-      url,
+      url: normalizedUrl,
+      ...attributionPayload(source),
       randomized_bit: rr.bit,
       probability_true: rr.p,
       probability_false: rr.q,
@@ -1001,6 +1131,12 @@ export function sendSessionStart(payload: SessionEventPayload): boolean {
       variance: rr.variance,
       referrer_bucket: payload.referrerBucket,
       referrer_source: payload.referrerSource,
+      ...(payload.utmSource ? { utm_source: payload.utmSource } : {}),
+      ...(payload.utmMedium ? { utm_medium: payload.utmMedium } : {}),
+      ...(payload.utmCampaign ? { utm_campaign: payload.utmCampaign } : {}),
+      ...(payload.utmContent ? { utm_content: payload.utmContent } : {}),
+      ...(payload.utmTerm ? { utm_term: payload.utmTerm } : {}),
+      ...(payload.paidClickId ? { paid_click_id: payload.paidClickId } : {}),
       engagement_bucket: payload.engagementBucket,
     },
     activeConfig.epsilon.session,
@@ -1029,6 +1165,8 @@ export function sendConversion(payload: ConversionEventPayload): boolean {
   const orderId = sanitizeOrderId(payload.orderId);
   const revenueAmount = sanitizeRevenueAmount(payload.revenueAmount);
   const revenueCurrency = sanitizeCurrencyCode(payload.revenueCurrency);
+  const source = classifyCurrentAttribution(activeConfig);
+  const attribution = attributionPayload(source);
 
   const rr = rrBit(true, activeConfig.epsilon.conversion, activeConfig.samplingRate);
   const envelope = buildEnvelope(
@@ -1037,6 +1175,7 @@ export function sendConversion(payload: ConversionEventPayload): boolean {
     {
       conversion_type: conversionType,
       ...(orderId ? { order_id: orderId } : {}),
+      ...attribution,
       randomized_bit: rr.bit,
       probability_true: rr.p,
       probability_false: rr.q,
@@ -1056,6 +1195,7 @@ export function sendConversion(payload: ConversionEventPayload): boolean {
         ...(revenueCurrency ? { currency: revenueCurrency } : {}),
         conversion_type: conversionType,
         ...(orderId ? { order_id: orderId } : {}),
+        ...attribution,
         randomized_bit: rr.bit,
         probability_true: rr.p,
         probability_false: rr.q,

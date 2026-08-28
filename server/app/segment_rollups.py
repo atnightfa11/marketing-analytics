@@ -11,6 +11,7 @@ from .breakdown_logic import (
     normalize_country_code,
     normalize_device_bucket,
     normalize_page_path,
+    normalize_attribution_label,
     normalize_source_bucket,
     normalize_source_label,
     raw_report_value,
@@ -24,6 +25,9 @@ SEGMENT_DIMENSIONS = (
     "channel",
     "source",
     "source_medium",
+    "campaign",
+    "content",
+    "term",
     "country",
     "device",
     "page",
@@ -32,7 +36,7 @@ SEGMENT_DIMENSIONS = (
 SEGMENT_DIMENSION_ALIASES = {
     "goal": "conversion_type",
 }
-SOURCE_DIMENSIONS = {"channel", "source", "source_medium"}
+SOURCE_DIMENSIONS = {"channel", "source", "source_medium", "campaign", "content", "term"}
 SEGMENT_METRICS = (
     "pageviews",
     "sessions",
@@ -47,6 +51,9 @@ _BASE_SEGMENT_GRAINS: tuple[tuple[str, ...], ...] = (
     ("channel",),
     ("source",),
     ("source_medium",),
+    ("campaign",),
+    ("content",),
+    ("term",),
     ("country",),
     ("device",),
     ("page",),
@@ -63,6 +70,11 @@ _BASE_SEGMENT_GRAINS: tuple[tuple[str, ...], ...] = (
     ("source_medium", "device"),
     ("source_medium", "page"),
     ("source_medium", "conversion_type"),
+    ("source_medium", "campaign"),
+    ("campaign", "country"),
+    ("campaign", "device"),
+    ("campaign", "page"),
+    ("campaign", "conversion_type"),
     ("country", "device"),
     ("country", "page"),
     ("country", "conversion_type"),
@@ -74,8 +86,12 @@ _BASE_SEGMENT_GRAINS: tuple[tuple[str, ...], ...] = (
     ("source_medium", "country", "device"),
     ("source_medium", "country", "page"),
     ("source_medium", "device", "page"),
+    ("source_medium", "campaign", "country"),
+    ("source_medium", "campaign", "device"),
+    ("campaign", "country", "device"),
     ("channel", "country", "device", "conversion_type"),
     ("source_medium", "country", "device", "conversion_type"),
+    ("source_medium", "campaign", "country", "device"),
 )
 SUPPORTED_SEGMENT_GRAINS: tuple[tuple[str, ...], ...] = (
     ("hostname",),
@@ -133,6 +149,7 @@ SOCIAL_SOURCE_SET = {
 }
 EMAIL_SOURCE_SET = {"email", "e-mail", "e_mail", "e mail", "gmail", "newsletter"}
 PAID_SEARCH_SOURCE_SET = {"adwords", "bing ads", "bingads", "google ads", "googleads", "microsoft ads", "microsoftads"}
+SEARCH_PAID_CLICK_IDS = {"gclid", "gbraid", "wbraid", "msclkid"}
 PAID_SIGNAL_PATTERN = re.compile(r"(^|[\s/_-])(cpc|ppc|paid|retargeting|remarketing|sponsored|display|cpm)($|[\s/_-])", re.I)
 
 
@@ -141,6 +158,9 @@ class SourceAttributes:
     channel: str
     source: str
     source_medium: str
+    campaign: str = "Unknown"
+    content: str = "Unknown"
+    term: str = "Unknown"
 
 
 @dataclass(frozen=True)
@@ -150,6 +170,9 @@ class SegmentKey:
     channel: str = ""
     source: str = ""
     source_medium: str = ""
+    campaign: str = ""
+    content: str = ""
+    term: str = ""
     country: str = ""
     device: str = ""
     page: str = ""
@@ -162,6 +185,9 @@ class SegmentKey:
             "channel": self.channel,
             "source": self.source,
             "source_medium": self.source_medium,
+            "campaign": self.campaign,
+            "content": self.content,
+            "term": self.term,
             "country": self.country,
             "device": self.device,
             "page": self.page,
@@ -201,19 +227,40 @@ def _is_explicit_paid_source(value: str) -> bool:
     return bool(PAID_SIGNAL_PATTERN.search(normalized)) or source_key in PAID_SEARCH_SOURCE_SET
 
 
-def classify_channel_label(raw_label: str) -> str:
+def _channel_from_medium(medium: str, source: str) -> str | None:
+    normalized = medium.strip().lower()
+    if not normalized or normalized == "unknown":
+        return None
+    if bool(PAID_SIGNAL_PATTERN.search(normalized)):
+        if _matches_source_set(source, SOCIAL_SOURCE_SET):
+            return "Paid Social"
+        if _matches_source_set(source, SEARCH_SOURCE_SET) or _matches_source_set(source, PAID_SEARCH_SOURCE_SET):
+            return "Paid Search"
+        return "Paid Other"
+    if normalized in {"email", "e-mail", "newsletter"}:
+        return "Email"
+    if normalized in {"social", "social_media", "social-network", "social-networking"}:
+        return "Organic Social"
+    if normalized == "organic":
+        return "Organic Search" if _matches_source_set(source, SEARCH_SOURCE_SET) else "Organic"
+    if normalized in {"referral", "app", "link"}:
+        return "Referral"
+    return None
+
+
+def classify_channel_label(raw_label: str, *, bucket: str = "", medium: str = "", paid_click_id: str = "") -> str:
     source = normalize_source_label(raw_label)
     normalized = source.lower()
     raw_normalized = raw_label.strip().lower()
+    paid_click = paid_click_id.strip().lower()
+    bucket_normalized = bucket.strip().lower()
+    if paid_click in SEARCH_PAID_CLICK_IDS:
+        return "Paid Search"
+    medium_channel = _channel_from_medium(medium, source)
+    if medium_channel:
+        return medium_channel
     if normalized == "direct":
         return "Direct"
-    if normalized == "organic":
-        return "Organic Search"
-    if normalized == "social":
-        return "Organic Social"
-    if _matches_source_set(normalized, AI_ASSISTANT_SOURCE_SET) or _matches_source_set(raw_normalized, AI_ASSISTANT_SOURCE_SET):
-        return "AI Assistants"
-
     has_paid_signal = _is_explicit_paid_source(raw_normalized) or _is_explicit_paid_source(normalized)
     if has_paid_signal and (_matches_source_set(normalized, SOCIAL_SOURCE_SET) or _matches_source_set(raw_normalized, SOCIAL_SOURCE_SET)):
         return "Paid Social"
@@ -225,6 +272,17 @@ def classify_channel_label(raw_label: str) -> str:
         return "Paid Search"
     if has_paid_signal:
         return "Paid Other"
+    if normalized == "organic" or bucket_normalized == "organic":
+        return "Organic Search"
+    if normalized == "social" or bucket_normalized == "social":
+        return "Organic Social"
+    if normalized == "email" or bucket_normalized == "email":
+        return "Email"
+    if normalized == "paid" or bucket_normalized == "paid":
+        return "Paid Other"
+    if _matches_source_set(normalized, AI_ASSISTANT_SOURCE_SET) or _matches_source_set(raw_normalized, AI_ASSISTANT_SOURCE_SET):
+        return "AI Assistants"
+
     if _matches_source_set(normalized, SOCIAL_SOURCE_SET) or _matches_source_set(raw_normalized, SOCIAL_SOURCE_SET):
         return "Organic Social"
     if _matches_source_set(normalized, SEARCH_SOURCE_SET) or _matches_source_set(raw_normalized, SEARCH_SOURCE_SET):
@@ -234,9 +292,12 @@ def classify_channel_label(raw_label: str) -> str:
     return "Referral"
 
 
-def build_source_medium_label(raw_label: str) -> str:
+def build_source_medium_label(raw_label: str, *, channel: str, medium: str = "Unknown", paid_click_id: str = "") -> str:
     source = normalize_source_label(raw_label)
-    channel = classify_channel_label(raw_label)
+    if medium != "Unknown":
+        return f"{source}/{medium}"
+    if paid_click_id.strip().lower() in SEARCH_PAID_CLICK_IDS:
+        return f"{source}/cpc"
     if channel == "Direct":
         return f"{source}/None"
     if channel == "Organic Search":
@@ -257,16 +318,24 @@ def build_source_medium_label(raw_label: str) -> str:
 
 
 def source_attributes_from_payload(payload: dict) -> SourceAttributes:
-    source = normalize_source_label(payload.get("referrer_source"))
+    utm_source = normalize_attribution_label(payload.get("utm_source"), lower=True, limit=120)
+    medium = normalize_attribution_label(payload.get("utm_medium"), lower=True, limit=80)
+    paid_click_id = normalize_attribution_label(payload.get("paid_click_id"), lower=True, limit=32)
+    source = normalize_source_label(utm_source) if utm_source != "Unknown" else normalize_source_label(payload.get("referrer_source"))
     if source == "Unknown":
         source = normalize_source_bucket(payload.get("referrer_bucket"))
     source = normalize_source_label(source)
     if source == "Unknown":
         source = "Referral"
+    bucket = payload.get("referrer_bucket") if isinstance(payload.get("referrer_bucket"), str) else ""
+    channel = classify_channel_label(source, bucket=bucket, medium=medium, paid_click_id=paid_click_id)
     return SourceAttributes(
-        channel=classify_channel_label(source),
+        channel=channel,
         source=source,
-        source_medium=build_source_medium_label(source),
+        source_medium=build_source_medium_label(source, channel=channel, medium=medium, paid_click_id=paid_click_id),
+        campaign=normalize_attribution_label(payload.get("utm_campaign"), limit=160),
+        content=normalize_attribution_label(payload.get("utm_content"), limit=160),
+        term=normalize_attribution_label(payload.get("utm_term"), limit=160),
     )
 
 
@@ -290,6 +359,8 @@ def normalize_segment_value(dimension: str, value: str) -> str:
         return normalize_source_label(trimmed)[:120]
     if dimension == "source_medium":
         return trimmed[:160]
+    if dimension in {"campaign", "content", "term"}:
+        return normalize_attribution_label(trimmed, limit=160)[:160]
     if dimension == "channel":
         return trimmed[:120]
     if dimension == "country":
@@ -359,6 +430,9 @@ def _dimensions_for_report(report, source_by_session: dict[tuple[dt.datetime, st
         "channel": source_attributes.channel[:120],
         "source": source_attributes.source[:120],
         "source_medium": source_attributes.source_medium[:160],
+        "campaign": source_attributes.campaign[:160],
+        "content": source_attributes.content[:160],
+        "term": source_attributes.term[:160],
         "country": normalize_country_code(payload.get("_country_code"))[:32],
         "device": normalize_device_bucket(payload.get("_device_bucket"))[:32],
         "page": normalize_page_path(payload.get("url"))[:220],
@@ -405,6 +479,8 @@ def _report_grain_values(
 ) -> list[dict[str, str]]:
     payload = report.payload if isinstance(report.payload, dict) else {}
     if report.kind == "uniques" and any(dimension in SOURCE_DIMENSIONS for dimension in grain):
+        return []
+    if any(dimension in {"campaign", "content", "term"} and dimensions.get(dimension) == "Unknown" for dimension in grain):
         return []
     if "conversion_type" in grain and report.kind not in {"conversions", "revenue"}:
         return []

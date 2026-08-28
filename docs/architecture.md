@@ -42,7 +42,7 @@ For each report, reducer-friendly coarse fields are stored:
 - `_country_code` (2-letter code or `Unknown`)
 - `_timezone_hint` when supplied by request infrastructure
 - `_hostname` (normalized host for subdomain filtering)
-- event payload fields such as `url`, `conversion_type`, `referrer_bucket`, `referrer_source`
+- event payload fields such as normalized `url`, `conversion_type`, `referrer_bucket`, `referrer_source`, `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, and paid click-id type. Tracking parameters and paid click-id values are stripped from page URLs before storage/publication.
 
 Raw IP address and raw User-Agent are used transiently to derive keyed `standard-id-v2` HMACs and coarse reporting dimensions. Raw IP and raw User-Agent are not persisted as raw identifiers in report payloads.
 
@@ -85,7 +85,7 @@ Raw IP address and raw User-Agent are used transiently to derive keyed `standard
   - `DELETE /api/notes/{note_id}`
 - Breakdowns:
   - `GET /api/breakdown`
-  - dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
+  - dimensions: `pages`, `channels`, `sources`, `source_medium`, `campaign`, `content`, `term`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
   - supports `hostname=<host>` filter for subdomain tracking
   - time-parting dimensions support `day_type=all|weekday|weekend`
   - reads from `breakdown_rollups` after reduction

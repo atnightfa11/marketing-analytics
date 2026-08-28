@@ -634,7 +634,12 @@
             "schema": {
               "enum": [
                 "pages",
+                "channels",
                 "sources",
+                "source_medium",
+                "campaign",
+                "content",
+                "term",
                 "devices",
                 "countries",
                 "conversions",
@@ -1360,7 +1365,12 @@
             "type": "string",
             "enum": [
               "pages",
+              "channels",
               "sources",
+              "source_medium",
+              "campaign",
+              "content",
+              "term",
               "devices",
               "countries",
               "conversions",

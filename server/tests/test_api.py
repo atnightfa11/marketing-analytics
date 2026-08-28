@@ -50,12 +50,14 @@ from app.config import Settings  # noqa: E402
 from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SegmentRollup, SiteAlertSettings, SiteApiKey, SiteGoal, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
+from app.breakdown_logic import aggregate_reports_for_breakdown  # noqa: E402
 from app.maintenance import purge_expired_upload_tokens, settings as maintenance_settings  # noqa: E402
 from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.shuffle import STANDARD_ID_VERSION, _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import REDUCER_VERSION, purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
+from app.segment_rollups import SegmentKey, aggregate_reports_for_segments  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
 
@@ -176,6 +178,17 @@ async def _insert_raw_report(
             )
         )
         await session.commit()
+
+
+def _attribution_report(
+    *,
+    kind: str,
+    payload: dict,
+    minute: int,
+    day: date = date(2026, 5, 9),
+) -> SimpleNamespace:
+    timestamp = datetime(day.year, day.month, day.day, 14, minute, tzinfo=timezone.utc)
+    return SimpleNamespace(kind=kind, payload=payload, day=day, server_received_at=timestamp)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1967,6 +1980,180 @@ async def test_segment_rollups_preserve_filtered_aggregates_after_raw_purge(clie
     )
     assert source_medium_response.status_code == 200
     assert sum(row["value"] for row in source_medium_response.json()["windows"]) == pytest.approx(3.0)
+
+
+def test_acquisition_breakdowns_use_utm_and_paid_click_signals():
+    target_day = date(2026, 5, 9)
+    reports = [
+        _attribution_report(
+            kind="sessions",
+            minute=0,
+            day=target_day,
+            payload={
+                "_session_hmac": "paid-session",
+                "_visitor_day_hmac": "paid-visitor",
+                "referrer_bucket": "paid",
+                "referrer_source": "google",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "Summer Launch",
+                "paid_click_id": "gclid",
+                "_country_code": "US",
+                "_device_bucket": "mobile",
+            },
+        ),
+        _attribution_report(
+            kind="pageviews",
+            minute=1,
+            day=target_day,
+            payload={
+                "_session_hmac": "paid-session",
+                "_visitor_day_hmac": "paid-visitor",
+                "referrer_bucket": "paid",
+                "referrer_source": "google",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "Summer Launch",
+                "paid_click_id": "gclid",
+                "url": "/pricing?utm_campaign=Summer+Launch&gclid=secret&page=pricing",
+                "_country_code": "US",
+                "_device_bucket": "mobile",
+            },
+        ),
+        _attribution_report(
+            kind="sessions",
+            minute=2,
+            day=target_day,
+            payload={
+                "_session_hmac": "organic-session",
+                "_visitor_day_hmac": "organic-visitor",
+                "referrer_bucket": "organic",
+                "referrer_source": "google.com",
+                "_country_code": "US",
+                "_device_bucket": "desktop",
+            },
+        ),
+        _attribution_report(
+            kind="pageviews",
+            minute=3,
+            day=target_day,
+            payload={
+                "_session_hmac": "organic-session",
+                "_visitor_day_hmac": "organic-visitor",
+                "referrer_bucket": "organic",
+                "referrer_source": "google.com",
+                "url": "/lake-level",
+                "_country_code": "US",
+                "_device_bucket": "desktop",
+            },
+        ),
+        _attribution_report(
+            kind="sessions",
+            minute=4,
+            day=target_day,
+            payload={
+                "_session_hmac": "social-session",
+                "_visitor_day_hmac": "social-visitor",
+                "referrer_bucket": "social",
+                "referrer_source": "facebook",
+                "utm_source": "facebook",
+                "_country_code": "US",
+                "_device_bucket": "mobile",
+            },
+        ),
+        _attribution_report(
+            kind="sessions",
+            minute=5,
+            day=target_day,
+            payload={
+                "_session_hmac": "ad-source-session",
+                "_visitor_day_hmac": "ad-source-visitor",
+                "referrer_bucket": "organic",
+                "referrer_source": "googleads",
+                "_country_code": "US",
+                "_device_bucket": "mobile",
+            },
+        ),
+    ]
+
+    channel_buckets = aggregate_reports_for_breakdown(
+        reports=reports,
+        dimension="channels",
+        site_timezone="UTC",
+    )
+    assert channel_buckets["Paid Search"]["sessions"] == 2.0
+    assert channel_buckets["Organic Search"]["sessions"] == 1.0
+    assert channel_buckets["Organic Social"]["sessions"] == 1.0
+
+    source_medium_buckets = aggregate_reports_for_breakdown(
+        reports=reports,
+        dimension="source_medium",
+        site_timezone="UTC",
+    )
+    assert source_medium_buckets["Google/cpc"]["sessions"] == 1.0
+    assert source_medium_buckets["Google/Organic"]["sessions"] == 1.0
+    assert source_medium_buckets["Google Ads/Paid"]["sessions"] == 1.0
+    assert source_medium_buckets["Facebook/Organic Social"]["sessions"] == 1.0
+
+    campaign_buckets = aggregate_reports_for_breakdown(
+        reports=reports,
+        dimension="campaign",
+        site_timezone="UTC",
+    )
+    assert set(campaign_buckets) == {"Summer Launch"}
+    assert campaign_buckets["Summer Launch"]["pageviews"] == 1.0
+
+    page_buckets = aggregate_reports_for_breakdown(
+        reports=reports,
+        dimension="pages",
+        site_timezone="UTC",
+    )
+    assert "/pricing" in page_buckets
+    assert all("utm_" not in label and "gclid" not in label for label in page_buckets)
+
+
+def test_segment_rollups_include_campaign_filters_and_skip_unknown_campaigns():
+    target_day = date(2026, 5, 9)
+    common = {
+        "_session_hmac": "paid-session",
+        "_visitor_day_hmac": "paid-visitor",
+        "referrer_bucket": "paid",
+        "referrer_source": "google",
+        "utm_source": "google",
+        "utm_medium": "cpc",
+        "utm_campaign": "Summer Launch",
+        "paid_click_id": "gclid",
+        "_country_code": "US",
+        "_device_bucket": "mobile",
+    }
+    reports = [
+        _attribution_report(kind="sessions", minute=0, day=target_day, payload=common),
+        _attribution_report(kind="pageviews", minute=1, day=target_day, payload={**common, "url": "/pricing"}),
+        _attribution_report(
+            kind="sessions",
+            minute=2,
+            day=target_day,
+            payload={
+                "_session_hmac": "organic-session",
+                "_visitor_day_hmac": "organic-visitor",
+                "referrer_bucket": "organic",
+                "referrer_source": "google.com",
+                "_country_code": "US",
+                "_device_bucket": "mobile",
+            },
+        ),
+    ]
+
+    buckets = aggregate_reports_for_segments(reports, max_gap_seconds=1800)
+    campaign_key = SegmentKey(
+        grain="source_medium+campaign+country",
+        source_medium="Google/cpc",
+        campaign="Summer Launch",
+        country="US",
+    )
+    assert buckets[campaign_key]["sessions"] == 1.0
+    assert buckets[campaign_key]["pageviews"] == 1.0
+    assert all(key.campaign != "Unknown" for key in buckets)
 
 
 @pytest.mark.asyncio

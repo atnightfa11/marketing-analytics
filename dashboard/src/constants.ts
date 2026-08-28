@@ -66,7 +66,12 @@ export const aggregateMetricKeys = ["pageviews", "uniques", "sessions", "convers
 export const engagementAggregateMetricKeys = ["bounced_sessions", "visit_duration_seconds"] as const;
 
 export const breakdownDimensions: BreakdownDimension[] = [
+  "channels",
   "sources",
+  "source_medium",
+  "campaign",
+  "content",
+  "term",
   "pages",
   "devices",
   "countries",

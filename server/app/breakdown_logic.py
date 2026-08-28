@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -12,7 +14,12 @@ from .schemas import BreakdownResponse, BreakdownRow
 
 BreakdownDimension = Literal[
     "pages",
+    "channels",
     "sources",
+    "source_medium",
+    "campaign",
+    "content",
+    "term",
     "devices",
     "countries",
     "conversions",
@@ -57,7 +64,12 @@ DAY_OF_WEEK_ORDER = {label: index for index, label in enumerate(DAY_OF_WEEK_LABE
 
 BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = {
     "pages": ("uniques", "sessions", "pageviews"),
+    "channels": ("uniques", "sessions", "pageviews", "conversions"),
     "sources": ("uniques", "sessions", "pageviews", "conversions"),
+    "source_medium": ("uniques", "sessions", "pageviews", "conversions"),
+    "campaign": ("uniques", "sessions", "pageviews", "conversions"),
+    "content": ("uniques", "sessions", "pageviews", "conversions"),
+    "term": ("uniques", "sessions", "pageviews", "conversions"),
     "devices": ("uniques", "sessions", "pageviews", "conversions"),
     "countries": ("uniques", "sessions", "pageviews", "conversions"),
     "conversions": ("uniques", "sessions", "conversions"),
@@ -67,7 +79,12 @@ BREAKDOWN_METRIC_ORDER: dict[BreakdownDimension, tuple[BreakdownMetric, ...]] = 
 }
 BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
     "pages": "pageviews",
+    "channels": "sessions",
     "sources": "sessions",
+    "source_medium": "sessions",
+    "campaign": "sessions",
+    "content": "sessions",
+    "term": "sessions",
     "devices": "pageviews",
     "countries": "pageviews",
     "conversions": "conversions",
@@ -77,7 +94,12 @@ BREAKDOWN_PRIMARY_METRIC: dict[BreakdownDimension, BreakdownMetric] = {
 }
 BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
     "pages": ("pageviews",),
+    "channels": ("sessions", "pageviews", "conversions"),
     "sources": ("sessions", "pageviews", "conversions"),
+    "source_medium": ("sessions", "pageviews", "conversions"),
+    "campaign": ("sessions", "pageviews", "conversions"),
+    "content": ("sessions", "pageviews", "conversions"),
+    "term": ("sessions", "pageviews", "conversions"),
     "devices": ("sessions", "pageviews", "conversions"),
     "countries": ("sessions", "pageviews", "conversions"),
     "conversions": ("conversions",),
@@ -87,6 +109,8 @@ BREAKDOWN_REPORT_KINDS: dict[BreakdownDimension, tuple[str, ...]] = {
 }
 BREAKDOWN_DIMENSIONS: tuple[BreakdownDimension, ...] = tuple(BREAKDOWN_METRIC_ORDER.keys())
 TIME_PARTING_DIMENSIONS: set[BreakdownDimension] = {"hour_of_day", "day_of_week"}
+ATTRIBUTION_DIMENSIONS: set[BreakdownDimension] = {"channels", "sources", "source_medium", "campaign", "content", "term"}
+OPTIONAL_ATTRIBUTION_DIMENSIONS: set[BreakdownDimension] = {"campaign", "content", "term"}
 TIME_PARTING_STORAGE_DAY_TYPES: tuple[TimePartingDayType, ...] = ("weekday", "weekend")
 TIME_PARTING_MIN_DAYS = 7
 
@@ -124,6 +148,68 @@ COMMON_SOURCE_HOST_MAP = {
     "yahoo.com": "Yahoo",
     "youtube.com": "YouTube",
 }
+
+SEARCH_SOURCE_SET = {
+    "google",
+    "google.com",
+    "bing",
+    "bing.com",
+    "duckduckgo",
+    "duckduckgo.com",
+    "yahoo",
+    "yahoo.com",
+    "ecosia",
+    "ecosia.org",
+    "search.brave.com",
+    "baidu.com",
+    "yandex.com",
+}
+AI_ASSISTANT_SOURCE_SET = {
+    "chatgpt",
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude",
+    "claude.ai",
+    "perplexity",
+    "perplexity.ai",
+    "gemini",
+    "gemini.google.com",
+    "copilot",
+    "copilot.microsoft.com",
+}
+SOCIAL_SOURCE_SET = {
+    "reddit",
+    "reddit.com",
+    "x",
+    "x.com",
+    "t.co",
+    "linkedin",
+    "linkedin.com",
+    "facebook",
+    "facebook.com",
+    "instagram",
+    "instagram.com",
+    "youtube",
+    "youtube.com",
+    "tiktok",
+    "tiktok.com",
+    "threads.net",
+    "pinterest.com",
+}
+EMAIL_SOURCE_SET = {"email", "e-mail", "e_mail", "e mail", "gmail", "newsletter", "mailchimp", "sendgrid"}
+PAID_SEARCH_SOURCE_SET = {"adwords", "bing ads", "bingads", "google ads", "googleads", "microsoft ads", "microsoftads"}
+SEARCH_PAID_CLICK_IDS = {"gclid", "gbraid", "wbraid", "msclkid"}
+PAID_MEDIUM_PATTERN = re.compile(r"(^|[\s/_-])(cpc|ppc|paid|retargeting|remarketing|sponsored|display|cpm)($|[\s/_-])", re.I)
+
+
+@dataclass(frozen=True)
+class SourceAttributes:
+    channel: str
+    source: str
+    source_medium: str
+    campaign: str = "Unknown"
+    content: str = "Unknown"
+    term: str = "Unknown"
 
 
 def session_bucket_start(timestamp: dt.datetime) -> dt.datetime:
@@ -242,6 +328,188 @@ def normalize_source_label(raw_value: object) -> str:
     return "Unknown"
 
 
+def normalize_attribution_label(raw_value: object, *, lower: bool = False, limit: int = 160) -> str:
+    if not isinstance(raw_value, str):
+        return "Unknown"
+    value = " ".join(raw_value.strip().split())
+    if not value:
+        return "Unknown"
+    value = value[:limit]
+    return value.lower() if lower else value
+
+
+def _normalize_source_key(value: str) -> str:
+    normalized = value.strip().lower()
+    if not normalized:
+        return ""
+    if "://" in normalized:
+        normalized = normalized.split("://", 1)[1]
+    host = normalized.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host or normalized.replace("www.", "", 1)
+
+
+def _matches_source_set(value: str, candidates: set[str]) -> bool:
+    normalized = _normalize_source_key(value)
+    if not normalized:
+        return False
+    return any(normalized == candidate or normalized.endswith(f".{candidate}") for candidate in candidates)
+
+
+def _is_paid_medium(value: str) -> bool:
+    if not value or value == "Unknown":
+        return False
+    return bool(PAID_MEDIUM_PATTERN.search(value))
+
+
+def _is_explicit_paid_source(value: str) -> bool:
+    normalized = value.strip().lower()
+    source_key = _normalize_source_key(value)
+    return bool(PAID_MEDIUM_PATTERN.search(normalized)) or source_key in PAID_SEARCH_SOURCE_SET
+
+
+def _channel_from_medium(medium: str, source: str) -> str | None:
+    normalized = medium.lower()
+    if _is_paid_medium(normalized):
+        if _matches_source_set(source, SOCIAL_SOURCE_SET):
+            return "Paid Social"
+        if _matches_source_set(source, SEARCH_SOURCE_SET) or _matches_source_set(source, PAID_SEARCH_SOURCE_SET):
+            return "Paid Search"
+        return "Paid Other"
+    if normalized in {"email", "e-mail", "newsletter"}:
+        return "Email"
+    if normalized in {"social", "social_media", "social-network", "social-networking"}:
+        return "Organic Social"
+    if normalized == "organic":
+        return "Organic Search" if _matches_source_set(source, SEARCH_SOURCE_SET) else "Organic"
+    if normalized in {"referral", "app", "link"}:
+        return "Referral"
+    return None
+
+
+def classify_channel_label(
+    raw_source: str,
+    *,
+    bucket: str = "",
+    medium: str = "",
+    paid_click_id: str = "",
+) -> str:
+    source = normalize_source_label(raw_source)
+    normalized = source.lower()
+    raw_normalized = raw_source.strip().lower()
+    paid_click = paid_click_id.strip().lower()
+    bucket_normalized = bucket.strip().lower()
+
+    if paid_click in SEARCH_PAID_CLICK_IDS:
+        return "Paid Search"
+    medium_channel = _channel_from_medium(medium, source)
+    if medium_channel:
+        return medium_channel
+    if normalized == "direct" or bucket_normalized == "direct":
+        return "Direct"
+    has_paid_signal = _is_explicit_paid_source(raw_normalized) or _is_explicit_paid_source(normalized)
+    if has_paid_signal and (_matches_source_set(normalized, SOCIAL_SOURCE_SET) or _matches_source_set(raw_normalized, SOCIAL_SOURCE_SET)):
+        return "Paid Social"
+    if has_paid_signal and (
+        _matches_source_set(normalized, SEARCH_SOURCE_SET)
+        or _normalize_source_key(raw_normalized) in PAID_SEARCH_SOURCE_SET
+        or _normalize_source_key(normalized) in PAID_SEARCH_SOURCE_SET
+    ):
+        return "Paid Search"
+    if has_paid_signal:
+        return "Paid Other"
+    if normalized == "organic" or bucket_normalized == "organic":
+        return "Organic Search"
+    if normalized == "social" or bucket_normalized == "social":
+        return "Organic Social"
+    if normalized == "email" or bucket_normalized == "email":
+        return "Email"
+    if normalized == "paid" or bucket_normalized == "paid":
+        return "Paid Other"
+    if _matches_source_set(normalized, AI_ASSISTANT_SOURCE_SET) or _matches_source_set(raw_normalized, AI_ASSISTANT_SOURCE_SET):
+        return "AI Assistants"
+    if _matches_source_set(normalized, SOCIAL_SOURCE_SET) or _matches_source_set(raw_normalized, SOCIAL_SOURCE_SET):
+        return "Organic Social"
+    if _matches_source_set(normalized, SEARCH_SOURCE_SET) or _matches_source_set(raw_normalized, SEARCH_SOURCE_SET):
+        return "Organic Search"
+    if normalized in EMAIL_SOURCE_SET or raw_normalized in EMAIL_SOURCE_SET:
+        return "Email"
+    return "Referral"
+
+
+def build_source_medium_label(source: str, channel: str, medium: str = "Unknown", paid_click_id: str = "") -> str:
+    if medium != "Unknown":
+        return f"{source}/{medium}"
+    if paid_click_id.strip().lower() in SEARCH_PAID_CLICK_IDS:
+        return f"{source}/cpc"
+    if channel == "Direct":
+        return f"{source}/None"
+    if channel == "Organic Search":
+        return f"{source}/Organic"
+    if channel == "Organic Social":
+        return f"{source}/Organic Social"
+    if channel == "AI Assistants":
+        return f"{source}/AI Assistant"
+    if channel == "Email":
+        return f"{source}/Email"
+    if channel == "Paid Search":
+        return f"{source}/Paid"
+    if channel == "Paid Social":
+        return f"{source}/Paid Social"
+    if channel == "Paid Other":
+        return f"{source}/Paid"
+    return f"{source}/Referral"
+
+
+def source_attributes_from_payload(payload: dict) -> SourceAttributes:
+    utm_source = normalize_attribution_label(payload.get("utm_source"), lower=True, limit=120)
+    medium = normalize_attribution_label(payload.get("utm_medium"), lower=True, limit=80)
+    paid_click_id = normalize_attribution_label(payload.get("paid_click_id"), lower=True, limit=32)
+
+    if utm_source != "Unknown":
+        source = normalize_source_label(utm_source)
+    else:
+        source = normalize_source_label(payload.get("referrer_source"))
+        if source == "Unknown":
+            source = normalize_source_bucket(payload.get("referrer_bucket"))
+        source = normalize_source_label(source)
+        if source == "Unknown":
+            source = "Referral"
+
+    bucket = payload.get("referrer_bucket") if isinstance(payload.get("referrer_bucket"), str) else ""
+    channel = classify_channel_label(
+        source,
+        bucket=bucket,
+        medium=medium,
+        paid_click_id=paid_click_id,
+    )
+    return SourceAttributes(
+        channel=channel,
+        source=source,
+        source_medium=build_source_medium_label(source, channel, medium, paid_click_id),
+        campaign=normalize_attribution_label(payload.get("utm_campaign"), limit=160),
+        content=normalize_attribution_label(payload.get("utm_content"), limit=160),
+        term=normalize_attribution_label(payload.get("utm_term"), limit=160),
+    )
+
+
+def attribution_label(attributes: SourceAttributes, dimension: BreakdownDimension) -> str:
+    if dimension == "channels":
+        return attributes.channel
+    if dimension == "sources":
+        return attributes.source
+    if dimension == "source_medium":
+        return attributes.source_medium
+    if dimension == "campaign":
+        return attributes.campaign
+    if dimension == "content":
+        return attributes.content
+    if dimension == "term":
+        return attributes.term
+    return "Unknown"
+
+
 def normalize_device_bucket(raw_value: object) -> str:
     if not isinstance(raw_value, str):
         return "Unknown"
@@ -289,11 +557,8 @@ def day_of_week_label(timestamp: dt.datetime) -> str:
 def resolve_label(dimension: BreakdownDimension, payload: dict, server_received_at: dt.datetime) -> str:
     if dimension == "pages":
         return normalize_page_path(payload.get("url"))
-    if dimension == "sources":
-        source_label = normalize_source_label(payload.get("referrer_source"))
-        if source_label != "Unknown":
-            return source_label
-        return normalize_source_bucket(payload.get("referrer_bucket"))
+    if dimension in ATTRIBUTION_DIMENSIONS:
+        return attribution_label(source_attributes_from_payload(payload), dimension)
     if dimension == "devices":
         return normalize_device_bucket(payload.get("_device_bucket"))
     if dimension == "conversions":
@@ -390,9 +655,9 @@ def aggregate_reports_for_breakdown(
     totals = blank_metric_map(metric_keys)
     seen_sessions_by_label: defaultdict[str, set[tuple[dt.datetime, str]]] = defaultdict(set)
     seen_visitors_by_label: defaultdict[str, set[tuple[dt.date, str]]] = defaultdict(set)
-    source_by_session: dict[tuple[dt.datetime, str] | None, str] = {}
+    source_by_session: dict[tuple[dt.datetime, str], SourceAttributes] = {}
 
-    if dimension == "sources":
+    if dimension in ATTRIBUTION_DIMENSIONS:
         for report in reports:
             if report.kind != "sessions":
                 continue
@@ -403,7 +668,7 @@ def aggregate_reports_for_breakdown(
                 continue
             marker = session_marker(report.server_received_at, payload)
             if marker and marker not in source_by_session:
-                source_by_session[marker] = resolve_label(dimension, payload, report.server_received_at)
+                source_by_session[marker] = source_attributes_from_payload(payload)
 
     for report in reports:
         payload = report.payload if isinstance(report.payload, dict) else {}
@@ -430,12 +695,14 @@ def aggregate_reports_for_breakdown(
                 increment_metric(buckets, totals, label, "uniques")
             continue
 
-        if dimension == "sources":
+        if dimension in ATTRIBUTION_DIMENSIONS:
+            attributes = source_by_session.get(report_session_marker) if report_session_marker else None
+            if attributes is None:
+                attributes = source_attributes_from_payload(payload)
+            label = attribution_label(attributes, dimension)
+            if dimension in OPTIONAL_ATTRIBUTION_DIMENSIONS and label == "Unknown":
+                continue
             if report.kind == "sessions":
-                label = source_by_session.get(
-                    report_session_marker,
-                    resolve_label(dimension, payload, report.server_received_at),
-                )
                 if report_session_marker:
                     if report_session_marker not in seen_sessions_by_label[label]:
                         seen_sessions_by_label[label].add(report_session_marker)
@@ -447,7 +714,6 @@ def aggregate_reports_for_breakdown(
                     increment_metric(buckets, totals, label, "uniques")
                 continue
 
-            label = source_by_session.get(report_session_marker, "Unknown")
             if report.kind == "pageviews":
                 increment_metric(buckets, totals, label, "pageviews")
             elif report.kind == "conversions":

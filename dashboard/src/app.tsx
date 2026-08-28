@@ -455,7 +455,12 @@ const createEmptyBreakdownData = (
 });
 
 const createEmptyBreakdownMap = (): Record<BreakdownDimension, BreakdownData> => ({
+  channels: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
   sources: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  source_medium: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  campaign: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  content: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
+  term: createEmptyBreakdownData("sessions", ["uniques", "sessions", "pageviews", "conversions"]),
   pages: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews"]),
   devices: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
   countries: createEmptyBreakdownData("pageviews", ["uniques", "sessions", "pageviews", "conversions"]),
@@ -477,7 +482,12 @@ const breakdownResponseToData = (response: BreakdownResponse): BreakdownData => 
 });
 
 const breakdownSectionLabels: Record<BreakdownDimension, string> = {
+  channels: "Channels",
   sources: "Traffic sources",
+  source_medium: "Source / medium",
+  campaign: "Campaigns",
+  content: "Campaign content",
+  term: "Campaign terms",
   pages: "Top pages",
   devices: "Devices",
   countries: "Countries",
@@ -2164,46 +2174,54 @@ const Overview: React.FC = () => {
   );
   const channelRows = useMemo(
     () =>
-      aggregateRowsByLabel(
-        sourceRows.map((row) => ({
-          label: classifyChannelLabel(row.label),
-          metrics: row.metrics,
-        }))
-      ),
-    [sourceRows]
+      showSeededBreakdowns
+        ? aggregateRowsByLabel(
+            sourceRows.map((row) => ({
+              label: classifyChannelLabel(row.label),
+              metrics: row.metrics,
+            }))
+          )
+        : breakdownData.channels.rows,
+    [showSeededBreakdowns, sourceRows, breakdownData.channels.rows]
   );
   const comparisonChannelRows = useMemo(
     () =>
-      aggregateRowsByLabel(
-        comparisonSourceRows.map((row) => ({
-          label: classifyChannelLabel(row.label),
-          metrics: row.metrics,
-        }))
-      ),
-    [comparisonSourceRows]
+      showSeededBreakdowns
+        ? aggregateRowsByLabel(
+            comparisonSourceRows.map((row) => ({
+              label: classifyChannelLabel(row.label),
+              metrics: row.metrics,
+            }))
+          )
+        : comparisonBreakdownData.channels.rows,
+    [showSeededBreakdowns, comparisonSourceRows, comparisonBreakdownData.channels.rows]
   );
   const sourceMediumRows = useMemo(
     () =>
-      aggregateRowsByLabel(
-        sourceRows.map((row) => ({
-          label: buildSourceMediumLabel(row.label),
-          metrics: row.metrics,
-        }))
-      ),
-    [sourceRows]
+      showSeededBreakdowns
+        ? aggregateRowsByLabel(
+            sourceRows.map((row) => ({
+              label: buildSourceMediumLabel(row.label),
+              metrics: row.metrics,
+            }))
+          )
+        : breakdownData.source_medium.rows,
+    [showSeededBreakdowns, sourceRows, breakdownData.source_medium.rows]
   );
   const comparisonSourceMediumRows = useMemo(
     () =>
-      aggregateRowsByLabel(
-        comparisonSourceRows.map((row) => ({
-          label: buildSourceMediumLabel(row.label),
-          metrics: row.metrics,
-        }))
-      ),
-    [comparisonSourceRows]
+      showSeededBreakdowns
+        ? aggregateRowsByLabel(
+            comparisonSourceRows.map((row) => ({
+              label: buildSourceMediumLabel(row.label),
+              metrics: row.metrics,
+            }))
+          )
+        : comparisonBreakdownData.source_medium.rows,
+    [showSeededBreakdowns, comparisonSourceRows, comparisonBreakdownData.source_medium.rows]
   );
   const campaignRows = useMemo(() => {
-    if (!showSeededBreakdowns) return [] as BreakdownTableRow[];
+    if (!showSeededBreakdowns) return breakdownData[campaignDimension].rows;
     if (campaignDimension === "content") {
       return buildMetricRows(
         ["hero-video", "cta-footer", "docs-banner", "homepage-hero"],
@@ -2223,7 +2241,11 @@ const Overview: React.FC = () => {
       [0.36, 0.26, 0.2, 0.18],
       seededBreakdownTotals
     );
-  }, [showSeededBreakdowns, campaignDimension, seededBreakdownTotals]);
+  }, [showSeededBreakdowns, campaignDimension, seededBreakdownTotals, breakdownData]);
+  const comparisonCampaignRows = useMemo(
+    () => (showSeededBreakdowns ? ([] as BreakdownTableRow[]) : comparisonBreakdownData[campaignDimension].rows),
+    [showSeededBreakdowns, comparisonBreakdownData, campaignDimension]
+  );
   const acquisitionRows = useMemo(() => {
     if (acquisitionTab === "sources") return sourceRows;
     if (acquisitionTab === "source_medium") return sourceMediumRows;
@@ -2233,23 +2255,22 @@ const Overview: React.FC = () => {
   const acquisitionComparisonRows = useMemo(() => {
     if (acquisitionTab === "sources") return comparisonSourceRows;
     if (acquisitionTab === "source_medium") return comparisonSourceMediumRows;
-    if (acquisitionTab === "campaigns") return [] as BreakdownTableRow[];
+    if (acquisitionTab === "campaigns") return comparisonCampaignRows;
     return comparisonChannelRows;
-  }, [acquisitionTab, comparisonSourceRows, comparisonSourceMediumRows, comparisonChannelRows]);
+  }, [acquisitionTab, comparisonSourceRows, comparisonSourceMediumRows, comparisonCampaignRows, comparisonChannelRows]);
+  const acquisitionBackendDimension: BreakdownDimension = acquisitionTab === "campaigns" ? campaignDimension : acquisitionTab;
+  const acquisitionBreakdownData = breakdownData[acquisitionBackendDimension];
+  const acquisitionComparisonBreakdownData = comparisonBreakdownData[acquisitionBackendDimension];
   const acquisitionMetricKeys = showSeededBreakdowns
     ? (["uniques", "sessions", "pageviews", "conversions"] as BreakdownMetricKey[])
-    : acquisitionTab === "campaigns"
-      ? (["sessions"] as BreakdownMetricKey[])
-      : breakdownData.sources.metricKeys;
+    : acquisitionBreakdownData.metricKeys;
   const acquisitionPrimaryMetric = showSeededBreakdowns
     ? ("sessions" as BreakdownMetricKey)
-    : acquisitionTab === "campaigns"
-      ? ("sessions" as BreakdownMetricKey)
-      : breakdownData.sources.primaryMetric;
-  const acquisitionTotal = showSeededBreakdowns ? scaledTotals.sessions : breakdownData.sources.total;
-  const acquisitionTotalsByMetric = showSeededBreakdowns ? seededBreakdownTotals : breakdownData.sources.totalsByMetric;
-  const acquisitionComparisonTotal = comparisonBreakdownData.sources.total;
-  const acquisitionComparisonTotalsByMetric = comparisonBreakdownData.sources.totalsByMetric;
+    : acquisitionBreakdownData.primaryMetric;
+  const acquisitionTotal = showSeededBreakdowns ? scaledTotals.sessions : acquisitionBreakdownData.total;
+  const acquisitionTotalsByMetric = showSeededBreakdowns ? seededBreakdownTotals : acquisitionBreakdownData.totalsByMetric;
+  const acquisitionComparisonTotal = acquisitionComparisonBreakdownData.total;
+  const acquisitionComparisonTotalsByMetric = acquisitionComparisonBreakdownData.totalsByMetric;
   const acquisitionEmptyState =
     acquisitionTab === "campaigns"
       ? "Campaign and UTM metadata will appear after campaign parameters are collected."
@@ -2566,18 +2587,34 @@ const Overview: React.FC = () => {
     > = {
       channel: {
         rows: channelRows,
-        total: acquisitionTotal,
-        primaryMetric: acquisitionPrimaryMetric,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.channels.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.channels.primaryMetric,
       },
-      source: { rows: sourceRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
+      source: {
+        rows: sourceRows,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.sources.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.sources.primaryMetric,
+      },
       source_medium: {
         rows: sourceMediumRows,
-        total: acquisitionTotal,
-        primaryMetric: acquisitionPrimaryMetric,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.source_medium.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.source_medium.primaryMetric,
       },
-      campaign: { rows: campaignRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
-      content: { rows: campaignRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
-      term: { rows: campaignRows, total: acquisitionTotal, primaryMetric: acquisitionPrimaryMetric },
+      campaign: {
+        rows: campaignDimension === "campaign" ? campaignRows : breakdownData.campaign.rows,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.campaign.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.campaign.primaryMetric,
+      },
+      content: {
+        rows: campaignDimension === "content" ? campaignRows : breakdownData.content.rows,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.content.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.content.primaryMetric,
+      },
+      term: {
+        rows: campaignDimension === "term" ? campaignRows : breakdownData.term.rows,
+        total: showSeededBreakdowns ? scaledTotals.sessions : breakdownData.term.total,
+        primaryMetric: showSeededBreakdowns ? "sessions" : breakdownData.term.primaryMetric,
+      },
       page: {
         rows: pageRows,
         total: showSeededBreakdowns ? scaledTotals.pageviews : breakdownData.pages.total,
@@ -2637,6 +2674,7 @@ const Overview: React.FC = () => {
     sourceRows,
     sourceMediumRows,
     campaignRows,
+    campaignDimension,
     pageRows,
     countryRows,
     deviceRows,
@@ -4001,7 +4039,7 @@ const Overview: React.FC = () => {
               activeFilters={activeFilters}
               onToggleFilter={toggleFilter}
               emptyState={acquisitionEmptyState}
-              error={showSeededBreakdowns ? null : breakdownErrors.sources ?? null}
+              error={showSeededBreakdowns ? null : breakdownErrors[acquisitionBackendDimension] ?? null}
             />
             <TableBlock
               title="Top Pages"

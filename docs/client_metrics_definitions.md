@@ -57,7 +57,7 @@ Primary GA4 reference: [Google Analytics dimensions and metrics](https://support
 
 - Endpoint: `GET /api/breakdown`
 - Serving path: reduced `breakdown_rollups` when available; raw fallback only for unreduced windows.
-- Dimensions: `pages`, `sources`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
+- Dimensions: `pages`, `channels`, `sources`, `source_medium`, `campaign`, `content`, `term`, `devices`, `countries`, `conversions`, `hour_of_day`, `day_of_week`, `hostnames`
 - Query params:
   - `site_id` (required)
   - `dimension` (required)
@@ -68,13 +68,15 @@ Primary GA4 reference: [Google Analytics dimensions and metrics](https://support
 
 Breakdown definitions:
 
-- `pages`: from pageview `payload.url`, normalized to a path.
-- `sources`: from session/pageview/conversion attribution labels using `referrer_source` first, then `referrer_bucket`.
+- `pages`: from pageview `payload.url`, normalized to a path. Attribution and ad click parameters are stripped before page URLs are stored or published, including `utm_*`, `source`, `ref`, `medium`, `gclid`, `msclkid`, and `fbclid`.
+- `channels`: from backend attribution classification. Paid channels require explicit paid evidence; plain social/search referrals stay organic.
+- `sources`: from captured `utm_source`/`source`/`ref` when present, otherwise from referrer host/bucket.
+- `source_medium`: from captured `utm_source` + `utm_medium` when present, otherwise from source plus inferred medium. Examples: `Google/cpc`, `Google/Organic`, `Facebook/Organic Social`, `Direct/None`.
+- `campaign`, `content`, `term`: from `utm_campaign`, `utm_content`, and `utm_term`. Rows without the corresponding UTM value are omitted instead of shown as `Unknown`.
   - Common normalization examples: `google.com -> Google`, `duckduckgo.com -> DuckDuckGo`, `reddit.com -> Reddit`, `x.com`/`t.co -> X`, `linkedin.com -> LinkedIn`, `chatgpt.com -> ChatGPT`, `perplexity.ai -> Perplexity`
   - Fallback bucket mapping: `direct -> Direct`, `external/referral -> Referral`, `organic -> Organic`, `social -> Social`, `email -> Email`, `paid -> Paid`, `ai -> AI Assistants`
-  - Dashboard channel grouping is derived from these aggregate source labels. Known search engines become `Organic Search`, known social sites become `Organic Social`, known AI assistant tools become `AI Assistants`, and email/newsletter labels become `Email`.
-  - Paid channels require explicit paid evidence such as paid UTM medium (`cpc`, `ppc`, `paid`, `display`, etc.), Google/Bing ad click IDs, or known ad-source labels such as `googleads`/`bingads`. Generic campaign naming does not classify traffic as paid.
-  - The dashboard's `Source / Medium` tab is currently an inferred reporting label built from source/channel classification. It is not yet a durable raw `utm_medium` rollup.
+  - Paid Search requires paid UTM medium on a search source, Google/Bing paid click IDs (`gclid`, `gbraid`, `wbraid`, `msclkid`), or known ad-source labels such as `googleads`/`bingads`.
+  - `fbclid` is stripped from page URLs but does not by itself classify traffic as Paid Social because Facebook also appends it to ordinary organic shares.
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
 - `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`) and, when headers are unavailable, optional server-side GeoIP country lookup from request IP. Fallback `Unknown`.
 - `hostnames`: from normalized request hostname (`_hostname`) for subdomain-aware reporting.
@@ -97,8 +99,8 @@ Current caveats:
 - Endpoint: `GET /api/aggregate/segments`
 - Serving path: reduced `segment_rollups` when available; raw fallback only for unreduced windows.
 - Purpose: exact KPI/trend values for supported dashboard filters, replacing the previous dashboard-only share multiplier.
-- Supported dimensions: `hostname`, `channel`, `source`, `source_medium`, `country`, `device`, `page`, `conversion_type` (`goal` is accepted as a dashboard alias for `conversion_type`).
-- Supported combinations are intentionally finite and low-dimensional. Common product cases such as `channel + country`, `source_medium + country + device`, and `channel + country + device + conversion_type` are stored durably; hostname can combine with the same supported filter grains. Arbitrary ad hoc combinations should wait for a warehouse/ClickHouse decision.
+- Supported dimensions: `hostname`, `channel`, `source`, `source_medium`, `campaign`, `content`, `term`, `country`, `device`, `page`, `conversion_type` (`goal` is accepted as a dashboard alias for `conversion_type`).
+- Supported combinations are intentionally finite and low-dimensional. Common product cases such as `channel + country`, `source_medium + country + device`, `source_medium + campaign + country`, and `channel + country + device + conversion_type` are stored durably; hostname can combine with the same supported filter grains. Arbitrary ad hoc combinations should wait for a warehouse/ClickHouse decision.
 - Segment rollups dedupe `sessions` and dashboard `Visitors` during reduction using the same short-lived HMAC markers used for KPI windows, then persist only aggregate values.
 - Segment forecasts are not generated ad hoc. When a segment filter is active, the dashboard hides site-level forecasts instead of scaling them.
 

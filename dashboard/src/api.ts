@@ -80,7 +80,12 @@ export interface BreakdownResponse {
 
 export type BreakdownDimension =
   | "pages"
+  | "channels"
   | "sources"
+  | "source_medium"
+  | "campaign"
+  | "content"
+  | "term"
   | "devices"
   | "countries"
   | "conversions"

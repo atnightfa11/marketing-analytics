@@ -161,6 +161,9 @@ class SegmentRollup(Base):
             "channel",
             "source",
             "source_medium",
+            "campaign",
+            "content",
+            "term",
             "country",
             "device",
             "page",
@@ -172,6 +175,7 @@ class SegmentRollup(Base):
         Index("ix_segment_rollups_day", "site_id", "plan", "day"),
         Index("ix_segment_rollups_channel_country_day", "site_id", "plan", "channel", "country", "day"),
         Index("ix_segment_rollups_source_medium_day", "site_id", "plan", "source_medium", "day"),
+        Index("ix_segment_rollups_campaign_day", "site_id", "plan", "campaign", "day"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -183,6 +187,9 @@ class SegmentRollup(Base):
     channel: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     source: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     source_medium: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    campaign: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    content: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    term: Mapped[str] = mapped_column(String(160), nullable=False, default="")
     country: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     device: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     page: Mapped[str] = mapped_column(String(220), nullable=False, default="")

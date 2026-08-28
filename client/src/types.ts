@@ -53,6 +53,12 @@ export interface PresenceReport {
 export interface SessionEventPayload {
   referrerBucket: string;
   referrerSource?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  utmContent?: string;
+  utmTerm?: string;
+  paidClickId?: string;
   engagementBucket: string;
 }
 

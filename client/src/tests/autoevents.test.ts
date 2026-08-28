@@ -60,7 +60,7 @@ describe("source classification", () => {
 
   it("classifies utm paid and email traffic", () => {
     const paid = classifyReferrerBucket(
-      "https://example.com/pricing?utm_source=google&utm_medium=cpc",
+      "https://example.com/pricing?utm_source=google&utm_medium=cpc&utm_campaign=summer",
       ""
     );
     const email = classifyReferrerBucket(
@@ -68,7 +68,31 @@ describe("source classification", () => {
       ""
     );
     expect(paid.bucket).toBe("paid");
+    expect(paid.source).toBe("google");
+    expect(paid.utmSource).toBe("google");
+    expect(paid.medium).toBe("cpc");
+    expect(paid.campaign).toBe("summer");
     expect(email.bucket).toBe("email");
+  });
+
+  it("classifies ad click IDs without storing the click ID value", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/pricing?utm_source=google&utm_campaign=brand&gclid=abc123",
+      ""
+    );
+    expect(result.bucket).toBe("paid");
+    expect(result.source).toBe("google");
+    expect(result.paidClickId).toBe("gclid");
+    expect(JSON.stringify(result)).not.toContain("abc123");
+  });
+
+  it("classifies known ad source labels as paid", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/pricing?utm_source=googleads&utm_campaign=brand",
+      ""
+    );
+    expect(result.bucket).toBe("paid");
+    expect(result.source).toBe("googleads");
   });
 
   it("does not treat organic social click IDs as paid traffic", () => {
@@ -149,6 +173,28 @@ describe("source classification", () => {
     expect(result.source).toBe("google");
   });
 
+  it("keeps prior attribution across same-site navigation", () => {
+    const result = classifyReferrerBucket(
+      "https://example.com/pricing",
+      "https://example.com/blog",
+      {
+        carryoverAttribution: {
+          bucket: "paid",
+          source: "google",
+          utmSource: "google",
+          medium: "cpc",
+          campaign: "brand",
+          capturedAtMs: 10_000,
+        },
+        nowMs: 20_000,
+        carryoverWindowMs: 30 * 60 * 1000,
+      }
+    );
+    expect(result.bucket).toBe("paid");
+    expect(result.source).toBe("google");
+    expect(result.campaign).toBe("brand");
+  });
+
   it("falls back to direct if carryover attribution is stale", () => {
     const result = classifyReferrerBucket(
       "https://example.com/order/complete",
@@ -169,11 +215,11 @@ describe("source classification", () => {
 });
 
 describe("query sanitization", () => {
-  it("strips click-id parameters while preserving utm/source tags", () => {
+  it("strips attribution and click-id parameters from published page URLs", () => {
     const sanitized = stripTrackingIdentifiersFromQuery(
-      "?utm_source=google&utm_medium=cpc&gclid=abc123&fbclid=def456&source=newsletter"
+      "?utm_source=google&utm_medium=cpc&utm_campaign=brand&gclid=abc123&fbclid=def456&source=newsletter&page=pricing"
     );
-    expect(sanitized).toBe("?utm_source=google&utm_medium=cpc&source=newsletter");
+    expect(sanitized).toBe("?page=pricing");
   });
 });
 
