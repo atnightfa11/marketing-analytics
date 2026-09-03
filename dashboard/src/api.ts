@@ -106,9 +106,16 @@ export interface BillingStatus {
   plan: "free" | "standard" | "pro";
   display_plan: string;
   has_subscription: boolean;
+  subscription_status?: string | null;
+  payment_status: "ok" | "grace" | "past_due" | "downgraded";
+  billing_grace_ends_at?: string | null;
+  stripe_current_period_end?: string | null;
+  cancel_at_period_end: boolean;
+  can_manage_billing: boolean;
   included_sites: number;
   owned_site_count: number;
   additional_site_count: number;
+  extra_site_quantity: number;
   extra_site_price_usd?: number | null;
   aggregate_retention_days?: number | null;
   can_import_historical_data: boolean;
@@ -119,6 +126,11 @@ export interface BillingStatus {
 
 export interface CheckoutSessionResponse {
   checkout_url: string;
+  session_id: string;
+}
+
+export interface BillingPortalSessionResponse {
+  portal_url: string;
   session_id: string;
 }
 
@@ -544,6 +556,23 @@ export async function createCheckoutSession(
       plan,
       success_url: successUrl,
       cancel_url: cancelUrl,
+    },
+    { headers: authHeaders(token) }
+  );
+  return response.data;
+}
+
+export async function createBillingPortalSession(
+  token?: string,
+  siteId?: string,
+  returnUrl?: string
+): Promise<BillingPortalSessionResponse> {
+  const resolvedSiteId = resolveActiveSiteId(siteId);
+  const response = await api.post(
+    "/api/billing/portal",
+    {
+      site_id: resolvedSiteId,
+      return_url: returnUrl,
     },
     { headers: authHeaders(token) }
   );

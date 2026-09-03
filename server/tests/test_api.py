@@ -36,6 +36,7 @@ os.environ["STRIPE_WEBHOOK_SECRET"] = ""
 os.environ["STRIPE_SOLO_PRICE_ID"] = ""
 os.environ["STRIPE_STANDARD_PRICE_ID"] = ""
 os.environ["STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID"] = ""
+os.environ["STRIPE_ADDITIONAL_SITE_PRICE_ID"] = ""
 os.environ["STRIPE_PRO_PRICE_ID"] = ""
 
 ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
@@ -47,7 +48,7 @@ from sqlalchemy import select  # noqa: E402
 from argon2 import PasswordHasher  # noqa: E402
 
 from app.config import Settings  # noqa: E402
-from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SegmentRollup, SiteAlertSettings, SiteApiKey, SiteGoal, SiteIpBlock, SitePlan, UploadToken, async_engine, async_session_factory  # noqa: E402
+from app.models import Base, BreakdownRollup, DashboardNote, DashboardSite, DashboardSiteAccess, DashboardUser, DpWindow, Forecast, HistoricalImportBatch, IS_POSTGRES, LdpReport, RawReport, ReducerWatermark, SegmentRollup, SiteAlertSettings, SiteApiKey, SiteGoal, SiteIpBlock, SitePlan, StripeEvent, UploadToken, async_engine, async_session_factory  # noqa: E402
 from app.dashboard_auth import settings as dashboard_auth_settings  # noqa: E402
 from app import dashboard_auth as dashboard_auth_module  # noqa: E402
 from app.breakdown_logic import aggregate_reports_for_breakdown  # noqa: E402
@@ -6006,3 +6007,265 @@ async def test_checkout_rejects_disallowed_redirect_url(client, monkeypatch):
             stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
             stripe_billing.settings.STRIPE_STANDARD_PRICE_ID,
         ) = original_stripe
+
+
+@pytest.mark.asyncio
+async def test_billing_portal_session_returns_stripe_url(client, monkeypatch):
+    import app.routers.stripe_billing as stripe_billing
+
+    site_id = "site-billing-portal"
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username="portal-owner",
+                email="portal-owner@example.com",
+                password_hash=PasswordHasher().hash("portal-pass"),
+            )
+        )
+        await session.flush()
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username="portal-owner",
+                site_name="Portal Site",
+                allowed_origin="https://portal.example.com",
+            )
+        )
+        session.add(
+            SitePlan(
+                site_id=site_id,
+                plan="free",
+                stripe_customer_id="cus_portal",
+                stripe_subscription_id="sub_portal",
+                stripe_subscription_status="active",
+            )
+        )
+        await session.commit()
+
+    original = (
+        stripe_billing.settings.STRIPE_SECRET_KEY,
+        stripe_billing.settings.STRIPE_CUSTOMER_PORTAL_RETURN_URL,
+    )
+    stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    stripe_billing.settings.STRIPE_CUSTOMER_PORTAL_RETURN_URL = "https://app.validanalytics.io/settings?panel=billing"
+    stripe_billing._allowed_redirect_origins.cache_clear()
+
+    created: dict = {}
+
+    def _fake_portal_create(**kwargs):
+        created.update(kwargs)
+        return SimpleNamespace(url="https://billing.stripe.test/session", id="bps_test_123")
+
+    monkeypatch.setattr(stripe_billing.stripe.billing_portal.Session, "create", _fake_portal_create)
+    try:
+        response = client.post(
+            "/api/billing/portal",
+            json={
+                "site_id": site_id,
+                "return_url": f"https://app.validanalytics.io/site/{site_id}/settings?panel=billing",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["portal_url"] == "https://billing.stripe.test/session"
+        assert created["customer"] == "cus_portal"
+        assert created["return_url"].endswith("/settings?panel=billing")
+    finally:
+        stripe_billing._allowed_redirect_origins.cache_clear()
+        (
+            stripe_billing.settings.STRIPE_SECRET_KEY,
+            stripe_billing.settings.STRIPE_CUSTOMER_PORTAL_RETURN_URL,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_stripe_webhook_event_idempotency_prevents_replay(client, monkeypatch):
+    import app.routers.stripe_billing as stripe_billing
+
+    original = (
+        stripe_billing.settings.STRIPE_SECRET_KEY,
+        stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+    )
+    stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    stripe_billing.settings.STRIPE_WEBHOOK_SECRET = "whsec_mock"
+
+    async def _no_extra_site_sync(session, record):
+        return None
+
+    event = {
+        "id": "evt_duplicate_checkout",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "metadata": {"site_id": "site-stripe-idempotent", "plan": "standard"},
+                "client_reference_id": "site-stripe-idempotent",
+                "customer": "cus_idempotent",
+                "subscription": "sub_idempotent",
+            }
+        },
+    }
+
+    monkeypatch.setattr(stripe_billing, "_sync_extra_site_subscription_item", _no_extra_site_sync)
+    monkeypatch.setattr(stripe_billing.stripe.Webhook, "construct_event", lambda **_: event)
+    try:
+        first = client.post("/api/stripe/webhook", headers={"Stripe-Signature": "sig"}, content=b"{}")
+        second = client.post("/api/stripe/webhook", headers={"Stripe-Signature": "sig"}, content=b"{}")
+        assert first.status_code == 200
+        assert first.json()["status"] == "ok"
+        assert second.status_code == 200
+        assert second.json()["status"] == "duplicate"
+
+        async with async_session_factory() as session:
+            plan = await session.get(SitePlan, "site-stripe-idempotent")
+            assert plan is not None
+            assert plan.plan == "standard"
+            assert plan.stripe_customer_id == "cus_idempotent"
+            assert plan.stripe_subscription_id == "sub_idempotent"
+            assert plan.stripe_subscription_status == "active"
+            stripe_event = await session.get(StripeEvent, "evt_duplicate_checkout")
+            assert stripe_event is not None
+            assert stripe_event.event_type == "checkout.session.completed"
+    finally:
+        (
+            stripe_billing.settings.STRIPE_SECRET_KEY,
+            stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_payment_failed_grace_then_effective_plan_downgrades(client, monkeypatch):
+    import app.routers.stripe_billing as stripe_billing
+
+    site_id = "site-payment-failed"
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username="payment-owner",
+                email="payment-owner@example.com",
+                password_hash=PasswordHasher().hash("payment-pass"),
+            )
+        )
+        await session.flush()
+        session.add(
+            DashboardSite(
+                site_id=site_id,
+                owner_username="payment-owner",
+                site_name="Payment Site",
+                allowed_origin="https://payment.example.com",
+            )
+        )
+        session.add(
+            SitePlan(
+                site_id=site_id,
+                plan="standard",
+                stripe_customer_id="cus_payment",
+                stripe_subscription_id="sub_payment",
+                stripe_subscription_status="active",
+            )
+        )
+        await session.commit()
+
+    original = (
+        stripe_billing.settings.STRIPE_SECRET_KEY,
+        stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+        stripe_billing.settings.STRIPE_PAYMENT_FAILURE_GRACE_DAYS,
+    )
+    stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    stripe_billing.settings.STRIPE_WEBHOOK_SECRET = "whsec_mock"
+    stripe_billing.settings.STRIPE_PAYMENT_FAILURE_GRACE_DAYS = 7
+    event = {
+        "id": "evt_payment_failed",
+        "type": "invoice.payment_failed",
+        "data": {"object": {"id": "in_failed", "customer": "cus_payment", "subscription": "sub_payment"}},
+    }
+    monkeypatch.setattr(stripe_billing.stripe.Webhook, "construct_event", lambda **_: event)
+    try:
+        response = client.post("/api/stripe/webhook", headers={"Stripe-Signature": "sig"}, content=b"{}")
+        assert response.status_code == 200
+
+        grace_response = client.get("/api/billing/status", params={"site_id": site_id})
+        assert grace_response.status_code == 200
+        grace_body = grace_response.json()
+        assert grace_body["plan"] == "standard"
+        assert grace_body["payment_status"] == "grace"
+        assert grace_body["billing_grace_ends_at"]
+
+        async with async_session_factory() as session:
+            record = await session.get(SitePlan, site_id)
+            assert record is not None
+            record.billing_grace_ends_at = datetime.now(timezone.utc) - timedelta(days=1)
+            await session.commit()
+
+        downgraded_response = client.get("/api/billing/status", params={"site_id": site_id})
+        assert downgraded_response.status_code == 200
+        downgraded_body = downgraded_response.json()
+        assert downgraded_body["plan"] == "free"
+        assert downgraded_body["display_plan"] == "Solo"
+        assert downgraded_body["payment_status"] == "downgraded"
+        assert downgraded_body["can_import_historical_data"] is False
+    finally:
+        (
+            stripe_billing.settings.STRIPE_SECRET_KEY,
+            stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+            stripe_billing.settings.STRIPE_PAYMENT_FAILURE_GRACE_DAYS,
+        ) = original
+
+
+@pytest.mark.asyncio
+async def test_standard_checkout_includes_additional_site_line_item(client, monkeypatch):
+    import app.routers.stripe_billing as stripe_billing
+
+    owner = "additional-site-owner"
+    site_ids = [f"additional-site-{idx}" for idx in range(1, 5)]
+    async with async_session_factory() as session:
+        session.add(
+            DashboardUser(
+                username=owner,
+                email="additional-site-owner@example.com",
+                password_hash=PasswordHasher().hash("additional-pass"),
+            )
+        )
+        await session.flush()
+        for site_id in site_ids:
+            session.add(
+                DashboardSite(
+                    site_id=site_id,
+                    owner_username=owner,
+                    site_name=site_id,
+                    allowed_origin=f"https://{site_id}.example.com",
+                )
+            )
+            session.add(SitePlan(site_id=site_id, plan="free"))
+        await session.commit()
+
+    original = (
+        stripe_billing.settings.STRIPE_SECRET_KEY,
+        stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+        stripe_billing.settings.STRIPE_STANDARD_PRICE_ID,
+        stripe_billing.settings.STRIPE_ADDITIONAL_SITE_PRICE_ID,
+    )
+    stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
+    stripe_billing.settings.STRIPE_WEBHOOK_SECRET = "whsec_mock"
+    stripe_billing.settings.STRIPE_STANDARD_PRICE_ID = "price_mock_standard"
+    stripe_billing.settings.STRIPE_ADDITIONAL_SITE_PRICE_ID = "price_mock_additional_site"
+
+    created: dict = {}
+
+    def _fake_checkout_create(**kwargs):
+        created.update(kwargs)
+        return SimpleNamespace(url="https://checkout.stripe.test/standard_extra", id="cs_extra_sites")
+
+    monkeypatch.setattr(stripe_billing.stripe.checkout.Session, "create", _fake_checkout_create)
+    try:
+        response = client.post("/api/checkout/session", json={"site_id": site_ids[0], "plan": "standard"})
+        assert response.status_code == 200
+        assert created["line_items"] == [
+            {"price": "price_mock_standard", "quantity": 1},
+            {"price": "price_mock_additional_site", "quantity": 1},
+        ]
+    finally:
+        (
+            stripe_billing.settings.STRIPE_SECRET_KEY,
+            stripe_billing.settings.STRIPE_WEBHOOK_SECRET,
+            stripe_billing.settings.STRIPE_STANDARD_PRICE_ID,
+            stripe_billing.settings.STRIPE_ADDITIONAL_SITE_PRICE_ID,
+        ) = original

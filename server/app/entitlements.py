@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -20,6 +20,9 @@ ALL_FORECAST_METRICS = BASIC_FORECAST_METRICS | ADVANCED_FORECAST_METRICS
 SOLO_AGGREGATE_RETENTION_DAYS = 365
 STANDARD_INCLUDED_SITES = 3
 STANDARD_EXTRA_SITE_PRICE_USD = 5
+ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+GRACE_SUBSCRIPTION_STATUSES = {"past_due", "unpaid"}
+ENDED_SUBSCRIPTION_STATUSES = {"canceled", "incomplete_expired"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,38 @@ def normalize_plan(plan: str | None) -> str:
     if normalized in {"free", "standard", "pro"}:
         return normalized
     return "free"
+
+
+def _as_aware_utc(value: dt.datetime | None) -> dt.datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc)
+
+
+def effective_plan_for_record(record: Any | None, now: dt.datetime | None = None) -> str:
+    if record is None:
+        return "free"
+    normalized = normalize_plan(getattr(record, "plan", None))
+    if normalized == "free":
+        return "free"
+
+    status_value = getattr(record, "stripe_subscription_status", None)
+    subscription_status = status_value.strip().lower() if isinstance(status_value, str) else ""
+    if not subscription_status:
+        # Manual beta/admin upgrades do not always have Stripe subscription state.
+        return normalized
+    if subscription_status in ACTIVE_SUBSCRIPTION_STATUSES:
+        return normalized
+    if subscription_status in GRACE_SUBSCRIPTION_STATUSES:
+        grace_ends_at = _as_aware_utc(getattr(record, "billing_grace_ends_at", None))
+        if grace_ends_at and (now or dt.datetime.now(dt.timezone.utc)) <= grace_ends_at:
+            return normalized
+        return "free"
+    if subscription_status in ENDED_SUBSCRIPTION_STATUSES:
+        return "free"
+    return normalized
 
 
 def display_plan_name(plan: str | None) -> str:

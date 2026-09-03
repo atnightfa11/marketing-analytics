@@ -109,17 +109,20 @@ Privileged endpoint headers:
 
 Stripe billing env vars:
 
-- `BILLING_ENABLED=true` for commercial production. When enabled, startup requires Stripe secret, webhook secret, Solo price ID, and Standard price ID.
+- `BILLING_ENABLED=true` for commercial production. When enabled, startup requires Stripe secret, webhook secret, Solo price ID, Standard price ID, and additional-site price ID.
 - `STRIPE_SECRET_KEY=sk_live_...` (production; use `sk_test_...` only in non-prod environments)
 - `STRIPE_WEBHOOK_SECRET=whsec_...` (from the Dashboard webhook endpoint, not Stripe CLI `listen`)
 - `STRIPE_SOLO_PRICE_ID=price_...`
 - `STRIPE_STANDARD_PRICE_ID=price_...`
 - `STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID=price_...` (optional; use when offering Early Adopter Standard)
+- `STRIPE_ADDITIONAL_SITE_PRICE_ID=price_...` ($5/month additional Standard site)
 - `STRIPE_PRO_PRICE_ID=price_...` (optional if Pro is hidden in UI)
 - `STRIPE_CHECKOUT_SUCCESS_URL=https://app.validanalytics.io/billing/success`
 - `STRIPE_CHECKOUT_CANCEL_URL=https://app.validanalytics.io/billing/cancel`
+- `STRIPE_CUSTOMER_PORTAL_RETURN_URL=https://app.validanalytics.io/settings?panel=billing`
 - `STRIPE_SIGNUP_SUCCESS_URL=https://validanalytics.io/signup/complete`
 - `STRIPE_SIGNUP_CANCEL_URL=https://validanalytics.io/signup`
+- `STRIPE_PAYMENT_FAILURE_GRACE_DAYS=7`
 
 Webhook endpoint:
 
@@ -130,6 +133,8 @@ Webhook endpoint:
   - `customer.subscription.updated`
   - `customer.subscription.deleted`
   - `invoice.payment_failed`
+  - `invoice.payment_succeeded`
+  - `invoice.paid`
 
 Checkout endpoint:
 
@@ -229,7 +234,7 @@ do update set plan = excluded.plan;
 ## Notes
 
 - Solo + Standard are the commercial launch tiers; the current database value `free` is the internal Solo representation. Pro/LDP is deferred.
-- Standard includes 3 sites and $5/month additional sites in the product entitlement model. Stripe/account billing for additional sites is a separate follow-up.
+- Standard includes 3 sites and $5/month additional sites. Subscribed Standard accounts sync extra-site quantity to Stripe with `STRIPE_ADDITIONAL_SITE_PRICE_ID`.
 - Scheduler behavior:
   - Dev: `ENABLE_DEV_SCHEDULER=1` runs reducer every 60 seconds.
   - Prod API-only mode: `ENABLE_PROD_SCHEDULER=true` runs reducer every `PROD_REDUCER_INTERVAL_MINUTES` (default 60) + daily forecast training at `PROD_SCHEDULER_HOUR_UTC`.

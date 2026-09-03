@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import require_site_access
+from ..entitlements import effective_plan_for_record
 from ..models import RawReport, SiteApiKey, SitePlan, get_session
 from ..origin_policy import origin_matches_allowed_pattern
 from ..routers.upload_token import issue_upload_token
@@ -94,7 +95,7 @@ async def sdk_bootstrap(
     _apply_bootstrap_rate_limit(key_record.site_id, origin, ip)
 
     plan_record = await session.get(SitePlan, key_record.site_id)
-    plan = plan_record.plan if plan_record else "free"
+    plan = effective_plan_for_record(plan_record)
     if plan == "pro" and not settings.ENABLE_PRO_INGEST:
         plan = "standard"
 

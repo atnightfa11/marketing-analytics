@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
-from ..entitlements import require_anomaly_alerts
+from ..entitlements import effective_plan_for_record, require_anomaly_alerts
 from ..models import SiteAlertSettings, SitePlan, get_session
 from ..schemas import SiteAlertSettingsResponse, SiteAlertSettingsUpdateRequest
 
@@ -74,7 +74,7 @@ async def _get_settings_row(session: AsyncSession, site_id: str) -> SiteAlertSet
 
 async def _require_standard_alert_access(session: AsyncSession, site_id: str) -> None:
     plan_record = await session.get(SitePlan, site_id)
-    require_anomaly_alerts(plan_record.plan if plan_record else "free")
+    require_anomaly_alerts(effective_plan_for_record(plan_record))
 
 
 @router.get("", response_model=SiteAlertSettingsResponse, dependencies=[Depends(require_dashboard_auth)])

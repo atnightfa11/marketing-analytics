@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
-from .entitlements import has_standard_entitlements
+from .entitlements import effective_plan_for_record, has_standard_entitlements
 from .models import Forecast, SiteAlertDelivery, SiteAlertSettings, SitePlan
 
 settings = get_settings()
@@ -29,7 +29,7 @@ async def notify_anomaly_if_needed(
     if not forecast.has_anomaly:
         return
     plan_record = await session.get(SitePlan, site_id)
-    plan = plan_record.plan if plan_record else "free"
+    plan = effective_plan_for_record(plan_record)
     if not has_standard_entitlements(plan):
         return
 

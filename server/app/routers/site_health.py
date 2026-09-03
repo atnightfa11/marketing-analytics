@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import require_site_access
+from ..entitlements import effective_plan_for_record
 from ..forecast_freshness import forecast_is_fresh
 from ..forecast_status import latest_forecasts_by_metric
 from ..models import DpWindow, RawReport, ReducerWatermark, SiteApiKey, SitePlan, get_session
@@ -29,7 +30,7 @@ async def get_site_health(
     cutoff = now - dt.timedelta(minutes=lookback_minutes)
 
     plan_record = await session.get(SitePlan, site_id)
-    plan = plan_record.plan if plan_record else "free"
+    plan = effective_plan_for_record(plan_record)
 
     active_site_keys = int(
         (

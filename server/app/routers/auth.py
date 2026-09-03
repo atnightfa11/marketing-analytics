@@ -16,7 +16,7 @@ from ..dashboard_auth import (
     settings,
     validate_credentials_async,
 )
-from ..entitlements import normalize_plan
+from ..entitlements import effective_plan_for_record
 from ..models import DashboardSite, DashboardSiteAccess, SitePlan, get_session
 from ..schemas import AuthLoginRequest, AuthLoginResponse, AuthMeResponse, AuthStatusResponse, DashboardSiteSummary, DashboardSitesResponse
 
@@ -92,7 +92,7 @@ async def list_dashboard_sites(
     allow_all_sites = not settings.DASHBOARD_AUTH_ENABLED
 
     stmt = (
-        select(DashboardSite, SitePlan.plan)
+        select(DashboardSite, SitePlan)
         .outerjoin(SitePlan, SitePlan.site_id == DashboardSite.site_id)
         .order_by(DashboardSite.created_at.desc(), DashboardSite.site_id)
     )
@@ -175,9 +175,9 @@ async def list_dashboard_sites(
             site_id=site.site_id,
             site_name=site.site_name,
             allowed_origin=site.allowed_origin,
-            plan=normalize_plan(plan),
+            plan=effective_plan_for_record(plan_record),
         )
-        for site, plan in rows
+        for site, plan_record in rows
     ]
 
     if not allow_all_sites and allowed_site_ids:
@@ -192,7 +192,7 @@ async def list_dashboard_sites(
                     site_id=record.site_id,
                     site_name=record.site_id,
                     allowed_origin="",
-                    plan=normalize_plan(record.plan),
+                    plan=effective_plan_for_record(record),
                 )
                 for record in fallback_rows
             )

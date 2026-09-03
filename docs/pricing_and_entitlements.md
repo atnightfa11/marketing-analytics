@@ -59,5 +59,7 @@ Operational definition:
 - Early Adopter Standard checkout uses `STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID` when configured and also stores the site as backend plan `standard`.
 - Standard entitlements are enforced server-side for historical imports, anomaly alerts, advanced forecast metrics, and site access management.
 - Solo served aggregate history is limited to 365 days.
-- Standard includes 3 sites in the entitlement response. Charging $5/additional site requires the deferred Stripe/account-billing pass.
-- Additional-site billing, Customer Portal, payment-failure policy, and webhook event idempotency remain the deferred Stripe/account-billing pass.
+- Standard includes 3 sites. When a subscribed Standard owner has additional sites, Stripe is synced with `STRIPE_ADDITIONAL_SITE_PRICE_ID` at $5/site/month.
+- The dashboard Plan & billing panel opens Stripe Customer Portal for self-serve payment-method updates and cancellation when a Stripe customer is linked.
+- Stripe webhook events are persisted by `event.id` before processing so retries/replays do not re-run plan mutations.
+- Payment failures keep paid entitlements during the configured grace period (`STRIPE_PAYMENT_FAILURE_GRACE_DAYS`, default 7), then the effective plan falls back to Solo until payment recovers.

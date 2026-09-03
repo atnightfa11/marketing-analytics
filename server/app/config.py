@@ -16,11 +16,14 @@ class Settings(BaseSettings):
   STRIPE_SOLO_PRICE_ID: str | None = None
   STRIPE_STANDARD_PRICE_ID: str | None = None
   STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID: str | None = None
+  STRIPE_ADDITIONAL_SITE_PRICE_ID: str | None = None
   STRIPE_PRO_PRICE_ID: str | None = None
   STRIPE_CHECKOUT_SUCCESS_URL: str = Field(default="https://app.validanalytics.io/billing/success")
   STRIPE_CHECKOUT_CANCEL_URL: str = Field(default="https://app.validanalytics.io/billing/cancel")
+  STRIPE_CUSTOMER_PORTAL_RETURN_URL: str = Field(default="https://app.validanalytics.io/settings?panel=billing")
   STRIPE_SIGNUP_SUCCESS_URL: str = Field(default="https://validanalytics.io/signup/complete")
   STRIPE_SIGNUP_CANCEL_URL: str = Field(default="https://validanalytics.io/signup")
+  STRIPE_PAYMENT_FAILURE_GRACE_DAYS: int = Field(default=7)
   UPLOAD_TOKEN_TTL_SECONDS: int = Field(default=900)
   UPLOAD_TOKEN_PURGE_GRACE_SECONDS: int = Field(default=24 * 60 * 60)
   UPLOAD_TOKEN_PURGE_INTERVAL_SECONDS: int = Field(default=5 * 60)
@@ -145,6 +148,7 @@ class Settings(BaseSettings):
               ("STRIPE_WEBHOOK_SECRET", self.STRIPE_WEBHOOK_SECRET),
               ("STRIPE_SOLO_PRICE_ID", self.STRIPE_SOLO_PRICE_ID),
               ("STRIPE_STANDARD_PRICE_ID", self.STRIPE_STANDARD_PRICE_ID),
+              ("STRIPE_ADDITIONAL_SITE_PRICE_ID", self.STRIPE_ADDITIONAL_SITE_PRICE_ID),
           )
           if not value
       ]
@@ -205,6 +209,7 @@ class Settings(BaseSettings):
         and self.STRIPE_WEBHOOK_SECRET
         and self.STRIPE_SOLO_PRICE_ID
         and self.STRIPE_STANDARD_PRICE_ID
+        and self.STRIPE_ADDITIONAL_SITE_PRICE_ID
     )
 
   def auth_configured(self) -> bool:

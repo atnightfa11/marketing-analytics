@@ -305,10 +305,30 @@ class SitePlan(Base):
     plan: Mapped[str] = mapped_column(String, nullable=False, default="free")
     stripe_customer_id: Mapped[str | None] = mapped_column(String, nullable=True)
     stripe_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    stripe_subscription_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_current_period_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stripe_cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    billing_past_due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    billing_grace_ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_site_subscription_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    extra_site_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class StripeEvent(Base):
+    __tablename__ = "stripe_events"
+    __table_args__ = (
+        Index("ix_stripe_events_type_processed", "event_type", "processed_at"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    processed_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
 

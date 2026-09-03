@@ -18,6 +18,7 @@ import {
   BreakdownMetricKey,
   BreakdownResponse,
   BreakdownRow,
+  createBillingPortalSession,
   createCheckoutSession,
   createDashboardNote,
   DashboardSiteSummary,
@@ -4567,6 +4568,20 @@ const Settings: React.FC = () => {
     }
   };
 
+  const beginBillingPortal = async () => {
+    setBillingStatus("redirecting");
+    setBillingMessage(null);
+    try {
+      const origin = typeof window !== "undefined" ? window.location.origin : "https://app.validanalytics.io";
+      const returnUrl = `${origin}/site/${encodeURIComponent(siteId)}/settings?panel=billing`;
+      const portal = await createBillingPortalSession(token ?? undefined, siteId, returnUrl);
+      window.location.assign(portal.portal_url);
+    } catch (error) {
+      setBillingStatus("error");
+      setBillingMessage(extractApiErrorMessage(error) ?? "Unable to open billing management right now.");
+    }
+  };
+
   const handleImportFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -4865,7 +4880,7 @@ const Settings: React.FC = () => {
       return hasSubscription
         ? `Your Standard subscription is active. Standard includes ${
             billingDetails?.included_sites ?? 3
-          } sites${additionalSites > 0 ? `; ${additionalSites} additional site${additionalSites === 1 ? "" : "s"} should be billed separately.` : "."}`
+          } sites${additionalSites > 0 ? `; ${additionalSites} additional site${additionalSites === 1 ? "" : "s"} billed at $5/site/month.` : "."}`
         : "This site is marked Standard but no active subscription is linked yet.";
     }
     if (billingPlan === "pro") {
@@ -4878,25 +4893,42 @@ const Settings: React.FC = () => {
 
   const billingCheckoutPlan: "solo" | "standard" | "early_adopter_standard" | "pro" =
     billingPlan === "free" && !hasSubscription ? "solo" : billingPlan === "pro" ? "pro" : "standard";
+  const canOpenBillingPortal = Boolean(billingDetails?.can_manage_billing && hasSubscription);
+  const billingPrimaryOpensPortal = canOpenBillingPortal && (billingPlan === "standard" || billingPlan === "pro");
   const billingActionLabel =
-    billingPlan === "free"
-      ? hasSubscription
-        ? "Upgrade To Standard"
-        : "Subscribe To Solo"
-      : billingPlan === "standard"
-        ? "Standard Active"
-        : "Manage Pro Subscription";
+    billingPrimaryOpensPortal
+      ? "Manage Billing"
+      : billingPlan === "free"
+        ? hasSubscription
+          ? "Upgrade To Standard"
+          : "Subscribe To Solo"
+        : billingPlan === "standard"
+          ? "Start Standard Checkout"
+          : "Manage Pro Subscription";
 
-  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading" || billingPlan === "standard";
+  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading";
+
+  const billingPaymentNotice = (() => {
+    if (!billingDetails || billingDetails.payment_status === "ok") return null;
+    if (billingDetails.payment_status === "grace") {
+      return billingDetails.billing_grace_ends_at
+        ? `Payment needs attention. Paid features remain active until ${formatDateTime(billingDetails.billing_grace_ends_at)}.`
+        : "Payment needs attention. Paid features are still active during the grace period.";
+    }
+    if (billingDetails.payment_status === "downgraded") {
+      return "Payment grace ended, so this site is currently using Solo features.";
+    }
+    return "Payment needs attention.";
+  })();
 
   const billingStatusText =
     billingStatus === "loading"
       ? "Loading billing status..."
       : billingStatus === "redirecting"
-        ? "Opening secure Stripe checkout..."
+        ? "Opening secure Stripe page..."
         : billingStatus === "error"
           ? billingMessage ?? "Unable to load billing right now."
-          : billingDescription;
+          : billingPaymentNotice ?? billingDescription;
 
   const timezoneStatusText =
     timezoneStatus === "loading"
@@ -5877,13 +5909,24 @@ const Settings: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  onClick={() => void beginCheckout(billingCheckoutPlan)}
+                  onClick={() => void (billingPrimaryOpensPortal ? beginBillingPortal() : beginCheckout(billingCheckoutPlan))}
                   disabled={billingActionDisabled}
                   className="mt-3 border border-[#4f46e5] bg-[#4f46e5] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#3730a3]"
                   style={fontBody}
                 >
                   {billingActionLabel}
                 </button>
+                {canOpenBillingPortal && !billingPrimaryOpensPortal ? (
+                  <button
+                    type="button"
+                    onClick={() => void beginBillingPortal()}
+                    disabled={billingActionDisabled}
+                    className="ml-2 mt-3 border border-gray-300 bg-white px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 hover:border-gray-400"
+                    style={fontBody}
+                  >
+                    Manage billing
+                  </button>
+                ) : null}
                 <div className="mt-4 border-t border-gray-100 pt-3">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500" style={fontMeta}>
                     Standard adds
@@ -5902,7 +5945,7 @@ const Settings: React.FC = () => {
                       {billingDetails.additional_site_count > 0
                         ? `${formatNumber(billingDetails.additional_site_count)} additional site${
                             billingDetails.additional_site_count === 1 ? "" : "s"
-                          } should be billed after the included ${formatNumber(billingDetails.included_sites)}.`
+                          } billed at $5/site/month after the included ${formatNumber(billingDetails.included_sites)}.`
                         : `Included sites: ${formatNumber(billingDetails.included_sites)}.`}
                     </div>
                   ) : null}

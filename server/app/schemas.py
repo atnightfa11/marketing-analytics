@@ -48,14 +48,31 @@ class CheckoutSessionResponse(BaseModel):
     session_id: str
 
 
+class BillingPortalSessionRequest(BaseModel):
+    site_id: str
+    return_url: str | None = None
+
+
+class BillingPortalSessionResponse(BaseModel):
+    portal_url: str
+    session_id: str
+
+
 class BillingStatusResponse(BaseModel):
     site_id: str
     plan: Literal["free", "standard", "pro"]
     display_plan: str = "Solo"
     has_subscription: bool
+    subscription_status: str | None = None
+    payment_status: Literal["ok", "grace", "past_due", "downgraded"] = "ok"
+    billing_grace_ends_at: dt.datetime | None = None
+    stripe_current_period_end: dt.datetime | None = None
+    cancel_at_period_end: bool = False
+    can_manage_billing: bool = False
     included_sites: int = 1
     owned_site_count: int = 1
     additional_site_count: int = 0
+    extra_site_quantity: int = 0
     extra_site_price_usd: int | None = None
     aggregate_retention_days: int | None = 365
     can_import_historical_data: bool = False

@@ -29,7 +29,10 @@ This checklist reflects what is live in production and what remains before broad
 - [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
 - [x] Decide and encode launch entitlements: Solo ($10) for one site/basic forecasts/12-month aggregate history; Standard ($29) for 3 sites, imports, alerts, all forecast metrics, team/site access, and forever aggregate retention.
 - [x] Wire Stripe checkout for Solo, Standard, and optional Early Adopter Standard prices.
-- [ ] Update Stripe/account billing for $5/additional Standard sites after gates are verified.
+- [x] Update Stripe/account billing for $5/additional Standard sites after gates are verified.
+- [x] Add Stripe Customer Portal endpoint for self-serve payment method/cancel flows.
+- [x] Persist Stripe webhook event IDs for idempotent webhook processing.
+- [x] Apply a 7-day payment-failure grace policy before paid entitlements fall back to Solo.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
 - [ ] Verify production Postgres backups/PITR and run a restore drill into staging. Aggregate tables are the durable source of truth after raw purge.
 - [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.

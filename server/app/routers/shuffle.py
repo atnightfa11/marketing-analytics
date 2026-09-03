@@ -19,7 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import TokenClaims, get_settings
-from ..entitlements import normalize_plan
+from ..entitlements import effective_plan_for_record, normalize_plan
 from ..hostnames import hostname_from_request_headers
 from ..maintenance import maybe_purge_expired_upload_tokens
 from ..models import LdpReport, RawReport, SiteIpBlock, SitePlan, TokenNonce, UploadToken, get_session
@@ -111,7 +111,7 @@ async def validate_token(claims: TokenClaims, session: AsyncSession):
 
 async def resolve_plan(site_id: str, claims_plan: str, session: AsyncSession) -> str:
     record = await session.get(SitePlan, site_id)
-    db_plan = normalize_plan(record.plan if record else "free")
+    db_plan = effective_plan_for_record(record)
     token_plan = normalize_plan(claims_plan or db_plan)
     if token_plan != db_plan:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token plan mismatch")
@@ -614,7 +614,7 @@ async def ingest_reports(
     effective_plan = plan
     if effective_plan is None:
         record = await session.get(SitePlan, collect.site_id)
-        effective_plan = record.plan if record else "free"
+        effective_plan = effective_plan_for_record(record)
     if effective_plan == "pro" and not settings.ENABLE_PRO_INGEST:
         effective_plan = "standard"
     if effective_plan == "standard" and not settings.SESSION_HMAC_SECRET:

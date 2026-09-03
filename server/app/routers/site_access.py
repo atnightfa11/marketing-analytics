@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
-from ..entitlements import require_team_access
+from ..entitlements import effective_plan_for_record, require_team_access
 from ..models import DashboardSite, DashboardSiteAccess, DashboardUser, SitePlan, get_session
 from ..schemas import SiteAccessGrantRequest, SiteAccessListResponse, SiteAccessMemberResponse
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/site-access", tags=["site-access"])
 
 async def _require_standard_site_access_management(session: AsyncSession, site_id: str) -> None:
     plan_record = await session.get(SitePlan, site_id)
-    require_team_access(plan_record.plan if plan_record else "free")
+    require_team_access(effective_plan_for_record(plan_record))
 
 
 @router.get("", response_model=SiteAccessListResponse)
