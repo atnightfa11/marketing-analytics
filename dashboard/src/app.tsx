@@ -832,10 +832,10 @@ const Overview: React.FC = () => {
   const hostnameFilter = !showSeededBreakdowns && selectedHostname !== "all" ? selectedHostname : undefined;
   const segmentAggregateFilters = useMemo(() => {
     const filters = activeFilters.map((filter) => ({ dimension: filter.dimension, value: filter.value }));
-    if (hostnameFilter) filters.push({ dimension: "hostname", value: hostnameFilter });
+    if (activeFilters.length > 0 && hostnameFilter) filters.push({ dimension: "hostname", value: hostnameFilter });
     return filters;
   }, [activeFilters, hostnameFilter]);
-  const useSegmentAggregates = !showSeededBreakdowns && segmentAggregateFilters.length > 0;
+  const useSegmentAggregates = !showSeededBreakdowns && activeFilters.length > 0;
   const [siteName, setSiteName] = useState<string | null>(null);
   const siteDisplayName = useMemo(() => dashboardSiteDisplayName(siteId, siteName), [siteId, siteName]);
   const selectedRangeBounds = useMemo(
