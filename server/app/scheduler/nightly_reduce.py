@@ -123,36 +123,113 @@ def _event_timestamp(report: RawReport) -> dt.datetime:
             return parsed.astimezone(dt.timezone.utc)
         except ValueError:
             pass
-    return report.server_received_at
+    timestamp = report.server_received_at
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.timezone.utc)
+    return timestamp.astimezone(dt.timezone.utc)
+
+
+def _split_inactivity_sessions(
+    timestamps: list[dt.datetime],
+    *,
+    max_gap_seconds: int,
+) -> list[list[dt.datetime]]:
+    unique_timestamps = sorted(set(timestamps))
+    if not unique_timestamps:
+        return []
+    sessions: list[list[dt.datetime]] = [[unique_timestamps[0]]]
+    for timestamp in unique_timestamps[1:]:
+        gap_seconds = (timestamp - sessions[-1][-1]).total_seconds()
+        if gap_seconds > max_gap_seconds:
+            sessions.append([timestamp])
+        else:
+            sessions[-1].append(timestamp)
+    return sessions
+
+
+def _rolling_session_count(reports: list[RawReport]) -> float:
+    timestamps_by_identity: dict[str, list[dt.datetime]] = defaultdict(list)
+    fallback_sessions = 0.0
+    for report in reports:
+        payload = report.payload if isinstance(report.payload, dict) else {}
+        if payload.get("historical_import"):
+            if report.kind == "sessions":
+                fallback_sessions += _raw_report_value(report)
+            continue
+        visitor_hmac = payload.get("_visitor_day_hmac")
+        if isinstance(visitor_hmac, str) and visitor_hmac:
+            timestamps_by_identity[f"visitor:{visitor_hmac}"].append(_event_timestamp(report))
+            continue
+        session_hmac = payload.get("_session_hmac")
+        if isinstance(session_hmac, str) and session_hmac:
+            timestamps_by_identity[f"session:{session_hmac}"].append(_event_timestamp(report))
+        elif report.kind == "sessions":
+            fallback_sessions += _raw_report_value(report)
+
+    max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
+    identified_sessions = sum(
+        len(_split_inactivity_sessions(timestamps, max_gap_seconds=max_gap_seconds))
+        for timestamps in timestamps_by_identity.values()
+    )
+    return float(identified_sessions) + fallback_sessions
 
 
 def _engagement_totals(reports: list[RawReport]) -> tuple[int, float, float]:
-    pageview_times_by_session: dict[tuple[dt.datetime, str], list[dt.datetime]] = defaultdict(list)
+    pageview_times_by_visitor: dict[str, list[dt.datetime]] = defaultdict(list)
     for report in reports:
         if report.kind != "pageviews":
             continue
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
             continue
-        session_hmac = payload.get("_session_hmac")
-        if not isinstance(session_hmac, str) or not session_hmac:
+        identity_hmac = payload.get("_visitor_day_hmac") or payload.get("_session_hmac")
+        if not isinstance(identity_hmac, str) or not identity_hmac:
             continue
-        session_bucket_start = _bucket_start(report.server_received_at, settings.SESSION_WINDOW_MINUTES)
-        pageview_times_by_session[(session_bucket_start, session_hmac)].append(_event_timestamp(report))
+        pageview_times_by_visitor[identity_hmac].append(_event_timestamp(report))
 
     bounced_sessions = 0.0
     visit_duration_seconds = 0.0
+    session_count = 0
     max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
-    for timestamps in pageview_times_by_session.values():
-        unique_timestamps = sorted(set(timestamps))
-        if len(unique_timestamps) == 1:
-            bounced_sessions += 1.0
-            continue
-        for previous, current in zip(unique_timestamps, unique_timestamps[1:]):
-            gap_seconds = (current - previous).total_seconds()
-            if gap_seconds > 0:
-                visit_duration_seconds += min(gap_seconds, max_gap_seconds)
-    return len(pageview_times_by_session), bounced_sessions, visit_duration_seconds
+    for timestamps in pageview_times_by_visitor.values():
+        for session_timestamps in _split_inactivity_sessions(
+            timestamps,
+            max_gap_seconds=max_gap_seconds,
+        ):
+            session_count += 1
+            if len(session_timestamps) == 1:
+                bounced_sessions += 1.0
+                continue
+            for previous, current in zip(session_timestamps, session_timestamps[1:]):
+                gap_seconds = (current - previous).total_seconds()
+                if gap_seconds > 0:
+                    visit_duration_seconds += gap_seconds
+    return session_count, bounced_sessions, visit_duration_seconds
+
+
+def _coherent_traffic_values(
+    pageviews: float,
+    sessions: float,
+    visitors: float,
+) -> tuple[float, float, float]:
+    """Project noisy traffic counts onto pageviews >= sessions >= visitors."""
+    blocks: list[tuple[float, int]] = []
+    for raw_value in (pageviews, sessions, visitors):
+        blocks.append((max(0.0, float(raw_value)), 1))
+        while len(blocks) >= 2 and blocks[-2][0] < blocks[-1][0]:
+            right_value, right_weight = blocks.pop()
+            left_value, left_weight = blocks.pop()
+            weight = left_weight + right_weight
+            blocks.append(
+                (
+                    (left_value * left_weight + right_value * right_weight) / weight,
+                    weight,
+                )
+            )
+    projected: list[float] = []
+    for value, weight in blocks:
+        projected.extend([value] * weight)
+    return projected[0], projected[1], projected[2]
 
 
 async def _upsert_window(
@@ -204,6 +281,43 @@ async def _upsert_window(
             ci95_high=max(0.0, ci95[1]),
         )
     )
+
+
+async def _apply_standard_traffic_consistency(
+    session: AsyncSession,
+    *,
+    site_id: str,
+    day: dt.date,
+) -> None:
+    window_start = _day_start(day)
+    rows = (
+        await session.execute(
+            select(DpWindow).where(
+                DpWindow.site_id == site_id,
+                DpWindow.plan == "standard",
+                DpWindow.window_start == window_start,
+                DpWindow.metric.in_(("pageviews", "sessions", "uniques")),
+            )
+        )
+    ).scalars().all()
+    by_metric = {row.metric: row for row in rows}
+    if set(by_metric) != {"pageviews", "sessions", "uniques"}:
+        return
+    projected = _coherent_traffic_values(
+        by_metric["pageviews"].value,
+        by_metric["sessions"].value,
+        by_metric["uniques"].value,
+    )
+    for metric, value in zip(("pageviews", "sessions", "uniques"), projected):
+        row = by_metric[metric]
+        row.value = value
+        se = standard_error(row.variance)
+        ci80 = confidence_interval(value, se, 1.2816)
+        ci95 = confidence_interval(value, se, 1.9599)
+        row.ci80_low = max(0.0, ci80[0])
+        row.ci80_high = max(0.0, ci80[1])
+        row.ci95_low = max(0.0, ci95[0])
+        row.ci95_high = max(0.0, ci95[1])
 
 
 async def _replace_breakdown_rollups(
@@ -591,22 +705,15 @@ async def reduce_reports(
                 settings.AGGREGATE_DP_EPSILON, max(0.0, report.epsilon_used)
             )
 
-    standard_pageview_counts: dict[tuple[str, dt.datetime], float] = defaultdict(float)
-    for (site_id, metric, window_start), items in raw_buckets.items():
-        if metric != "pageviews":
-            continue
-        count = sum(_raw_report_value(item) for item in items)
-        if plan_map.get(site_id, "free") == "standard":
-            standard_pageview_counts[(site_id, window_start)] += count
-
     for (site_id, metric, window_start), items in raw_buckets.items():
         plan = plan_map.get(site_id, "free")
         window_end = window_start + dt.timedelta(days=1)
-        base_value = sum(_raw_report_value(item) for item in items)
-        if plan == "standard" and metric == "sessions":
-            pageview_cap = standard_pageview_counts.get((site_id, window_start))
-            if pageview_cap is not None:
-                base_value = min(base_value, pageview_cap)
+        if metric == "sessions":
+            base_value = _rolling_session_count(
+                raw_reports_by_site_day.get((site_id, plan, window_start.date()), items)
+            )
+        else:
+            base_value = sum(_raw_report_value(item) for item in items)
         if base_value <= 0:
             continue
         if plan == "standard":
@@ -635,6 +742,10 @@ async def reduce_reports(
             value=value,
             variance=variance,
         )
+
+    for site_id, plan, day in raw_reports_by_site_day:
+        if plan == "standard":
+            await _apply_standard_traffic_consistency(session, site_id=site_id, day=day)
 
     for (site_id, plan, day), reports_for_day in raw_reports_by_site_day.items():
         engagement_session_count, bounced_sessions, visit_duration_seconds = _engagement_totals(reports_for_day)

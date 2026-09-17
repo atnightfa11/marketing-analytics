@@ -36,7 +36,7 @@ rate_limiter: DefaultDict[tuple[str, str], list[float]] = defaultdict(list)
 settings = get_settings()
 logger = logging.getLogger(__name__)
 _timezone_token_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,64}$")
-STANDARD_ID_VERSION = "standard-id-v2"
+STANDARD_ID_VERSION = "standard-id-v3"
 _geoip_reader = None
 _geoip_reader_path: str | None = None
 DEFAULT_BOT_UA_PATTERNS: tuple[str, ...] = (
@@ -250,15 +250,18 @@ def _standard_identity_material(
     timezone_hint: str | None = None,
 ) -> str:
     timezone_component = _normalize_timezone_hint(timezone_hint) or "unknown"
+    # The raw User-Agent is used only inside this keyed, rotating HMAC input and
+    # is never persisted. Keeping the full value here reduces collisions between
+    # different browsers sharing an IP without creating a reusable visitor ID.
+    normalized_user_agent = " ".join((user_agent or "unknown").split())[:1024]
+    user_agent_component = hashlib.sha256(normalized_user_agent.encode("utf-8")).hexdigest()
     return "|".join(
         (
             STANDARD_ID_VERSION,
             f"site:{site_id}",
             f"scope:{scope}",
             f"ip:{_coarsen_ip(ip_value)}",
-            _browser_component(user_agent),
-            _os_component(user_agent),
-            f"device:{_derive_device_bucket(user_agent)}",
+            f"ua:{user_agent_component}",
             f"tz:{timezone_component}",
         )
     )

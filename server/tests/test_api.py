@@ -56,7 +56,7 @@ from app.maintenance import purge_expired_upload_tokens, settings as maintenance
 from app.routers import shuffle as shuffle_router  # noqa: E402
 from app.routers.shuffle import STANDARD_ID_VERSION, _derive_country_code, _derive_timezone_hint, derive_daily_visitor_key, derive_standard_session_key, resolve_client_ip  # noqa: E402
 from app.geoip_db import ensure_geoip_database  # noqa: E402
-from app.scheduler.nightly_reduce import REDUCER_VERSION, purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
+from app.scheduler.nightly_reduce import REDUCER_VERSION, _coherent_traffic_values, purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
 from app.segment_rollups import SegmentKey, aggregate_reports_for_segments  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
@@ -1170,7 +1170,7 @@ def test_standard_hmac_session_key_stability_and_rollover():
     assert stable_key_1 != rollover_key
 
 
-def test_standard_hmac_v2_separates_common_browser_and_timezone_signals():
+def test_standard_hmac_v3_uses_full_ephemeral_user_agent_and_timezone_signals():
     base_time = datetime(2026, 3, 18, 12, 5, tzinfo=timezone.utc)
     chrome_ua = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_0) AppleWebKit/537.36 "
@@ -1214,9 +1214,17 @@ def test_standard_hmac_v2_separates_common_browser_and_timezone_signals():
         timezone_hint="America/Denver",
     )
 
-    assert chrome_key == chrome_patch_key
+    assert chrome_key != chrome_patch_key
     assert chrome_key != safari_key
     assert chrome_key != denver_key
+
+
+def test_standard_dp_postprocessing_preserves_valid_traffic_order():
+    pageviews, sessions, visitors = _coherent_traffic_values(2.0, 0.03, 0.08)
+
+    assert pageviews >= sessions >= visitors
+    assert sessions == pytest.approx(0.055)
+    assert visitors == pytest.approx(0.055)
 
 
 def test_daily_visitor_key_rotates_daily():
@@ -1605,6 +1613,48 @@ async def test_reducer_publishes_measured_bounce_and_visit_duration(client):
         assert by_metric["bounced_sessions"].window_start.replace(tzinfo=timezone.utc) == datetime(
             2026, 5, 7, 0, 0, tzinfo=timezone.utc
         )
+
+
+@pytest.mark.asyncio
+async def test_reducer_uses_rolling_inactivity_sessions_across_clock_boundaries(client):
+    site_id = "site-rolling-sessions"
+    target_day = date(2026, 5, 8)
+    await _set_site_plan(site_id, "free")
+    visitor_key = "daily-visitor-a"
+    reports = [
+        ("sessions", datetime(2026, 5, 8, 10, 25, tzinfo=timezone.utc)),
+        ("pageviews", datetime(2026, 5, 8, 10, 25, tzinfo=timezone.utc)),
+        ("sessions", datetime(2026, 5, 8, 10, 35, tzinfo=timezone.utc)),
+        ("pageviews", datetime(2026, 5, 8, 10, 35, tzinfo=timezone.utc)),
+        ("sessions", datetime(2026, 5, 8, 11, 6, tzinfo=timezone.utc)),
+        ("pageviews", datetime(2026, 5, 8, 11, 6, tzinfo=timezone.utc)),
+    ]
+    for kind, received_at in reports:
+        await _insert_raw_report(
+            site_id=site_id,
+            kind=kind,
+            payload={
+                "_visitor_day_hmac": visitor_key,
+                "_client_timestamp": received_at.isoformat(),
+                **({"url": "/"} if kind == "pageviews" else {}),
+            },
+            day=target_day,
+            server_received_at=received_at,
+        )
+
+    async with async_session_factory() as session:
+        await reduce_reports(session, start_day=target_day, end_day=target_day)
+        sessions = (
+            await session.execute(
+                select(DpWindow).where(
+                    DpWindow.site_id == site_id,
+                    DpWindow.plan == "free",
+                    DpWindow.metric == "sessions",
+                )
+            )
+        ).scalar_one()
+
+    assert sessions.value == 2.0
 
 
 @pytest.mark.asyncio

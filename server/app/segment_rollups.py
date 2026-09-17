@@ -503,11 +503,15 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
     source_by_session = _build_source_context(reports)
     pages_by_session = _build_session_pages(reports)
     metric_sums: defaultdict[SegmentKey, dict[str, float]] = defaultdict(lambda: {metric: 0.0 for metric in SEGMENT_METRICS})
-    session_markers: defaultdict[SegmentKey, set[tuple[dt.datetime, str]]] = defaultdict(set)
+    session_timestamps: defaultdict[
+        tuple[SegmentKey, tuple[dt.date, str]], list[dt.datetime]
+    ] = defaultdict(list)
     session_fallback_counts: defaultdict[SegmentKey, float] = defaultdict(float)
     visitor_markers: defaultdict[SegmentKey, set[tuple[dt.date, str]]] = defaultdict(set)
     visitor_fallback_counts: defaultdict[SegmentKey, float] = defaultdict(float)
-    pageview_times: defaultdict[tuple[SegmentKey, tuple[dt.datetime, str]], list[dt.datetime]] = defaultdict(list)
+    pageview_times: defaultdict[
+        tuple[SegmentKey, tuple[dt.date, str]], list[dt.datetime]
+    ] = defaultdict(list)
     touched_keys: set[SegmentKey] = set()
 
     for report in reports:
@@ -515,7 +519,6 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
         if payload.get("historical_import"):
             continue
         dimensions = _dimensions_for_report(report, source_by_session)
-        report_session_marker = session_marker(report.server_received_at, payload)
         report_visitor_marker = visitor_marker(report.day, payload)
 
         for grain in SUPPORTED_SEGMENT_GRAINS:
@@ -533,15 +536,15 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
                 metrics = metric_sums[key]
                 if report.kind == "pageviews":
                     metrics["pageviews"] += 1.0
-                    if report_session_marker:
-                        pageview_times[(key, report_session_marker)].append(_event_timestamp(report))
+                    if report_visitor_marker:
+                        pageview_times[(key, report_visitor_marker)].append(_event_timestamp(report))
                 elif report.kind == "conversions":
                     metrics["conversions"] += 1.0
                 elif report.kind == "revenue":
                     metrics["revenue"] += raw_report_value(report)
 
-                if report_session_marker:
-                    session_markers[key].add(report_session_marker)
+                if report_visitor_marker:
+                    session_timestamps[(key, report_visitor_marker)].append(_event_timestamp(report))
                 elif report.kind == "sessions":
                     session_fallback_counts[key] += 1.0
 
@@ -550,19 +553,35 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
                 elif report.kind == "uniques":
                     visitor_fallback_counts[key] += 1.0
 
+    rolling_sessions_by_key: defaultdict[SegmentKey, int] = defaultdict(int)
+    for (key, _visitor), timestamps in session_timestamps.items():
+        unique_timestamps = sorted(set(timestamps))
+        if not unique_timestamps:
+            continue
+        rolling_sessions_by_key[key] += 1
+        for previous, current in zip(unique_timestamps, unique_timestamps[1:]):
+            if (current - previous).total_seconds() > max_gap_seconds:
+                rolling_sessions_by_key[key] += 1
+
     for key in touched_keys:
-        metric_sums[key]["sessions"] = float(len(session_markers[key])) + session_fallback_counts[key]
+        metric_sums[key]["sessions"] = float(rolling_sessions_by_key[key]) + session_fallback_counts[key]
         metric_sums[key]["uniques"] = float(len(visitor_markers[key])) + visitor_fallback_counts[key]
 
-    for (key, _session), timestamps in pageview_times.items():
+    for (key, _visitor), timestamps in pageview_times.items():
         unique_timestamps = sorted(set(timestamps))
-        if len(unique_timestamps) == 1:
+        current_session: list[dt.datetime] = []
+        for timestamp in unique_timestamps:
+            if current_session and (timestamp - current_session[-1]).total_seconds() > max_gap_seconds:
+                if len(current_session) == 1:
+                    metric_sums[key]["bounced_sessions"] += 1.0
+                current_session = []
+            if current_session:
+                metric_sums[key]["visit_duration_seconds"] += (
+                    timestamp - current_session[-1]
+                ).total_seconds()
+            current_session.append(timestamp)
+        if len(current_session) == 1:
             metric_sums[key]["bounced_sessions"] += 1.0
-            continue
-        for previous, current in zip(unique_timestamps, unique_timestamps[1:]):
-            gap_seconds = (current - previous).total_seconds()
-            if gap_seconds > 0:
-                metric_sums[key]["visit_duration_seconds"] += min(gap_seconds, max_gap_seconds)
 
     return {
         key: {metric: value for metric, value in metrics.items() if value > 0}

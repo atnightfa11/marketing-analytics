@@ -36,15 +36,15 @@ Valid uses plan-aware ingest and reduction:
 
 For each report, reducer-friendly coarse fields are stored:
 
-- `_session_hmac` (Standard/Free `standard-id-v2` session dedupe key, server-derived)
-- `_visitor_day_hmac` (daily `standard-id-v2` unique dedupe key, server-derived)
+- `_session_hmac` (Standard/Solo `standard-id-v3` short-lived processing key, server-derived)
+- `_visitor_day_hmac` (daily `standard-id-v3` visitor dedupe key, server-derived)
 - `_device_bucket` (`mobile`, `desktop`, `tablet`, `unknown`)
 - `_country_code` (2-letter code or `Unknown`)
 - `_timezone_hint` when supplied by request infrastructure
 - `_hostname` (normalized host for subdomain filtering)
 - event payload fields such as normalized `url`, `conversion_type`, `referrer_bucket`, `referrer_source`, `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, and paid click-id type. Tracking parameters and paid click-id values are stripped from page URLs before storage/publication.
 
-Raw IP address and raw User-Agent are used transiently to derive keyed `standard-id-v2` HMACs and coarse reporting dimensions. Raw IP and raw User-Agent are not persisted as raw identifiers in report payloads.
+Raw IP address and the full raw User-Agent are used transiently to derive keyed, rotating `standard-id-v3` HMACs and coarse reporting dimensions. Raw IP and raw User-Agent are not persisted as raw identifiers in report payloads. Sessions are reduced from rolling inactivity gaps between events sharing the daily visitor key, rather than fixed clock buckets.
 
 ## Reducer + publish model
 

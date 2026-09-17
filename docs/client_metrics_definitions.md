@@ -14,9 +14,9 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 - `pageviews`: sum of reduced `pageviews` windows.
 - `sessions`:
   - Solo/internal `free`: sum of reduced `sessions` events.
-  - Standard: unique server-derived `standard-id-v2` HMAC session keys within `SESSION_WINDOW_MINUTES`, rolled into daily aggregate buckets, then central-DP Laplace noise is added at aggregate publish time.
+  - Standard: rolling visits split after `SESSION_WINDOW_MINUTES` of inactivity. Events are joined during short-lived processing with a daily server-derived `standard-id-v3` HMAC, rolled into daily aggregate buckets, then central-DP Laplace noise is added at aggregate publish time.
   - Pro: reduced LDP estimate from `sessions` randomized-response reports.
-- `uniques` / dashboard `Visitors`: reduced estimate from daily presence events. Standard uses a daily `standard-id-v2` HMAC for dedupe. The HMAC input includes site/day, request IP prefix, parsed browser family/major, OS family/major, device class, and a browser/edge timezone hint when available. Raw IP and raw User-Agent are not persisted.
+- `uniques` / dashboard `Visitors`: reduced estimate from daily presence events. Standard uses a daily `standard-id-v3` HMAC for dedupe. The HMAC input includes site/day, request IP prefix, full User-Agent, and a browser/edge timezone hint when available. Raw IP and raw User-Agent are used transiently and are not persisted.
 - `conversions`: sum of reduced `conversions` events.
 - `conversion_rate`: `conversions / sessions` (derived after aggregation; no extra DP noise term).
 - `revenue`: sum of reduced `revenue` events.
@@ -36,7 +36,7 @@ Google Analytics 4 and Valid use similar top-level concepts, but the collection 
 | Valid metric | Closest GA4 metric | Comparison notes |
 |---|---|---|
 | `pageviews` | Views | Closest match. GA4 Views counts repeated page or screen views. Valid counts accepted pageview events after Valid script execution, bot filtering, and origin checks. Pro/LDP may still apply utility thresholds before publishing. |
-| `sessions` | Sessions | Similar concept, different sessionization. GA4 sessions begin when a user opens the app/site or views a page with no active session, and default timeout is 30 minutes. Valid Standard uses server-derived `standard-id-v2` HMAC session keys within `SESSION_WINDOW_MINUTES`, then publishes daily aggregate windows. |
+| `sessions` | Sessions | Similar concept, different identity. GA4 sessions use GA identifiers and default to a 30-minute inactivity timeout. Valid uses a daily rotating, server-derived `standard-id-v3` HMAC and the same rolling inactivity concept, then publishes daily aggregate windows. |
 | Visitors (`uniques`) | Total users or Users/Active users | Directionally comparable, not equivalent. GA4 Total users counts unique user IDs that triggered events, while GA4 Reports often show Active users as Users. Valid does not use cookies or persistent browser identifiers; Standard visitors use a daily server-derived HMAC and may still differ from GA4 because Valid does not set a persistent client ID. |
 | `conversions` | Key events / configured conversion events | Comparable only when both products are configured to fire on the same actions. GA4 key events depend on GA4 event configuration; Valid conversions depend on explicit or auto-conversion capture in the Valid SDK. |
 | `revenue` | Purchase revenue / event value | Comparable only when both products receive the same commerce or value events. GA4 purchase revenue is tied to purchase/refund semantics; Valid revenue is the sum of accepted `revenue` events. |
@@ -108,10 +108,10 @@ Quality notes:
 
 - Pro/LDP metrics publish only after minimum volume and SNR checks in reducers/routes.
 - Solo served aggregate history is limited to 12 months. Standard aggregate retention is intended to be forever.
-- Standard aggregate windows publish daily. Sessions are clamped to not exceed the deduped session baseline after noise to avoid obviously broken output.
+- Standard aggregate windows publish daily. Independently noised Pageviews, Sessions, and Visitors are projected onto the valid order `Pageviews >= Sessions >= Visitors`; deterministic post-processing preserves the central-DP guarantee while avoiding impossible-looking output on small sites.
 - Dashboard date labels preserve the date stamped on full-day aggregate windows. Shorter free/live windows are grouped into days using the site's reporting timezone.
 - `conversion_rate`, `bounce_rate`, and `visit_duration` are derived from already published aggregates.
-- Standard session dedupe is replay-resistant and based on short-lived, server-derived `standard-id-v2` HMAC keys.
+- Standard sessionization is replay-resistant and uses daily, server-derived `standard-id-v3` HMAC keys plus event timestamps to split visits after the configured inactivity timeout.
 - Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups unless a future dimension-level DP mechanism is added.
 - Forecast training uses completed daily aggregate windows only; the current partial day is excluded from training and backtest scoring.
 - Forecast fitting detects large completed-day spikes/drops and excludes those anomaly days from normal seasonality fitting. If the latest completed day is anomalous, `/api/forecast/{metric}` returns `has_anomaly=true`.
@@ -132,7 +132,7 @@ Insights are deterministic summaries derived from the selected KPI period, its c
 
 - No cookies required.
 - No raw IP/UA/referrer persistence.
-- Standard sessions use a server-side HMAC key from site scope, request IP prefix, parsed browser/OS/device context, optional timezone hint, and a time bucket.
+- Standard processing uses a rotating server-side HMAC from site/day scope, request IP prefix, transient full User-Agent, and optional timezone hint. Sessions are split by rolling inactivity gaps; the raw IP and User-Agent are discarded.
 - Pro remains zero-access local-DP path (no server-side HMAC stitching for Pro).
 - Origin checks enforced at token bootstrap and ingest.
 - Upload tokens are short-lived.

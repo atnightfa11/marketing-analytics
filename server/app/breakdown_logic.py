@@ -232,6 +232,50 @@ def visitor_marker(day: dt.date, payload: dict) -> tuple[dt.date, str] | None:
     return day, visitor_hmac
 
 
+def _event_timestamp(report) -> dt.datetime:
+    payload = report.payload if isinstance(report.payload, dict) else {}
+    raw_value = payload.get("_client_timestamp")
+    if isinstance(raw_value, str) and raw_value:
+        try:
+            parsed = dt.datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.astimezone(dt.timezone.utc)
+        except ValueError:
+            pass
+    timestamp = report.server_received_at
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=dt.timezone.utc)
+    return timestamp.astimezone(dt.timezone.utc)
+
+
+def _rolling_session_markers(reports: list) -> dict[int, tuple[object, ...]]:
+    grouped: defaultdict[tuple[dt.date, str], list] = defaultdict(list)
+    markers: dict[int, tuple[object, ...]] = {}
+    for report in reports:
+        payload = report.payload if isinstance(report.payload, dict) else {}
+        visitor = visitor_marker(report.day, payload)
+        if visitor:
+            grouped[visitor].append(report)
+            continue
+        fallback = session_marker(report.server_received_at, payload)
+        if fallback:
+            markers[id(report)] = ("legacy", *fallback)
+
+    max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
+    for visitor, visitor_reports in grouped.items():
+        ordered = sorted(visitor_reports, key=_event_timestamp)
+        session_index = 0
+        previous: dt.datetime | None = None
+        for report in ordered:
+            timestamp = _event_timestamp(report)
+            if previous is not None and (timestamp - previous).total_seconds() > max_gap_seconds:
+                session_index += 1
+            markers[id(report)] = ("rolling", *visitor, session_index)
+            previous = timestamp
+    return markers
+
+
 def blank_metric_map(metric_keys: tuple[BreakdownMetric, ...]) -> dict[str, float]:
     return {metric: 0.0 for metric in metric_keys}
 
@@ -653,9 +697,10 @@ def aggregate_reports_for_breakdown(
     metric_keys = BREAKDOWN_METRIC_ORDER[dimension]
     buckets: defaultdict[str, dict[str, float]] = defaultdict(lambda: blank_metric_map(metric_keys))
     totals = blank_metric_map(metric_keys)
-    seen_sessions_by_label: defaultdict[str, set[tuple[dt.datetime, str]]] = defaultdict(set)
+    seen_sessions_by_label: defaultdict[str, set[tuple[object, ...]]] = defaultdict(set)
     seen_visitors_by_label: defaultdict[str, set[tuple[dt.date, str]]] = defaultdict(set)
-    source_by_session: dict[tuple[dt.datetime, str], SourceAttributes] = {}
+    source_by_session: dict[tuple[object, ...], SourceAttributes] = {}
+    session_marker_by_report = _rolling_session_markers(reports)
 
     if dimension in ATTRIBUTION_DIMENSIONS:
         for report in reports:
@@ -666,7 +711,7 @@ def aggregate_reports_for_breakdown(
                 continue
             if not payload_matches_hostname(payload, hostname_filter):
                 continue
-            marker = session_marker(report.server_received_at, payload)
+            marker = session_marker_by_report.get(id(report))
             if marker and marker not in source_by_session:
                 source_by_session[marker] = source_attributes_from_payload(payload)
 
@@ -681,7 +726,7 @@ def aggregate_reports_for_breakdown(
             label_timestamp = time_parting_timestamp(report.server_received_at, payload, site_timezone)
         if dimension in TIME_PARTING_DIMENSIONS and not matches_time_parting_day_type(label_timestamp, day_type):
             continue
-        report_session_marker = session_marker(report.server_received_at, payload)
+        report_session_marker = session_marker_by_report.get(id(report))
         report_visitor_marker = visitor_marker(report.day, payload)
 
         if dimension == "pages":
