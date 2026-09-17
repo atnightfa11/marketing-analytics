@@ -57,7 +57,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
     if len(df) < 60:
         return None
     df = _with_anomaly_flags(df)
-    latest_has_anomaly, latest_z_score = _latest_anomaly_state(df)
+    anomaly = _latest_anomaly_state(df)
     fit_df = _forecast_fit_frame(df)
     if len(fit_df) < 60:
         fit_df = df[["ds", "y"]].copy()
@@ -143,8 +143,11 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
                 yhat_lower=yhat_lower,
                 yhat_upper=yhat_upper,
                 mape=mape,
-                has_anomaly=latest_has_anomaly,
-                z_score=latest_z_score,
+                has_anomaly=anomaly[0],
+                z_score=anomaly[1],
+                anomaly_day=anomaly[2],
+                anomaly_actual=anomaly[3],
+                anomaly_expected=anomaly[4],
                 trained_at=trained_at,
                 model_id=model_record.id,
             )
@@ -190,12 +193,14 @@ def _with_anomaly_flags(df):
     df = df.sort_values("ds").copy()
     is_anomaly: list[bool] = []
     anomaly_z: list[float] = []
+    anomaly_expected: list[float | None] = []
     values = [float(v) for v in df["y"].tolist()]
     for index, value in enumerate(values):
         history = values[max(0, index - ANOMALY_LOOKBACK_DAYS):index]
         if len(history) < ANOMALY_MIN_HISTORY:
             is_anomaly.append(False)
             anomaly_z.append(0.0)
+            anomaly_expected.append(None)
             continue
         median = statistics.median(history)
         mean_hist = statistics.fmean(history)
@@ -217,8 +222,10 @@ def _with_anomaly_flags(df):
             flagged = value >= ANOMALY_SPARSE_MIN_COUNT and abs(robust_z) >= ANOMALY_Z_THRESHOLD
         is_anomaly.append(flagged)
         anomaly_z.append(float(robust_z))
+        anomaly_expected.append(float(level))
     df["is_anomaly"] = is_anomaly
     df["anomaly_z"] = anomaly_z
+    df["anomaly_expected"] = anomaly_expected
     return df
 
 
@@ -229,11 +236,22 @@ def _forecast_fit_frame(df):
     return clean
 
 
-def _latest_anomaly_state(df) -> tuple[bool, float]:
+def _latest_anomaly_state(
+    df,
+) -> tuple[bool, float, dt.date | None, float | None, float | None]:
     if df.empty:
-        return False, 0.0
+        return False, 0.0, None, None, None
     latest = df.sort_values("ds").iloc[-1]
-    return bool(latest.get("is_anomaly", False)), float(latest.get("anomaly_z", 0.0) or 0.0)
+    flagged = bool(latest.get("is_anomaly", False))
+    if not flagged:
+        return False, float(latest.get("anomaly_z", 0.0) or 0.0), None, None, None
+    return (
+        True,
+        float(latest.get("anomaly_z", 0.0) or 0.0),
+        latest["ds"],
+        float(latest["y"]),
+        float(latest["anomaly_expected"]),
+    )
 
 
 def _mape(actual: Iterable[float], predicted: Iterable[float]) -> float:
@@ -344,7 +362,7 @@ async def _train_ewma_fallback(
 
     # Use the most recent non-anomalous daily history to estimate level, volatility, and weekday seasonality.
     df = _with_anomaly_flags(df).sort_values("ds")
-    latest_has_anomaly, latest_z_score = _latest_anomaly_state(df)
+    anomaly = _latest_anomaly_state(df)
     last_observed_day = max(df["ds"].tolist())
     clean_df = _forecast_fit_frame(df)
     if len(clean_df) >= 14:
@@ -412,8 +430,11 @@ async def _train_ewma_fallback(
                 yhat_lower=float(yhat_lower),
                 yhat_upper=float(yhat_upper),
                 mape=float(mape),
-                has_anomaly=latest_has_anomaly,
-                z_score=latest_z_score,
+                has_anomaly=anomaly[0],
+                z_score=anomaly[1],
+                anomaly_day=anomaly[2],
+                anomaly_actual=anomaly[3],
+                anomaly_expected=anomaly[4],
                 trained_at=trained_at,
                 model_id=model_record.id,
             )

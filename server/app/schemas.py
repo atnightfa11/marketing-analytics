@@ -425,6 +425,9 @@ class ForecastResponse(BaseModel):
     mape: float
     has_anomaly: bool
     z_score: float
+    anomaly_day: dt.date | None = None
+    anomaly_actual: float | None = None
+    anomaly_expected: float | None = None
     trained_at: dt.datetime | None = None
 
 

@@ -70,4 +70,7 @@ export interface TrendChartPoint {
   forecastBandSpan: number | null;
   deltaPositiveRange: [number, number] | null;
   deltaNegativeRange: [number, number] | null;
+  anomalyDay: string | null;
+  anomalyActual: number | null;
+  anomalyExpected: number | null;
 }

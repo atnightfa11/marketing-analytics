@@ -43,6 +43,9 @@ export interface ForecastResponse {
   mape: number;
   has_anomaly: boolean;
   z_score: number;
+  anomaly_day?: string | null;
+  anomaly_actual?: number | null;
+  anomaly_expected?: number | null;
   trained_at?: string | null;
 }
 
@@ -401,7 +404,16 @@ export async function fetchForecast(token: string | undefined, metric: string, s
     params: { site_id: resolvedSiteId },
   });
   if (response.status === 204) {
-    return { forecast: [], mape: Number.NaN, has_anomaly: false, z_score: 0, trained_at: null };
+    return {
+      forecast: [],
+      mape: Number.NaN,
+      has_anomaly: false,
+      z_score: 0,
+      anomaly_day: null,
+      anomaly_actual: null,
+      anomaly_expected: null,
+      trained_at: null,
+    };
   }
   return response.data;
 }

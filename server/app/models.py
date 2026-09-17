@@ -241,6 +241,9 @@ class Forecast(Base):
     mape: Mapped[float] = mapped_column(Float, nullable=False)
     has_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)
     z_score: Mapped[float] = mapped_column(Float, default=0.0)
+    anomaly_day: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    anomaly_actual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anomaly_expected: Mapped[float | None] = mapped_column(Float, nullable=True)
     trained_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("model_store.id"))
 

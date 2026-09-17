@@ -503,8 +503,11 @@ async def test_forecast_response_clamps_stored_negative_values(client):
                 yhat_lower=-8.0,
                 yhat_upper=20.0,
                 mape=0.1,
-                has_anomaly=False,
+                has_anomaly=True,
                 z_score=0.0,
+                anomaly_day=date(2026, 6, 14),
+                anomaly_actual=30.0,
+                anomaly_expected=12.0,
                 trained_at=datetime.now(timezone.utc),
             )
         )
@@ -516,6 +519,9 @@ async def test_forecast_response_clamps_stored_negative_values(client):
     assert response.json()["forecast"] == [
         {"day": "2026-06-15", "yhat": 12.0, "yhat_lower": 0.0, "yhat_upper": 20.0}
     ]
+    assert response.json()["anomaly_day"] == "2026-06-14"
+    assert response.json()["anomaly_actual"] == 30.0
+    assert response.json()["anomaly_expected"] == 12.0
 
 
 @pytest.mark.asyncio
@@ -613,6 +619,7 @@ def test_forecast_anomaly_detection_excludes_spike_from_fit():
 
     assert bool(scored.iloc[-1]["is_anomaly"]) is True
     assert scored.iloc[-1]["anomaly_z"] > 0
+    assert scored.iloc[-1]["anomaly_expected"] == 100.0
     assert len(fit) == len(scored) - 1
     assert fit["y"].max() == 100.0
 

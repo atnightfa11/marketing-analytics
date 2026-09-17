@@ -754,9 +754,12 @@ const Overview: React.FC = () => {
       : "30d";
   });
   const [forecast, setForecast] = useState<ForecastEntry[]>([]);
-  const [forecastMeta, setForecastMeta] = useState<Pick<ForecastResponse, "has_anomaly" | "trained_at"> | null>(
-    null
-  );
+  const [forecastMeta, setForecastMeta] = useState<
+    Pick<
+      ForecastResponse,
+      "has_anomaly" | "trained_at" | "anomaly_day" | "anomaly_actual" | "anomaly_expected"
+    > | null
+  >(null);
   const [forecastError, setForecastError] = useState<string | null>(null);
   const [dashboardNotes, setDashboardNotes] = useState<DashboardNote[]>([]);
   const [noteDate, setNoteDate] = useState<string>("");
@@ -1026,7 +1029,13 @@ const Overview: React.FC = () => {
       else if (selectedMetric === "conversions") seededMetricSeries = seededSeries.conversions;
       else if (selectedMetric === "revenue") seededMetricSeries = seededSeries.revenue;
       setForecast(buildSeededForecast(seededMetricSeries, 120));
-      setForecastMeta({ has_anomaly: false, trained_at: new Date().toISOString() });
+      setForecastMeta({
+        has_anomaly: false,
+        trained_at: new Date().toISOString(),
+        anomaly_day: null,
+        anomaly_actual: null,
+        anomaly_expected: null,
+      });
       setForecastError(null);
       return;
     }
@@ -1035,12 +1044,24 @@ const Overview: React.FC = () => {
     fetchForecast(token ?? undefined, selectedMetric, siteId)
       .then((data) => {
         setForecast(data.forecast);
-        setForecastMeta({ has_anomaly: data.has_anomaly, trained_at: data.trained_at ?? null });
+        setForecastMeta({
+          has_anomaly: data.has_anomaly,
+          trained_at: data.trained_at ?? null,
+          anomaly_day: data.anomaly_day ?? null,
+          anomaly_actual: data.anomaly_actual ?? null,
+          anomaly_expected: data.anomaly_expected ?? null,
+        });
       })
       .catch((error) => {
         const message = extractApiErrorMessage(error);
         setForecast([]);
-        setForecastMeta({ has_anomaly: false, trained_at: null });
+        setForecastMeta({
+          has_anomaly: false,
+          trained_at: null,
+          anomaly_day: null,
+          anomaly_actual: null,
+          anomaly_expected: null,
+        });
         setForecastError(message ?? "Unable to load the current forecast.");
         console.error(error);
       });
@@ -1970,6 +1991,7 @@ const Overview: React.FC = () => {
         const deltaNegativeRange: [number, number] | null = hasDelta
           ? [Math.min(actualValue as number, compareValue as number), compareValue as number]
           : null;
+        const isAnomalyDay = Boolean(forecastMeta?.has_anomaly && forecastMeta.anomaly_day === day);
         return {
           day,
           actual: actualValue,
@@ -1984,6 +2006,9 @@ const Overview: React.FC = () => {
           forecastBandSpan: hasBand ? bandSpan : null,
           deltaPositiveRange,
           deltaNegativeRange,
+          anomalyDay: isAnomalyDay ? forecastMeta?.anomaly_day ?? null : null,
+          anomalyActual: isAnomalyDay ? forecastMeta?.anomaly_actual ?? rawActualValue : null,
+          anomalyExpected: isAnomalyDay ? forecastMeta?.anomaly_expected ?? null : null,
         } satisfies TrendChartPoint;
       }),
     [
@@ -1994,6 +2019,7 @@ const Overview: React.FC = () => {
       todayKey,
       hasTodayActual,
       priorActualDayForToday,
+      forecastMeta,
     ]
   );
 
@@ -2026,6 +2052,9 @@ const Overview: React.FC = () => {
         forecastLine: number | null;
         forecastLower: number | null;
         forecastUpper: number | null;
+        anomalyDay: string | null;
+        anomalyActual: number | null;
+        anomalyExpected: number | null;
       }
     >();
     const addTo = (acc: number | null, value: number | null | undefined): number | null => {
@@ -2043,6 +2072,9 @@ const Overview: React.FC = () => {
         forecastLine: null,
         forecastLower: null,
         forecastUpper: null,
+        anomalyDay: null,
+        anomalyActual: null,
+        anomalyExpected: null,
       };
       buckets.set(key, {
         actual: addTo(current.actual, point.actual),
@@ -2053,6 +2085,9 @@ const Overview: React.FC = () => {
         forecastLine: addTo(current.forecastLine, point.forecastLine),
         forecastLower: addTo(current.forecastLower, point.forecastLower),
         forecastUpper: addTo(current.forecastUpper, point.forecastUpper),
+        anomalyDay: point.anomalyDay ?? current.anomalyDay,
+        anomalyActual: point.anomalyDay ? point.anomalyActual : current.anomalyActual,
+        anomalyExpected: point.anomalyDay ? point.anomalyExpected : current.anomalyExpected,
       });
     }
     return Array.from(buckets.entries())
@@ -2085,6 +2120,9 @@ const Overview: React.FC = () => {
             : null,
           deltaPositiveRange,
           deltaNegativeRange,
+          anomalyDay: acc.anomalyDay,
+          anomalyActual: acc.anomalyActual,
+          anomalyExpected: acc.anomalyExpected,
         } satisfies TrendChartPoint;
       });
   }, [baseChartData, chartGranularity]);
@@ -3107,6 +3145,20 @@ const Overview: React.FC = () => {
       </g>
     );
   };
+  const renderActualDot = (props: {
+    cx?: number;
+    cy?: number;
+    payload?: TrendChartPoint;
+  }) => {
+    const { cx, cy, payload } = props;
+    if (!payload?.anomalyDay || !Number.isFinite(cx) || !Number.isFinite(cy)) return <g />;
+    return (
+      <g aria-label={`Anomaly detected on ${formatShortDate(payload.anomalyDay)}`}>
+        <circle cx={cx} cy={cy} r={7} fill="white" stroke="#4F46E5" strokeWidth={2} />
+        <circle cx={cx} cy={cy} r={3} fill="#4F46E5" />
+      </g>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#F5F6F8] print-bg">
@@ -3466,6 +3518,13 @@ const Overview: React.FC = () => {
                       const todaySoFarValue = point.todaySoFar;
                       const compareValue = point.compare;
                       const forecastValue = point.forecast;
+                      const anomalyChange =
+                        Number.isFinite(point.anomalyActual ?? Number.NaN) &&
+                        Number.isFinite(point.anomalyExpected ?? Number.NaN) &&
+                        (point.anomalyExpected ?? 0) !== 0
+                          ? ((point.anomalyActual ?? 0) - (point.anomalyExpected ?? 0)) /
+                            Math.abs(point.anomalyExpected ?? 1)
+                          : Number.NaN;
                       const delta =
                         Number.isFinite(actualValue ?? Number.NaN) && Number.isFinite(compareValue ?? Number.NaN) && (compareValue ?? 0) > 0
                           ? ((actualValue ?? 0) - (compareValue ?? 0)) / (compareValue ?? 1)
@@ -3480,6 +3539,39 @@ const Overview: React.FC = () => {
                         : "text-gray-400";
                       return (
                         <div className="min-w-[208px] border border-[#111827] bg-[#111827] px-3 py-3 text-white shadow-lg">
+                          {point.anomalyDay && (
+                            <div className="mb-2 border-b border-white/10 pb-2">
+                              <div className="text-[9px] font-bold uppercase tracking-[0.18em] text-[#A5B4FC]" style={fontMeta}>
+                                Anomaly detected
+                              </div>
+                              <div className="mt-1 text-[12px] font-semibold text-white" style={fontBody}>
+                                {formatTooltipDateGranular(point.anomalyDay, "day")}
+                              </div>
+                              <div className="mt-2 grid grid-cols-2 gap-x-5 gap-y-1 text-[11px]">
+                                <span className="text-gray-400" style={fontBody}>Actual</span>
+                                <span className="text-right metric-number" style={fontMetric}>
+                                  {formatMetricValue(selectedMetric, point.anomalyActual ?? Number.NaN)}
+                                </span>
+                                <span className="text-gray-400" style={fontBody}>Expected</span>
+                                <span className="text-right metric-number" style={fontMetric}>
+                                  {formatMetricValue(selectedMetric, point.anomalyExpected ?? Number.NaN)}
+                                </span>
+                                {Number.isFinite(anomalyChange) && (
+                                  <>
+                                    <span className="text-gray-400" style={fontBody}>Difference</span>
+                                    <span className={`text-right metric-number ${anomalyChange >= 0 ? "text-[#6EE7B7]" : "text-[#FCA5A5]"}`} style={fontMetric}>
+                                      {anomalyChange >= 0 ? "↑" : "↓"} {Math.abs(anomalyChange * 100).toFixed(1)}%
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                              {(notesByMarkerDay.get(bucketKeyFor(point.anomalyDay, chartGranularity)) ?? []).map((note) => (
+                                <div key={`anomaly-note-${note.id}`} className="mt-2 border-t border-white/10 pt-2 text-[11px] leading-4 text-gray-300" style={fontBody}>
+                                  {note.body}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           <div className="mb-2 flex items-center justify-between gap-3">
                             <div className="text-[10px] uppercase tracking-[0.18em] text-gray-300" style={fontBody}>
                               {metricLabels[selectedMetric] ?? selectedMetric}
@@ -3646,7 +3738,7 @@ const Overview: React.FC = () => {
                       dataKey="actual"
                       stroke="#4f46e5"
                       strokeWidth={2}
-                      dot={false}
+                      dot={renderActualDot}
                       isAnimationActive={false}
                     />
                   )}

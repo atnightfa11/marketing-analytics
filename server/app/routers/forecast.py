@@ -55,6 +55,9 @@ async def forecast(
         mape=latest.mape,
         has_anomaly=latest.has_anomaly,
         z_score=latest.z_score,
+        anomaly_day=latest.anomaly_day,
+        anomaly_actual=latest.anomaly_actual,
+        anomaly_expected=latest.anomaly_expected,
         trained_at=latest.trained_at,
     )
 
