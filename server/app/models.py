@@ -4,6 +4,7 @@ import datetime as dt
 from typing import AsyncGenerator
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -61,6 +62,7 @@ class RawReport(Base):
     __table_args__ = (
         Index("ix_raw_reports_site_kind_day", "site_id", "kind", "day"),
         Index("ix_raw_reports_import_batch", "import_batch_id"),
+        Index("ix_raw_reports_site_day_id", "site_id", "day", "id"),
     )
 
     id: Mapped[int] = mapped_column(
@@ -79,6 +81,41 @@ class RawReport(Base):
     server_received_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+
+
+class ReducerRun(Base):
+    __tablename__ = "reducer_runs"
+
+    site_id: Mapped[str] = mapped_column(String, primary_key=True)
+    day: Mapped[dt.date] = mapped_column(Date, primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    finished_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    process_peak_rss_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    raw_report_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    segment_rollup_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+
+class IngestReceipt(Base):
+    __tablename__ = "ingest_receipts"
+    __table_args__ = (Index("ix_ingest_receipts_expires", "expires_at"),)
+
+    event_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AccountUsage(Base):
+    __tablename__ = "account_usage"
+
+    account_key: Mapped[str] = mapped_column(String(320), primary_key=True)
+    site_id: Mapped[str] = mapped_column(String, primary_key=True)
+    period_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    period_end: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_basis: Mapped[str] = mapped_column(String(32), primary_key=True)
+    accepted_pageviews: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    first_recorded_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class DpWindow(Base):
@@ -310,6 +347,7 @@ class SitePlan(Base):
     stripe_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
     stripe_subscription_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_current_period_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stripe_current_period_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stripe_cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     billing_past_due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_grace_ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

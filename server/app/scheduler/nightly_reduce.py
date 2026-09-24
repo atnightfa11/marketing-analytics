@@ -4,10 +4,14 @@ import datetime as dt
 import hashlib
 import hmac
 import math
+import logging
+import resource
 import secrets
+import sys
+import time
 from collections import defaultdict
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text, tuple_, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..breakdown_logic import (
@@ -27,6 +31,7 @@ from ..models import (
     LdpReport,
     RawReport,
     ReducerWatermark,
+    ReducerRun,
     SegmentRollup,
     SiteEpsilonLog,
     SitePlan,
@@ -35,6 +40,13 @@ from ..segment_rollups import aggregate_reports_for_segments
 
 settings = get_settings()
 REDUCER_VERSION = "rollups-v1"
+logger = logging.getLogger(__name__)
+
+
+async def _lock_site_day(session: AsyncSession, site_id: str, day: dt.date) -> None:
+    if session.bind.dialect.name == "postgresql":
+        key = int.from_bytes(hashlib.sha256(f"reduce:{site_id}:{day}".encode()).digest()[:8], "big", signed=True)
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
 def _laplace_scale(epsilon: float) -> float:
@@ -383,6 +395,8 @@ async def _replace_breakdown_rollups(
                             )
                         )
                         inserted += 1
+                        if inserted % settings.REDUCER_WRITE_BATCH_SIZE == 0:
+                            await session.flush()
     return inserted
 
 
@@ -422,6 +436,8 @@ async def _replace_segment_rollups(
                 )
             )
             inserted += 1
+            if inserted % settings.REDUCER_WRITE_BATCH_SIZE == 0:
+                await session.flush()
     return inserted
 
 
@@ -526,9 +542,18 @@ async def purge_reduced_raw_reports(
 
     deleted_total = 0
     for watermark in watermarks:
+        await _lock_site_day(session, watermark.site_id, watermark.day)
+        await session.refresh(watermark)
+        if watermark.raw_purged_at is not None or watermark.reduced_at.replace(tzinfo=dt.timezone.utc) > cutoff:
+            continue
         if watermark.plan == "pro":
             continue
         if plan_map.get(watermark.site_id, "free") != watermark.plan:
+            continue
+        current_count = await session.scalar(select(func.count()).select_from(RawReport).where(
+            RawReport.site_id == watermark.site_id, RawReport.day == watermark.day,
+        ))
+        if current_count != watermark.raw_report_count:
             continue
         late_raw = (
             await session.execute(
@@ -536,7 +561,7 @@ async def purge_reduced_raw_reports(
                     RawReport.site_id == watermark.site_id,
                     RawReport.day == watermark.day,
                     RawReport.server_received_at > watermark.reduced_at,
-                )
+                ).limit(1)
             )
         ).scalars().first()
         if late_raw is not None:
@@ -553,10 +578,10 @@ async def purge_reduced_raw_reports(
 
         remaining = (
             await session.execute(
-                select(RawReport).where(
+                select(RawReport.id).where(
                     RawReport.site_id == watermark.site_id,
                     RawReport.day == watermark.day,
-                )
+                ).limit(1)
             )
         ).scalars().first()
         if remaining is None:
@@ -621,32 +646,37 @@ async def unreduced_recent_raw_days(
     return sorted(missing_days)
 
 
-async def reduce_reports(
+async def _reduce_site_day(
     session: AsyncSession,
-    days: int = 1,
-    start_day: dt.date | None = None,
-    end_day: dt.date | None = None,
+    site_id: str,
+    day: dt.date,
 ):
-    start, end = _resolve_day_window(days=days, start_day=start_day, end_day=end_day)
+    start = end = day
+    # A conservative receipt cutoff prevents purge from deleting concurrent arrivals.
+    reduced_at = dt.datetime.now(dt.timezone.utc)
     noise_secret = settings.AGGREGATE_DP_NOISE_SECRET or settings.SESSION_HMAC_SECRET
-
-    plan_map = {
-        rec.site_id: rec.plan
-        for rec in (await session.execute(select(SitePlan))).scalars().all()
-    }
-    site_timezones = {
-        rec.site_id: rec.timezone
-        for rec in (await session.execute(select(DashboardSite))).scalars().all()
-    }
+    plan_record = await session.get(SitePlan, site_id)
+    site_record = await session.get(DashboardSite, site_id)
+    plan_map = {site_id: plan_record.plan if plan_record else "free"}
+    site_timezones = {site_id: site_record.timezone if site_record else "UTC"}
 
     # Solo/internal free + Standard raw path
     raw_reports = (
         await session.execute(
             select(RawReport)
-            .where(RawReport.day >= start, RawReport.day <= end)
+            .where(RawReport.site_id == site_id, RawReport.day == day)
             .order_by(RawReport.server_received_at, RawReport.id)
+            .limit(settings.REDUCER_MAX_REPORTS_PER_SITE_DAY + 1)
         )
     ).scalars().all()
+    if len(raw_reports) > settings.REDUCER_MAX_REPORTS_PER_SITE_DAY:
+        raise RuntimeError("Site/day exceeds REDUCER_MAX_REPORTS_PER_SITE_DAY; outputs preserved")
+    purged = await session.scalar(select(ReducerWatermark.site_id).where(
+        ReducerWatermark.site_id == site_id, ReducerWatermark.day == day,
+        ReducerWatermark.raw_purged_at.is_not(None),
+    ).limit(1))
+    if purged and any(not report.payload.get("historical_import") for report in raw_reports):
+        raise RuntimeError("Cannot rebuild a purged day from partial raw history; outputs preserved")
     affected_site_plans = {
         (report.site_id, plan_map.get(report.site_id, "free"))
         for report in raw_reports
@@ -775,6 +805,7 @@ async def reduce_reports(
         )
 
     breakdown_counts_by_site_day: dict[tuple[str, str, dt.date], int] = defaultdict(int)
+    segment_count = 0
     for (site_id, plan, day), reports_for_day in raw_reports_by_site_day.items():
         breakdown_counts_by_site_day[(site_id, plan, day)] = await _replace_breakdown_rollups(
             session,
@@ -784,7 +815,7 @@ async def reduce_reports(
             reports=reports_for_day,
             site_timezone=site_timezones.get(site_id, "UTC"),
         )
-        await _replace_segment_rollups(
+        segment_count += await _replace_segment_rollups(
             session,
             site_id=site_id,
             plan=plan,
@@ -794,8 +825,12 @@ async def reduce_reports(
 
     # Pro LDP path
     ldp_reports = (
-        await session.execute(select(LdpReport).where(LdpReport.day >= start, LdpReport.day <= end))
+        await session.execute(select(LdpReport).where(
+            LdpReport.site_id == site_id, LdpReport.day == day,
+        ).limit(settings.REDUCER_MAX_REPORTS_PER_SITE_DAY + 1))
     ).scalars().all()
+    if len(ldp_reports) > settings.REDUCER_MAX_REPORTS_PER_SITE_DAY:
+        raise RuntimeError("Pro site/day exceeds REDUCER_MAX_REPORTS_PER_SITE_DAY; outputs preserved")
     pro_buckets: dict[tuple[str, str, dt.datetime], list[LdpReport]] = defaultdict(list)
     for report in ldp_reports:
         plan = plan_map.get(report.site_id, "free")
@@ -845,7 +880,6 @@ async def reduce_reports(
         else:
             session.add(SiteEpsilonLog(site_id=site_id, day=day, plan="standard", epsilon_total=epsilon_total))
 
-    reduced_at = dt.datetime.now(dt.timezone.utc)
     for (site_id, plan, day), raw_report_count in raw_counts_by_site_day.items():
         await _mark_reducer_success(
             session,
@@ -858,5 +892,56 @@ async def reduce_reports(
             reduced_at=reduced_at,
         )
 
+    return len(raw_reports) + len(ldp_reports), segment_count
+
+
+async def reduce_reports(
+    session: AsyncSession,
+    days: int = 1,
+    start_day: dt.date | None = None,
+    end_day: dt.date | None = None,
+):
+    start, end = _resolve_day_window(days=days, start_day=start_day, end_day=end_day)
+    # Keyset discovery avoids holding either all events or all jobs in memory.
+    jobs = union(
+        select(RawReport.site_id, RawReport.day).where(RawReport.day.between(start, end)),
+        select(LdpReport.site_id, LdpReport.day).where(LdpReport.day.between(start, end)),
+    ).subquery()
+    cursor = None
+    while True:
+        query = select(jobs.c.site_id, jobs.c.day).order_by(jobs.c.site_id, jobs.c.day).limit(1)
+        if cursor is not None:
+            query = query.where(tuple_(jobs.c.site_id, jobs.c.day) > cursor)
+        job = (await session.execute(query)).first()
+        if job is None:
+            break
+        site_id, day = job
+        started = time.monotonic()
+        raw_count = segment_count = 0
+        try:
+            await _lock_site_day(session, site_id, day)
+            raw_count, segment_count = await _reduce_site_day(session, site_id, day)
+            await session.merge(ReducerRun(
+                site_id=site_id, day=day, status="success",
+                finished_at=dt.datetime.now(dt.timezone.utc),
+                duration_seconds=time.monotonic() - started,
+                process_peak_rss_bytes=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * (1 if sys.platform == "darwin" else 1024),
+                raw_report_count=raw_count, segment_rollup_count=segment_count, error=None,
+            ))
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            await session.merge(ReducerRun(
+                site_id=site_id, day=day, status="failed",
+                finished_at=dt.datetime.now(dt.timezone.utc),
+                duration_seconds=time.monotonic() - started,
+                process_peak_rss_bytes=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * (1 if sys.platform == "darwin" else 1024),
+                raw_report_count=0, segment_rollup_count=0,
+                error=str(exc)[:1000] if isinstance(exc, RuntimeError) else type(exc).__name__,
+            ))
+            await session.commit()
+            raise
+        logger.info("Reduced site=%s day=%s reports=%d segments=%d seconds=%.3f", site_id, day, raw_count, segment_count, time.monotonic() - started)
+        cursor = (site_id, day)
     await purge_reduced_raw_reports(session)
     await session.commit()

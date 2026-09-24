@@ -23,6 +23,7 @@ from ..entitlements import effective_plan_for_record, normalize_plan
 from ..hostnames import hostname_from_request_headers
 from ..maintenance import maybe_purge_expired_upload_tokens
 from ..models import LdpReport, RawReport, SiteIpBlock, SitePlan, TokenNonce, UploadToken, get_session
+from ..usage_accounting import claim_event, insert_for, record_pageviews
 from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import CollectRequest, ShuffleRequest
 
@@ -577,23 +578,15 @@ async def shuffle_ingest(
     plan = await resolve_plan(claims.site_id, claims.plan, session)
     apply_rate_limit(claims.site_id, client_ip, request, plan)
 
-    nonce_exists = await session.execute(
-        select(TokenNonce).where(TokenNonce.jti == payload.nonce)
-    )
-    if nonce_exists.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replay detected")
-
-    session.add(
-        TokenNonce(
-            site_id=claims.site_id,
-            jti=payload.nonce,
-        )
-    )
-    await session.commit()
-
     delay = secrets.randbelow(settings.SHUFFLE_MAX_DELAY_SECONDS + 1) if settings.SHUFFLE_MAX_DELAY_SECONDS > 0 else 0
     if delay > 0:
         await asyncio.sleep(delay)
+
+    receipt = await session.execute(insert_for(session, TokenNonce).values(
+        site_id=claims.site_id, jti=payload.nonce,
+    ).on_conflict_do_nothing(index_elements=["jti"]).returning(TokenNonce.id))
+    if receipt.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Replay detected")
 
     server_received_at = dt.datetime.now(dt.timezone.utc)
     collect_payload = CollectRequest(
@@ -653,13 +646,20 @@ async def ingest_reports(
         else None
     )
 
+    accepted_at = dt.datetime.now(dt.timezone.utc)
+    accepted_pageviews = 0
     for report in collect.reports:
         if report.site_id != collect.site_id:
             continue
         payload_time = report.client_timestamp
         delta = (collect.server_received_at - payload_time).total_seconds()
-        if delta > settings.MAX_OUT_OF_ORDER_SECONDS:
+        if delta > settings.MAX_OUT_OF_ORDER_SECONDS or (accepted_at - payload_time).total_seconds() > settings.MAX_OUT_OF_ORDER_SECONDS or delta < -60:
             counters["events_dropped_late_total"].labels(site_id=collect.site_id).inc()
+            continue
+
+        if report.payload.get("historical_import") or report.payload.get("import_batch_id"):
+            continue
+        if not await claim_event(session, report, accepted_at=accepted_at, retry_seconds=settings.MAX_OUT_OF_ORDER_SECONDS):
             continue
 
         if effective_plan == "pro":
@@ -704,7 +704,10 @@ async def ingest_reports(
                 server_received_at=collect.server_received_at,
             )
         session.add(record)
+        if report.kind == "pageviews":
+            accepted_pageviews += 1
         counters["events_received_total"].labels(site_id=collect.site_id).inc()
+    await record_pageviews(session, collect.site_id, accepted_pageviews, accepted_at)
     await session.commit()
 
 

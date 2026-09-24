@@ -59,7 +59,140 @@ from app.geoip_db import ensure_geoip_database  # noqa: E402
 from app.scheduler.nightly_reduce import REDUCER_VERSION, _coherent_traffic_values, purge_reduced_raw_reports, reduce_reports, settings as reduce_settings, unreduced_recent_raw_days  # noqa: E402
 from app.scheduler.prophet_job import _forecast_fit_frame, _forecast_horizon_frame, _non_negative_forecast_interval, _with_anomaly_flags  # noqa: E402
 from app.segment_rollups import SegmentKey, aggregate_reports_for_segments  # noqa: E402
+from app.models import AccountUsage, ReducerRun, TokenNonce  # noqa: E402
+from app.usage_accounting import record_pageviews, usage_context  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_usage_dedupes_events_and_survives_raw_deletion(client):
+    from sqlalchemy import delete
+    site_id = "usage-dedupe"
+    now = datetime.now(timezone.utc)
+    event = {"site_id": site_id, "kind": "pageviews", "nonce": "page-1", "payload": {"url": "/"},
+             "epsilon_used": 1, "sampling_rate": 1, "client_timestamp": now.isoformat()}
+    payload = {"site_id": site_id, "server_received_at": now.isoformat(), "reports": [
+        event, event, {**event, "nonce": "session-1", "kind": "sessions"},
+        {**event, "nonce": "import-1", "payload": {"historical_import": True, "value": 1000}},
+        {**event, "nonce": "wrong-site", "site_id": "different-tenant"},
+        {**event, "nonce": "late", "client_timestamp": (now - timedelta(hours=1)).isoformat()},
+    ]}
+    for _ in range(2):
+        assert client.post("/api/collect", json=payload, headers=COLLECT_HEADERS).status_code == 202
+    async with async_session_factory() as session:
+        usage = (await session.execute(select(AccountUsage).where(AccountUsage.site_id == site_id))).scalar_one()
+        assert usage.accepted_pageviews == 1
+        assert usage.period_basis == "unassigned_calendar_month"
+        reports = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        assert len(reports) == 2
+        await session.execute(delete(RawReport).where(RawReport.site_id == site_id))
+        await session.commit()
+    assert client.post("/api/collect", json=payload, headers=COLLECT_HEADERS).status_code == 202
+    async with async_session_factory() as session:
+        assert (await session.execute(select(AccountUsage.accepted_pageviews).where(AccountUsage.site_id == site_id))).scalar_one() == 1
+        assert not (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+
+
+@pytest.mark.asyncio
+async def test_usage_pools_owner_sites_and_uses_exact_subscription_period(client, monkeypatch):
+    now = datetime.now(timezone.utc)
+    start, end = now - timedelta(days=10, hours=3), now + timedelta(days=20)
+    async with async_session_factory() as session:
+        session.add(DashboardUser(username="usage-owner", email="usage@example.com", password_hash="test"))
+        for site_id in ("usage-owned-a", "usage-owned-b"):
+            session.add(DashboardSite(site_id=site_id, owner_username="usage-owner", site_name=site_id,
+                                      allowed_origin="https://example.com", timezone="UTC"))
+        session.add(SitePlan(site_id="usage-owned-a", plan="standard", stripe_subscription_id="sub_usage",
+                             stripe_current_period_start=start, stripe_current_period_end=end))
+        await session.commit()
+        await record_pageviews(session, "usage-owned-a", 3, now)
+        await record_pageviews(session, "usage-owned-b", 4, now)
+        await session.commit()
+        rows = (await session.execute(select(AccountUsage).where(AccountUsage.account_key == "owner:usage-owner"))).scalars().all()
+        assert sum(row.accepted_pageviews for row in rows) == 7
+        assert all(row.period_basis == "stripe_period" for row in rows)
+        assert all(row.period_start.replace(tzinfo=timezone.utc) == start for row in rows)
+        _, _, _, basis = await usage_context(session, "usage-owned-b", end)
+        assert basis == "unassigned_calendar_month"  # Renewal not confirmed; never invent billable usage.
+        from app.routers.stripe_billing import billing_usage
+        from fastapi import HTTPException
+        monkeypatch.setattr(dashboard_auth_settings, "DASHBOARD_AUTH_ENABLED", True)
+        with pytest.raises(HTTPException) as forbidden:
+            await billing_usage(site_id="usage-owned-b", auth_claims={"sub": "other-user"}, session=session)
+        assert forbidden.value.status_code == 403
+        summary = await billing_usage(site_id="usage-owned-b", auth_claims={"sub": "usage-owner"}, session=session)
+        assert summary["periods"][0]["accepted_pageviews"] == 7
+
+
+@pytest.mark.asyncio
+async def test_ingest_failure_rolls_back_batch_receipt_and_usage(client, monkeypatch):
+    site_id = "usage-rollback"
+    token = client.post("/api/upload-token", json={"site_id": site_id, "allowed_origin": "https://example.com",
+                       "epsilon_budget": 1, "sampling_rate": 1}, headers=ADMIN_HEADERS).json()["token"]
+    payload = {"token": token, "nonce": "rollback-batch", "batch": [{
+        "site_id": site_id, "kind": "pageviews", "nonce": "rollback-event", "payload": {"url": "/"},
+        "epsilon_used": 1, "sampling_rate": 1, "client_timestamp": datetime.now(timezone.utc).isoformat(),
+    }]}
+    original = shuffle_router.record_pageviews
+    async def fail(*args, **kwargs):
+        raise RuntimeError("Injected accounting failure")
+    monkeypatch.setattr(shuffle_router, "record_pageviews", fail)
+    with pytest.raises(RuntimeError, match="Injected accounting"):
+        client.post("/api/shuffle", json=payload, headers={"Origin": "https://example.com"})
+    async with async_session_factory() as session:
+        assert (await session.execute(select(TokenNonce).where(TokenNonce.jti == "rollback-batch"))).scalar_one_or_none() is None
+        assert not (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+    monkeypatch.setattr(shuffle_router, "record_pageviews", original)
+    assert client.post("/api/shuffle", json=payload, headers={"Origin": "https://example.com"}).status_code == 202
+    async with async_session_factory() as session:
+        assert (await session.execute(select(AccountUsage.accepted_pageviews).where(AccountUsage.site_id == site_id))).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_bounded_reducer_preserves_purged_history_and_rolls_back_failure(client, monkeypatch):
+    from app.scheduler import nightly_reduce as reducer
+    site_id = "bounded-reducer"
+    old, recent = date(2026, 1, 2), date(2026, 1, 3)
+    await _set_site_plan(site_id, "free")
+    await _insert_dp_window(site_id=site_id, plan="free", metric="pageviews", value=90,
+                            window_start=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    await _insert_raw_report(site_id=site_id, kind="pageviews", payload={"url": "/"}, day=recent,
+                             server_received_at=datetime(2026, 1, 3, tzinfo=timezone.utc))
+    monkeypatch.setattr(reduce_settings, "RAW_REPORT_PURGE_ENABLED", False)
+    async with async_session_factory() as session:
+        await reduce_reports(session, start_day=old, end_day=recent)
+        await reduce_reports(session, start_day=old, end_day=recent)
+        values = (await session.execute(select(DpWindow.value).where(DpWindow.site_id == site_id,
+                  DpWindow.metric == "pageviews").order_by(DpWindow.window_start))).scalars().all()
+        assert values == [90, 1]
+    async def fail(*args, **kwargs):
+        raise RuntimeError("Injected segment failure")
+    monkeypatch.setattr(reducer, "_replace_segment_rollups", fail)
+    async with async_session_factory() as session:
+        with pytest.raises(RuntimeError, match="Injected segment"):
+            await reduce_reports(session, start_day=recent, end_day=recent)
+        values = (await session.execute(select(DpWindow.value).where(DpWindow.site_id == site_id,
+                  DpWindow.metric == "pageviews").order_by(DpWindow.window_start))).scalars().all()
+        assert values == [90, 1]
+        run = await session.get(ReducerRun, (site_id, recent))
+        assert run.status == "failed"
+        assert (await session.execute(select(ReducerWatermark.status).where(ReducerWatermark.site_id == site_id))).scalar_one() == "success"
+
+
+@pytest.mark.asyncio
+async def test_reducer_row_guard_preserves_existing_outputs(client, monkeypatch):
+    site_id, day = "bounded-overflow", date(2026, 1, 4)
+    await _set_site_plan(site_id, "free")
+    for index in range(2):
+        await _insert_raw_report(site_id=site_id, kind="pageviews", payload={"url": f"/{index}"}, day=day,
+                                 server_received_at=datetime(2026, 1, 4, tzinfo=timezone.utc))
+    await _insert_dp_window(site_id=site_id, plan="free", metric="pageviews", value=42,
+                            window_start=datetime(2026, 1, 4, tzinfo=timezone.utc))
+    monkeypatch.setattr(reduce_settings, "REDUCER_MAX_REPORTS_PER_SITE_DAY", 1)
+    async with async_session_factory() as session:
+        with pytest.raises(RuntimeError, match="exceeds"):
+            await reduce_reports(session, start_day=day, end_day=day)
+        assert (await session.execute(select(DpWindow.value).where(DpWindow.site_id == site_id))).scalar_one() == 42
 
 
 async def _prepare_database() -> None:

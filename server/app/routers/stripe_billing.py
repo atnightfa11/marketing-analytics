@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
-from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth
+from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
 from ..entitlements import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     ENDED_SUBSCRIPTION_STATUSES,
@@ -23,7 +23,7 @@ from ..entitlements import (
     normalize_plan,
     owned_site_count,
 )
-from ..models import DashboardSite, SitePlan, StripeEvent, get_session
+from ..models import AccountUsage, DashboardSite, SitePlan, StripeEvent, get_session
 from ..schemas import (
     BillingPortalSessionRequest,
     BillingPortalSessionResponse,
@@ -210,9 +210,11 @@ def _extra_site_item_state(data_object) -> tuple[str | None, int]:
 
 def _subscription_status_fields(data_object) -> dict:
     extra_item_id, extra_quantity = _extra_site_item_state(data_object)
+    base_item = next((item for item in _stripe_items(data_object) if _price_id_for_item(item) != settings.STRIPE_ADDITIONAL_SITE_PRICE_ID), {})
     return {
         "subscription_status": (_object_get(data_object, "status") or "").strip().lower() or None,
-        "current_period_end": _timestamp_to_datetime(_object_get(data_object, "current_period_end")),
+        "current_period_start": _timestamp_to_datetime(_object_get(data_object, "current_period_start") or _object_get(base_item, "current_period_start")),
+        "current_period_end": _timestamp_to_datetime(_object_get(data_object, "current_period_end") or _object_get(base_item, "current_period_end")),
         "cancel_at_period_end": bool(_object_get(data_object, "cancel_at_period_end", False)),
         "extra_site_subscription_item_id": extra_item_id,
         "extra_site_quantity": extra_quantity,
@@ -254,6 +256,7 @@ async def _upsert_site_plan(
     plan: str | None = None,
     subscription_status: str | None = None,
     current_period_end: dt.datetime | None = None,
+    current_period_start: dt.datetime | None = None,
     cancel_at_period_end: bool | None = None,
     extra_site_subscription_item_id: str | None = None,
     extra_site_quantity: int | None = None,
@@ -281,6 +284,8 @@ async def _upsert_site_plan(
             record.stripe_subscription_id = subscription_id
         if current_period_end is not None:
             record.stripe_current_period_end = current_period_end
+        if current_period_start is not None:
+            record.stripe_current_period_start = current_period_start
         if cancel_at_period_end is not None:
             record.stripe_cancel_at_period_end = cancel_at_period_end
         if extra_site_subscription_item_id is not None:
@@ -296,6 +301,7 @@ async def _upsert_site_plan(
             stripe_customer_id=customer_id,
             stripe_subscription_id=subscription_id,
             stripe_current_period_end=current_period_end,
+            stripe_current_period_start=current_period_start,
             stripe_cancel_at_period_end=bool(cancel_at_period_end),
             extra_site_subscription_item_id=extra_site_subscription_item_id,
             extra_site_quantity=max(0, int(extra_site_quantity or 0)),
@@ -467,6 +473,36 @@ async def create_checkout_session(
     return CheckoutSessionResponse(checkout_url=checkout_session.url, session_id=checkout_session.id)
 
 
+@router.get("/billing/usage")
+async def billing_usage(
+    site_id: str,
+    auth_claims: dict | None = Depends(require_dashboard_auth),
+    session: AsyncSession = Depends(get_session),
+):
+    site = await require_site_owner_with_db(site_id=site_id, claims=auth_claims, session=session)
+    rows = (await session.execute(select(AccountUsage).where(
+        AccountUsage.account_key == f"owner:{site.owner_username}",
+        AccountUsage.period_end > dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=62),
+    ).order_by(AccountUsage.period_start, AccountUsage.site_id))).scalars().all()
+    periods = {}
+    for row in rows:
+        key = (row.period_start, row.period_end, row.period_basis)
+        if key not in periods:
+            periods[key] = {"period_start": row.period_start, "period_end": row.period_end,
+                            "period_basis": row.period_basis, "accepted_pageviews": 0}
+        periods[key]["accepted_pageviews"] += row.accepted_pageviews
+    return {
+        "metric": "accepted_pageviews", "automatic_billing": False,
+        "history_note": "Counts start when usage accounting is deployed; incomplete periods are not billable.",
+        "periods": list(periods.values()),
+        "sites": [{
+            "site_id": row.site_id, "period_start": row.period_start, "period_end": row.period_end,
+            "period_basis": row.period_basis, "accepted_pageviews": row.accepted_pageviews,
+            "first_recorded_at": row.first_recorded_at,
+        } for row in rows],
+    }
+
+
 @router.get("/billing/status", response_model=BillingStatusResponse, status_code=status.HTTP_200_OK)
 async def billing_status(
     site_id: str,
@@ -581,6 +617,7 @@ async def stripe_webhook(request: Request, session: AsyncSession = Depends(get_s
             plan=resolved_plan,
             subscription_status=status_fields["subscription_status"],
             current_period_end=status_fields["current_period_end"],
+            current_period_start=status_fields["current_period_start"],
             cancel_at_period_end=status_fields["cancel_at_period_end"],
             extra_site_subscription_item_id=status_fields["extra_site_subscription_item_id"],
             extra_site_quantity=status_fields["extra_site_quantity"],

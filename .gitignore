@@ -36,3 +36,4 @@ server/.env
 dashboard/.env
 infra/*.tfstate
 infra/.terraform/
+exa-results/

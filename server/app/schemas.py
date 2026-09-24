@@ -162,6 +162,7 @@ class PublicSignupResponse(BaseModel):
 
 
 class PrivatizedEvent(BaseModel):
+    nonce: str | None = Field(default=None, min_length=1, max_length=128)
     site_id: str
     kind: Literal["uniques", "pageviews", "sessions", "conversions", "revenue"]
     payload: dict[str, Any]
