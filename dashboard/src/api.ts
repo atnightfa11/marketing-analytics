@@ -115,6 +115,7 @@ export interface BillingStatus {
   stripe_current_period_end?: string | null;
   cancel_at_period_end: boolean;
   can_manage_billing: boolean;
+  is_billing_owner: boolean;
   included_sites: number;
   owned_site_count: number;
   additional_site_count: number;
@@ -130,6 +131,43 @@ export interface BillingStatus {
 export interface CheckoutSessionResponse {
   checkout_url: string;
   session_id: string;
+}
+
+export interface CapacityRequest {
+  request_id: string;
+  additional_millions: number;
+  monthly_price_usd: number;
+  status: "pending" | "completed" | "declined";
+  created_at: string;
+}
+
+export interface BillingUsage {
+  plan: "free" | "standard" | "pro";
+  total_pageview_capacity: number | null;
+  included_pageviews: number | null;
+  purchased_additional_millions: number;
+  additional_million_price_usd: number;
+  can_request_capacity: boolean;
+  ambiguous_subscriptions: boolean;
+  automatic_billing: false;
+  current_period: {
+    period_start: string;
+    period_end: string;
+    period_basis: string;
+    accepted_pageviews: number;
+    first_recorded_at: string;
+  } | null;
+  pending_request: CapacityRequest | null;
+}
+
+export async function fetchBillingUsage(siteId: string, token?: string): Promise<BillingUsage> {
+  return (await api.get("/api/billing/usage", { params: { site_id: siteId }, headers: authHeaders(token) })).data;
+}
+
+export async function requestPageviewCapacity(siteId: string, additionalMillions: number, token?: string): Promise<CapacityRequest> {
+  return (await api.post("/api/billing/capacity-request", {
+    site_id: siteId, additional_millions: additionalMillions,
+  }, { headers: authHeaders(token) })).data;
 }
 
 export interface BillingPortalSessionResponse {

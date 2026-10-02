@@ -17,7 +17,10 @@ BASIC_FORECAST_METRICS = frozenset({"pageviews", "uniques", "sessions"})
 ADVANCED_FORECAST_METRICS = frozenset({"conversions", "revenue"})
 ALL_FORECAST_METRICS = BASIC_FORECAST_METRICS | ADVANCED_FORECAST_METRICS
 
-SOLO_AGGREGATE_RETENTION_DAYS = 365
+SOLO_MONTHLY_PAGEVIEWS = 100_000
+STANDARD_MONTHLY_PAGEVIEWS = 1_000_000
+PAGEVIEW_CAPACITY_BLOCK = 1_000_000
+PAGEVIEW_CAPACITY_PRICE_USD = 15
 STANDARD_INCLUDED_SITES = 3
 STANDARD_EXTRA_SITE_PRICE_USD = 5
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
@@ -125,7 +128,7 @@ def entitlements_for_plan(plan: str | None) -> PlanEntitlements:
         display_name="Solo",
         included_sites=1,
         extra_site_price_usd=None,
-        aggregate_retention_days=SOLO_AGGREGATE_RETENTION_DAYS,
+        aggregate_retention_days=None,
         historical_imports=False,
         anomaly_alerts=False,
         team_access=False,
@@ -176,8 +179,7 @@ def enforce_aggregate_retention(plan: str | None, start_day: dt.date, end_day: d
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"{entitlements.display_name} includes 12 months "
-                "of aggregate history. Upgrade to Standard for forever aggregate retention."
+                f"Requested dates exceed {entitlements.display_name}'s aggregate history policy."
             ),
         )
 

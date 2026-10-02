@@ -27,7 +27,7 @@ This checklist reflects what is live in production and what remains before broad
 - [ ] Complete one real Solo checkout and verify webhook links Stripe customer/subscription while `site_plan.plan` remains internal `free`.
 - [ ] Complete one real Standard checkout and verify webhook plan flip (`site_plan.plan=standard`) for the purchased site.
 - [ ] Confirm post-checkout UX on `https://validanalytics.io/signup/complete` (snippet shown, verification clear).
-- [x] Decide and encode launch entitlements: Solo ($10) for one site/basic forecasts/12-month aggregate history; Standard ($29) for 3 sites, imports, alerts, all forecast metrics, team/site access, and forever aggregate retention.
+- [x] Encode revised launch entitlements: Solo ($10) for one site/basic forecasts and continuing aggregate history; Standard ($29) for 3 sites, imports, alerts, all forecast metrics, team/site access, and continuing aggregate history. Capacity allowances are advisory (100K Solo / 1M pooled Standard); increases require customer approval.
 - [x] Wire Stripe checkout for Solo, Standard, and optional Early Adopter Standard prices.
 - [x] Update Stripe/account billing for $5/additional Standard sites after gates are verified.
 - [x] Add Stripe Customer Portal endpoint for self-serve payment method/cancel flows.

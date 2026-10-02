@@ -17,6 +17,7 @@ class Settings(BaseSettings):
   STRIPE_STANDARD_PRICE_ID: str | None = None
   STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID: str | None = None
   STRIPE_ADDITIONAL_SITE_PRICE_ID: str | None = None
+  STRIPE_PAGEVIEW_CAPACITY_PRICE_ID: str | None = None
   STRIPE_PRO_PRICE_ID: str | None = None
   STRIPE_CHECKOUT_SUCCESS_URL: str = Field(default="https://app.validanalytics.io/billing/success")
   STRIPE_CHECKOUT_CANCEL_URL: str = Field(default="https://app.validanalytics.io/billing/cancel")

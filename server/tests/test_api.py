@@ -37,6 +37,7 @@ os.environ["STRIPE_SOLO_PRICE_ID"] = ""
 os.environ["STRIPE_STANDARD_PRICE_ID"] = ""
 os.environ["STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID"] = ""
 os.environ["STRIPE_ADDITIONAL_SITE_PRICE_ID"] = ""
+os.environ["STRIPE_PAGEVIEW_CAPACITY_PRICE_ID"] = ""
 os.environ["STRIPE_PRO_PRICE_ID"] = ""
 
 ADMIN_HEADERS = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
@@ -62,6 +63,156 @@ from app.segment_rollups import SegmentKey, aggregate_reports_for_segments  # no
 from app.models import AccountUsage, ReducerRun, TokenNonce  # noqa: E402
 from app.usage_accounting import record_pageviews, usage_context  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_capacity_request_is_owner_only_durable_and_never_charges(client, monkeypatch):
+    from app import billing_capacity
+    from app.models import CapacityRequest
+    from app.routers import stripe_billing
+    from fastapi import BackgroundTasks, HTTPException
+    from app.schemas import CapacityRequestPayload
+    now = datetime.now(timezone.utc)
+    for name, value in (("STRIPE_SECRET_KEY", "sk_test_only"), ("STRIPE_WEBHOOK_SECRET", "whsec_test")):
+        monkeypatch.setattr(stripe_billing.settings, name, value)
+    monkeypatch.setattr(dashboard_auth_settings, "DASHBOARD_AUTH_ENABLED", True)
+    async with async_session_factory() as session:
+        for suffix in ("a", "b"):
+            session.add(DashboardSite(site_id=f"capacity-{suffix}", owner_username="capacity-owner",
+                                      site_name=suffix, allowed_origin="https://example.com", timezone="UTC"))
+        session.add(SitePlan(site_id="capacity-a", plan="standard", stripe_customer_id="cus_capacity",
+                             stripe_subscription_id="sub_capacity", stripe_subscription_status="active",
+                             stripe_current_period_start=now-timedelta(days=5), stripe_current_period_end=now+timedelta(days=25)))
+        await session.commit()
+        await record_pageviews(session, "capacity-a", 900_000, now)
+        await record_pageviews(session, "capacity-b", 200_000, now)
+        await session.commit()
+        payload = CapacityRequestPayload(site_id="capacity-b", additional_millions=2)
+        tasks = BackgroundTasks()
+        with pytest.raises(HTTPException) as forbidden:
+            await billing_capacity.request_capacity(payload, tasks, {"sub": "not-owner"}, session)
+        assert forbidden.value.status_code == 403
+        result = await billing_capacity.request_capacity(payload, tasks, {"sub": "capacity-owner"}, session)
+        repeated = await billing_capacity.request_capacity(payload, tasks, {"sub": "capacity-owner"}, session)
+        assert result == repeated
+        assert result["monthly_price_usd"] == 30
+        assert len(tasks.tasks) == 1
+        assert (await session.get(SitePlan, "capacity-a")).extra_pageview_quantity == 0
+        with pytest.raises(HTTPException) as conflict:
+            await billing_capacity.request_capacity(CapacityRequestPayload(site_id="capacity-a", additional_millions=3), tasks, {"sub": "capacity-owner"}, session)
+        assert conflict.value.status_code == 409
+        summary = await stripe_billing.billing_usage("capacity-b", {"sub": "capacity-owner"}, session)
+        assert summary["current_period"]["accepted_pageviews"] == 1_100_000
+        assert summary["total_pageview_capacity"] == 1_000_000
+        assert summary["automatic_billing"] is False
+        assert summary["pending_request"]["request_id"] == result["request_id"]
+        assert len((await session.execute(select(CapacityRequest).where(CapacityRequest.account_key == "owner:capacity-owner"))).scalars().all()) == 1
+    # Administration stays token-authenticated, independently of dashboard cookies.
+    assert client.get("/api/admin/billing/capacity-requests").status_code in {401, 403}
+    assert client.get("/api/admin/billing/capacity-requests", headers=ADMIN_HEADERS).status_code == 200
+    resolved = client.post("/api/admin/billing/capacity-requests/resolve", headers=ADMIN_HEADERS,
+                           json={"request_id": result["request_id"], "status": "declined"})
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "declined"
+
+
+@pytest.mark.asyncio
+async def test_billing_reads_do_not_mutate_stripe_and_existing_checkout_is_blocked(client, monkeypatch):
+    from app.routers import stripe_billing
+    from app.schemas import CheckoutSessionRequest, BillingPortalSessionRequest
+    from fastapi import HTTPException
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_WEBHOOK_SECRET", "whsec_test_only")
+    monkeypatch.setattr(dashboard_auth_settings, "DASHBOARD_AUTH_ENABLED", True)
+    def no_stripe(*args, **kwargs):
+        raise AssertionError("No Stripe mutation expected")
+    monkeypatch.setattr(stripe_billing.stripe.checkout.Session, "create", no_stripe)
+    monkeypatch.setattr(stripe_billing.stripe.SubscriptionItem, "create", no_stripe)
+    monkeypatch.setattr(stripe_billing.stripe.SubscriptionItem, "modify", no_stripe)
+    async with async_session_factory() as session:
+        session.add(DashboardSite(site_id="billing-solo-safe", owner_username="billing-safe", site_name="Solo",
+                                  allowed_origin="https://example.com", timezone="UTC"))
+        session.add(SitePlan(site_id="billing-solo-safe", plan="free", stripe_customer_id="cus_safe",
+                             stripe_subscription_id="sub_safe", stripe_subscription_status="active"))
+        await session.commit()
+        status = await stripe_billing.billing_status("billing-solo-safe", {"sub": "billing-safe"}, session)
+        assert status.can_manage_billing
+        assert status.is_billing_owner
+        assert status.aggregate_retention_days is None
+        with pytest.raises(HTTPException) as conflict:
+            await stripe_billing.create_checkout_session(CheckoutSessionRequest(site_id="billing-solo-safe", plan="standard"), {"sub": "billing-safe"}, session)
+        assert conflict.value.status_code == 409
+        with pytest.raises(HTTPException) as forbidden:
+            await stripe_billing.create_billing_portal_session(BillingPortalSessionRequest(site_id="billing-solo-safe"), {"sub": "member"}, session)
+        assert forbidden.value.status_code == 403
+        monkeypatch.setattr(stripe_billing.stripe.billing_portal.Session, "create",
+                            lambda **kwargs: SimpleNamespace(id="bps_safe", url="https://billing.stripe.test/session"))
+        portal = await stripe_billing.create_billing_portal_session(BillingPortalSessionRequest(site_id="billing-solo-safe"), {"sub": "billing-safe"}, session)
+        assert portal.session_id == "bps_safe"
+
+
+@pytest.mark.asyncio
+async def test_capacity_policy_handles_solo_provisional_and_ambiguous_accounts(client):
+    from app.billing_capacity import account_billing_record, capacity_policy
+    from app.routers.stripe_billing import billing_usage
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as session:
+        site = DashboardSite(site_id="capacity-provisional", owner_username="provisional-owner", site_name="Test",
+                             allowed_origin="https://example.com", timezone="UTC")
+        session.add(site)
+        await session.commit()
+        await record_pageviews(session, site.site_id, 120_000, now)
+        await session.commit()
+        result = await billing_usage(site.site_id, None, session)
+        assert result["total_pageview_capacity"] == 100_000
+        assert result["current_period"]["period_basis"] == "unassigned_calendar_month"
+        assert result["automatic_billing"] is False
+        assert not result["can_request_capacity"]
+        session.add(SitePlan(site_id=site.site_id, plan="standard", stripe_subscription_id="sub_amb_a", stripe_subscription_status="active"))
+        session.add(DashboardSite(site_id="capacity-ambiguous", owner_username=site.owner_username, site_name="Other",
+                                  allowed_origin="https://example.com", timezone="UTC"))
+        session.add(SitePlan(site_id="capacity-ambiguous", plan="standard", stripe_subscription_id="sub_amb_b", stripe_subscription_status="active"))
+        await session.commit()
+        record, ambiguous = await account_billing_record(session, site)
+        assert ambiguous
+        assert capacity_policy(record, None, ambiguous)["total_pageview_capacity"] is None
+        assert not capacity_policy(record, None, ambiguous)["can_request_capacity"]
+
+
+@pytest.mark.asyncio
+async def test_subscription_price_overrides_old_metadata_and_recognizes_capacity(client, monkeypatch):
+    from app.routers import stripe_billing
+    for name, value in (("STRIPE_SECRET_KEY", "sk_test_only"), ("STRIPE_WEBHOOK_SECRET", "whsec_test"),
+                        ("STRIPE_STANDARD_PRICE_ID", "price_standard_test"),
+                        ("STRIPE_PAGEVIEW_CAPACITY_PRICE_ID", "price_capacity_test")):
+        monkeypatch.setattr(stripe_billing.settings, name, value)
+    event = {"id": "evt_capacity_plan_change", "type": "customer.subscription.updated", "data": {"object": {
+        "id": "sub_new_standard", "customer": "cus_new_standard", "status": "active",
+        "metadata": {"site_id": "new-standard-capacity", "plan": "free"},
+        "items": {"data": [
+            {"id": "si_capacity", "price": {"id": "price_capacity_test"}, "quantity": 2},
+            {"id": "si_base", "price": {"id": "price_standard_test"}, "quantity": 1,
+             "current_period_start": 1790812800, "current_period_end": 1793491200},
+        ]},
+    }}}
+    async def no_sync(*args):
+        pass
+    monkeypatch.setattr(stripe_billing, "_sync_extra_site_subscription_item", no_sync)
+    monkeypatch.setattr(stripe_billing.stripe.Webhook, "construct_event", lambda **_: event)
+    response = client.post("/api/stripe/webhook", content=b"{}", headers={"Stripe-Signature": "mock"})
+    assert response.status_code == 200
+    assert client.post("/api/stripe/webhook", content=b"{}", headers={"Stripe-Signature": "mock"}).json()["status"] == "duplicate"
+    async with async_session_factory() as session:
+        record = await session.get(SitePlan, "new-standard-capacity")
+        assert record.plan == "standard"
+        assert record.extra_pageview_quantity == 2
+        assert record.stripe_current_period_start is not None
+        from app.billing_capacity import capacity_policy
+        assert capacity_policy(record, None, False)["total_pageview_capacity"] == 3_000_000
+    for value in (0, -1, 101, 1.5, True):
+        from app.schemas import CapacityRequestPayload
+        with pytest.raises(ValueError):
+            CapacityRequestPayload(site_id="site", additional_millions=value)
 
 
 @pytest.mark.asyncio
@@ -4007,7 +4158,7 @@ async def test_aggregate_respects_requested_date_window(client):
 
 
 @pytest.mark.asyncio
-async def test_solo_aggregate_history_is_limited_to_12_months(client):
+async def test_solo_aggregate_history_is_available_beyond_12_months(client):
     site_id = "site-solo-retention"
     old_start = (datetime.now(timezone.utc) - timedelta(days=400)).replace(hour=12, minute=0, second=0, microsecond=0)
     await _set_site_plan(site_id, "free")
@@ -4019,7 +4170,7 @@ async def test_solo_aggregate_history_is_limited_to_12_months(client):
         window_start=old_start,
     )
 
-    blocked = client.get(
+    solo_history = client.get(
         "/api/aggregate",
         params={
             "site_id": site_id,
@@ -4029,8 +4180,12 @@ async def test_solo_aggregate_history_is_limited_to_12_months(client):
             "end": old_start.date().isoformat(),
         },
     )
-    assert blocked.status_code == 403
-    assert "12 months" in blocked.json()["detail"]
+    assert solo_history.status_code == 200
+    assert solo_history.json()["windows"][0]["value"] == 9.0
+    from app.entitlements import enforce_aggregate_retention, retention_cutoff_day
+    assert retention_cutoff_day("free") is None
+    assert retention_cutoff_day("solo") is None
+    enforce_aggregate_retention("solo", old_start.date(), old_start.date())
 
     await _set_site_plan(site_id, "standard")
     await _insert_dp_window(
@@ -4922,7 +5077,8 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
             json={"site_id": site_id, "plan": "standard"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert authorized_checkout.status_code in {502, 503}
+        # Access overrides do not establish billing ownership for unclaimed sites.
+        assert authorized_checkout.status_code == 404
         authorized_billing = client.get(
             "/api/billing/status",
             params={"site_id": site_id},
@@ -4934,7 +5090,7 @@ async def test_dashboard_auth_can_gate_metrics_endpoints(client):
         assert billing_body["plan"] == "free"
         assert billing_body["display_plan"] == "Solo"
         assert billing_body["included_sites"] == 1
-        assert billing_body["aggregate_retention_days"] == 365
+        assert billing_body["aggregate_retention_days"] is None
         assert billing_body["can_import_historical_data"] is False
         assert billing_body["can_manage_anomaly_alerts"] is False
         assert billing_body["can_manage_site_access"] is False
@@ -6120,6 +6276,10 @@ async def test_checkout_rejects_disallowed_redirect_url(client, monkeypatch):
 
     site_id = "site-redirect-allowlist"
     await _set_site_plan(site_id, "free")
+    async with async_session_factory() as session:
+        session.add(DashboardSite(site_id=site_id, owner_username="redir-owner", site_name="Redirect test",
+                                  allowed_origin="https://example.com", timezone="UTC"))
+        await session.commit()
 
     original_auth = (
         dashboard_auth_settings.DASHBOARD_AUTH_ENABLED,

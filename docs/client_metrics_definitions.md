@@ -107,7 +107,7 @@ Current caveats:
 Quality notes:
 
 - Pro/LDP metrics publish only after minimum volume and SNR checks in reducers/routes.
-- Solo served aggregate history is limited to 12 months. Standard aggregate retention is intended to be forever.
+- Solo and Standard retain aggregate history while subscribed; neither has a 12-month read cutoff. Queries still have bounded date ranges. Raw processing retention is separate and unchanged.
 - Standard aggregate windows publish daily. Independently noised Pageviews, Sessions, and Visitors are projected onto the valid order `Pageviews >= Sessions >= Visitors`; deterministic post-processing preserves the central-DP guarantee while avoiding impossible-looking output on small sites.
 - Dashboard date labels preserve the date stamped on full-day aggregate windows. Shorter free/live windows are grouped into days using the site's reporting timezone.
 - `conversion_rate`, `bounce_rate`, and `visit_duration` are derived from already published aggregates.

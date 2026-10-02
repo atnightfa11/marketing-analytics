@@ -43,7 +43,9 @@ This contract defines what each analytics table is allowed to contain and how it
 
 ## Plan Retention Boundary
 
-Solo serves 12 months of durable aggregate analytics history. Standard is intended for forever aggregate retention. The current database value `free` is the internal Solo representation.
+Solo and Standard retain durable aggregate analytics history while subscribed. There is no plan-specific age cutoff on aggregate reads; per-request range limits remain. Raw-processing purge is unchanged. Cancellation/deletion policy is separate; this change does not implement a new deletion schedule or restore previously deleted data. The current database value `free` is the internal Solo representation.
+
+`capacity_requests` contains owner account key, site/subscription reference, requested additional millions, quoted monthly increment, request status, and timestamps. It is billing administration material, not visitor analytics. Requests contain no event payloads or visitor identifiers and are owner-only or admin-token-only. Resolution never authorizes a payment by itself. Retain with account billing records under the account-deletion policy.
 
 ## Differential Privacy Claim Boundary
 

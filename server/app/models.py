@@ -118,6 +118,24 @@ class AccountUsage(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CapacityRequest(Base):
+    __tablename__ = "capacity_requests"
+    __table_args__ = (
+        Index("ix_capacity_requests_pending", "account_key", unique=True,
+              postgresql_where=text("status = 'pending'"), sqlite_where=text("status = 'pending'")),
+    )
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    account_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    site_id: Mapped[str] = mapped_column(String, nullable=False)
+    subscription_id: Mapped[str] = mapped_column(String, nullable=False)
+    additional_millions: Mapped[int] = mapped_column(Integer, nullable=False)
+    monthly_price_usd: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
+    resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class DpWindow(Base):
     __tablename__ = "dp_windows"
     __table_args__ = (
@@ -348,6 +366,7 @@ class SitePlan(Base):
     stripe_subscription_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_current_period_end: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stripe_current_period_start: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_pageview_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     stripe_cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     billing_past_due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_grace_ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

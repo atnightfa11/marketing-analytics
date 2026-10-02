@@ -12,6 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import Settings, get_settings
+from ..billing_capacity import (
+    account_billing_record, capacity_policy, pending_capacity_request, request_summary,
+    router as capacity_router,
+)
+from ..usage_accounting import utc
 from ..dashboard_auth import enforce_site_access_with_db, require_dashboard_auth, require_site_owner_with_db
 from ..entitlements import (
     ACTIVE_SUBSCRIPTION_STATUSES,
@@ -33,6 +38,7 @@ from ..schemas import (
 )
 
 router = APIRouter(tags=["billing"])
+router.include_router(capacity_router)
 settings: Settings = get_settings()
 logger = logging.getLogger("marketing-analytics.billing")
 
@@ -185,10 +191,11 @@ def _price_id_for_item(item) -> str | None:
 
 
 def _base_subscription_price_id(data_object) -> str | None:
-    extra_price_id = settings.STRIPE_ADDITIONAL_SITE_PRICE_ID
+    base_prices = {price for price in (settings.STRIPE_SOLO_PRICE_ID, settings.STRIPE_STANDARD_PRICE_ID,
+                   settings.STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID, settings.STRIPE_PRO_PRICE_ID) if price}
     for item in _stripe_items(data_object):
         price_id = _price_id_for_item(item)
-        if price_id and price_id != extra_price_id:
+        if price_id in base_prices:
             return price_id
     return None
 
@@ -210,7 +217,12 @@ def _extra_site_item_state(data_object) -> tuple[str | None, int]:
 
 def _subscription_status_fields(data_object) -> dict:
     extra_item_id, extra_quantity = _extra_site_item_state(data_object)
-    base_item = next((item for item in _stripe_items(data_object) if _price_id_for_item(item) != settings.STRIPE_ADDITIONAL_SITE_PRICE_ID), {})
+    base_price_id = _base_subscription_price_id(data_object)
+    base_item = next((item for item in _stripe_items(data_object) if _price_id_for_item(item) == base_price_id), {})
+    capacity_quantity = sum(max(0, int(_object_get(item, "quantity", 0) or 0))
+                            for item in _stripe_items(data_object)
+                            if settings.STRIPE_PAGEVIEW_CAPACITY_PRICE_ID
+                            and _price_id_for_item(item) == settings.STRIPE_PAGEVIEW_CAPACITY_PRICE_ID)
     return {
         "subscription_status": (_object_get(data_object, "status") or "").strip().lower() or None,
         "current_period_start": _timestamp_to_datetime(_object_get(data_object, "current_period_start") or _object_get(base_item, "current_period_start")),
@@ -218,6 +230,7 @@ def _subscription_status_fields(data_object) -> dict:
         "cancel_at_period_end": bool(_object_get(data_object, "cancel_at_period_end", False)),
         "extra_site_subscription_item_id": extra_item_id,
         "extra_site_quantity": extra_quantity,
+        "extra_pageview_quantity": capacity_quantity,
     }
 
 
@@ -260,6 +273,7 @@ async def _upsert_site_plan(
     cancel_at_period_end: bool | None = None,
     extra_site_subscription_item_id: str | None = None,
     extra_site_quantity: int | None = None,
+    extra_pageview_quantity: int | None = None,
     commit: bool = True,
 ) -> SitePlan | None:
     record = None
@@ -292,6 +306,8 @@ async def _upsert_site_plan(
             record.extra_site_subscription_item_id = extra_site_subscription_item_id
         if extra_site_quantity is not None:
             record.extra_site_quantity = max(0, int(extra_site_quantity))
+        if extra_pageview_quantity is not None:
+            record.extra_pageview_quantity = max(0, int(extra_pageview_quantity))
         _apply_subscription_status(record, subscription_status, now=now)
         record.updated_at = now
     elif site_id:
@@ -305,6 +321,7 @@ async def _upsert_site_plan(
             stripe_cancel_at_period_end=bool(cancel_at_period_end),
             extra_site_subscription_item_id=extra_site_subscription_item_id,
             extra_site_quantity=max(0, int(extra_site_quantity or 0)),
+            extra_pageview_quantity=max(0, int(extra_pageview_quantity or 0)),
             created_at=now,
             updated_at=now,
         )
@@ -437,9 +454,12 @@ async def create_checkout_session(
     auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
-    await enforce_site_access_with_db(site_id=payload.site_id, claims=auth_claims, session=session)
+    site = await require_site_owner_with_db(site_id=payload.site_id, claims=auth_claims, session=session)
     _require_stripe_settings()
     stripe.api_key = settings.STRIPE_SECRET_KEY
+    existing_subscription, ambiguous = await account_billing_record(session, site)
+    if existing_subscription or ambiguous:
+        raise HTTPException(409, "Use Manage billing to change an existing subscription; a second subscription will not be created")
     checkout_plan = payload.plan
     stored_plan = _stored_plan_for_checkout_plan(checkout_plan)
     price_id = _price_id_for_checkout_plan(checkout_plan)
@@ -449,7 +469,8 @@ async def create_checkout_session(
     cancel_url = _safe_redirect_url(payload.cancel_url, settings.STRIPE_CHECKOUT_CANCEL_URL)
 
     # Ensure the site has a baseline plan row before Stripe events arrive.
-    await _upsert_site_plan(session, site_id=payload.site_id, plan="free")
+    if await session.get(SitePlan, payload.site_id) is None:
+        await _upsert_site_plan(session, site_id=payload.site_id, plan="free")
     line_items = [{"price": price_id, "quantity": 1}]
     extra_quantity = await _extra_site_quantity_for_site(session, payload.site_id, stored_plan) if stored_plan in {"standard", "pro"} else 0
     if extra_quantity > 0:
@@ -480,18 +501,35 @@ async def billing_usage(
     session: AsyncSession = Depends(get_session),
 ):
     site = await require_site_owner_with_db(site_id=site_id, claims=auth_claims, session=session)
+    now = dt.datetime.now(dt.timezone.utc)
+    billing_record, ambiguous = await account_billing_record(session, site)
+    policy = capacity_policy(billing_record, await session.get(SitePlan, site_id), ambiguous)
     rows = (await session.execute(select(AccountUsage).where(
         AccountUsage.account_key == f"owner:{site.owner_username}",
-        AccountUsage.period_end > dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=62),
+        AccountUsage.period_end > now - dt.timedelta(days=62),
     ).order_by(AccountUsage.period_start, AccountUsage.site_id))).scalars().all()
     periods = {}
     for row in rows:
         key = (row.period_start, row.period_end, row.period_basis)
         if key not in periods:
             periods[key] = {"period_start": row.period_start, "period_end": row.period_end,
-                            "period_basis": row.period_basis, "accepted_pageviews": 0}
+                            "period_basis": row.period_basis, "accepted_pageviews": 0,
+                            "first_recorded_at": row.first_recorded_at}
         periods[key]["accepted_pageviews"] += row.accepted_pageviews
+        periods[key]["first_recorded_at"] = min(periods[key]["first_recorded_at"], row.first_recorded_at)
+    current = None
+    if billing_record and billing_record.stripe_current_period_start and billing_record.stripe_current_period_end:
+        current = next((period for period in periods.values() if period["period_basis"] == "stripe_period"
+                        and utc(period["period_start"]) == utc(billing_record.stripe_current_period_start)
+                        and utc(period["period_end"]) == utc(billing_record.stripe_current_period_end)
+                        and utc(period["period_start"]) <= now < utc(period["period_end"])), None)
+    if current is None:
+        current = next((period for period in periods.values()
+                        if period["period_basis"] == "unassigned_calendar_month"
+                        and utc(period["period_start"]) <= now < utc(period["period_end"])), None)
+    pending = await pending_capacity_request(session, f"owner:{site.owner_username}")
     return {
+        **policy, "current_period": current, "pending_request": request_summary(pending),
         "metric": "accepted_pageviews", "automatic_billing": False,
         "history_note": "Counts start when usage accounting is deployed; incomplete periods are not billable.",
         "periods": list(periods.values()),
@@ -511,10 +549,11 @@ async def billing_status(
 ):
     await enforce_site_access_with_db(site_id=site_id, claims=auth_claims, session=session)
     record = await session.get(SitePlan, site_id)
-    if record and settings.STRIPE_SECRET_KEY and settings.STRIPE_ADDITIONAL_SITE_PRICE_ID:
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        await _sync_extra_site_subscription_item(session, record)
-        await session.commit()
+    site = await session.get(DashboardSite, site_id)
+    is_owner = bool(site and (not settings.DASHBOARD_AUTH_ENABLED or
+                             (auth_claims or {}).get("sub", "").strip().lower() == site.owner_username.strip().lower()))
+    billing_record, ambiguous = await account_billing_record(session, site) if site else (None, False)
+    portal_record = billing_record or record
     plan = effective_plan_for_record(record)
     entitlements = entitlements_for_plan(plan)
     has_subscription = bool(record and record.stripe_subscription_id)
@@ -531,7 +570,9 @@ async def billing_status(
         billing_grace_ends_at=record.billing_grace_ends_at if record else None,
         stripe_current_period_end=record.stripe_current_period_end if record else None,
         cancel_at_period_end=bool(record.stripe_cancel_at_period_end) if record else False,
-        can_manage_billing=bool(has_subscription and settings.STRIPE_SECRET_KEY),
+        can_manage_billing=bool(is_owner and not ambiguous and portal_record and portal_record.stripe_customer_id
+                                and settings.STRIPE_SECRET_KEY),
+        is_billing_owner=is_owner,
         included_sites=entitlements.included_sites,
         owned_site_count=site_count,
         additional_site_count=billable_additional_sites,
@@ -551,10 +592,14 @@ async def create_billing_portal_session(
     auth_claims: dict | None = Depends(require_dashboard_auth),
     session: AsyncSession = Depends(get_session),
 ):
-    await enforce_site_access_with_db(site_id=payload.site_id, claims=auth_claims, session=session)
+    site = await require_site_owner_with_db(site_id=payload.site_id, claims=auth_claims, session=session)
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Stripe is not configured")
-    record = await session.get(SitePlan, payload.site_id)
+    record, ambiguous = await account_billing_record(session, site)
+    if ambiguous:
+        raise HTTPException(409, "Multiple subscriptions are linked to this owner. Contact support before changing billing")
+    if record is None:
+        record = await session.get(SitePlan, payload.site_id)
     if not record or not record.stripe_customer_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No Stripe customer is linked to this site")
     stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -607,7 +652,10 @@ async def stripe_webhook(request: Request, session: AsyncSession = Depends(get_s
         price_id = _base_subscription_price_id(data_object)
         metadata = data_object.get("metadata") or {}
         plan_from_metadata = _normalize_plan(metadata.get("plan"))
-        resolved_plan = plan_from_metadata or _plan_for_price_id(price_id)
+        # Portal upgrades retain old subscription metadata; the purchased price is authoritative.
+        resolved_plan = _plan_for_price_id(price_id) if price_id else plan_from_metadata
+        if resolved_plan is None:
+            raise HTTPException(409, "Subscription has no recognized plan price")
         status_fields = _subscription_status_fields(data_object)
         record = await _upsert_site_plan(
             session,
@@ -621,6 +669,7 @@ async def stripe_webhook(request: Request, session: AsyncSession = Depends(get_s
             cancel_at_period_end=status_fields["cancel_at_period_end"],
             extra_site_subscription_item_id=status_fields["extra_site_subscription_item_id"],
             extra_site_quantity=status_fields["extra_site_quantity"],
+            extra_pageview_quantity=status_fields["extra_pageview_quantity"],
             commit=False,
         )
         await _sync_extra_site_subscription_item(session, record)

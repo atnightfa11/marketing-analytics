@@ -1,6 +1,6 @@
 # Bounded reduction and accepted usage
 
-Implemented scope: launch steps 1 and 2 (reducer safety/measurement and usage accounting). Pricing, entitlements, automatic charges, customer notices, and dashboard usage bars are not changed by this release.
+Initial scope (September 24): reducer safety/measurement and usage accounting. The October 1 follow-up adds the owner usage panel, removes Solo's history age gate, and records manually reviewed capacity requests. It does not introduce automatic charges, traffic cutoffs, or scheduled overage emails. See `pricing_and_entitlements.md` for the current flow.
 
 ## Migration and rollout
 
@@ -37,7 +37,9 @@ When exactly one active Stripe period is known for an owner, counters use its ex
 
 Counters begin at deployment. An initial partial period cannot be reconstructed from noisy dashboard totals or purged raw data. Delayed renewal webhooks can also produce provisional counts; these require reconciliation before automated enforcement. No usage-based charging or enforcement is enabled in this pass.
 
-Owner-only `GET /api/billing/usage?site_id=...` returns recent per-site counters and account totals grouped by period/basis, with first-recorded timestamps and explicit partial-history wording. It does not expose account-wide usage to invited site members. Settings UI is the next pass.
+Owner-only `GET /api/billing/usage?site_id=...` returns recent per-site counters and account totals grouped by period/basis, with first-recorded timestamps and explicit partial-history wording. It does not expose account-wide usage to invited site members. Settings > Plan & billing now displays these advisory counters and a request-capacity flow.
+
+Apply `2026_10_01_capacity_requests` before deploying the October follow-up API/worker. It adds `capacity_requests` and `site_plan.extra_pageview_quantity`; no visitor data or aggregate backfill is needed. A new request is persisted before attempting an ops notification. Poll the admin pending-request endpoint as a fallback if delivery fails. A request is for an increment to existing capacity, not a replacement total. Agree any price/date/proration with the owner before adding quantity in Stripe, then mark the request resolved. Do not mark it completed until the approved Stripe change and webhook have succeeded.
 
 ## Before enforcement
 

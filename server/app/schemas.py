@@ -69,16 +69,27 @@ class BillingStatusResponse(BaseModel):
     stripe_current_period_end: dt.datetime | None = None
     cancel_at_period_end: bool = False
     can_manage_billing: bool = False
+    is_billing_owner: bool = False
     included_sites: int = 1
     owned_site_count: int = 1
     additional_site_count: int = 0
     extra_site_quantity: int = 0
     extra_site_price_usd: int | None = None
-    aggregate_retention_days: int | None = 365
+    aggregate_retention_days: int | None = None
     can_import_historical_data: bool = False
     can_manage_anomaly_alerts: bool = False
     can_manage_site_access: bool = False
     forecast_metrics: list[str] = Field(default_factory=list)
+
+
+class CapacityRequestPayload(BaseModel):
+    site_id: str
+    additional_millions: int = Field(ge=1, le=100, strict=True)
+
+
+class CapacityRequestResolution(BaseModel):
+    request_id: str
+    status: Literal["completed", "declined"]
 
 
 class SdkBootstrapRequest(BaseModel):

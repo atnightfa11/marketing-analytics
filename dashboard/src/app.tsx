@@ -1,4 +1,5 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BillingUsagePanel } from "./components/BillingUsagePanel";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Area,
@@ -4291,14 +4292,16 @@ const Settings: React.FC = () => {
   const [activeSettingsPanel, setActiveSettingsPanel] = useState<SettingsPanel>(() => {
     if (typeof window === "undefined") return "general";
     const initialHash = window.location.hash.replace(/^#/, "");
-    return isSettingsPanel(initialHash) ? initialHash : "general";
+    const queryPanel = new URLSearchParams(window.location.search).get("panel") ?? "";
+    return isSettingsPanel(initialHash) ? initialHash : isSettingsPanel(queryPanel) ? queryPanel : "general";
   });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onHashChange = () => {
       const nextHash = window.location.hash.replace(/^#/, "");
-      if (isSettingsPanel(nextHash)) setActiveSettingsPanel(nextHash);
+      const queryPanel = new URLSearchParams(window.location.search).get("panel") ?? "";
+      setActiveSettingsPanel(isSettingsPanel(nextHash) ? nextHash : isSettingsPanel(queryPanel) ? queryPanel : "general");
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
@@ -4985,11 +4988,11 @@ const Settings: React.FC = () => {
 
   const billingCheckoutPlan: "solo" | "standard" | "early_adopter_standard" | "pro" =
     billingPlan === "free" && !hasSubscription ? "solo" : billingPlan === "pro" ? "pro" : "standard";
-  const canOpenBillingPortal = Boolean(billingDetails?.can_manage_billing && hasSubscription);
-  const billingPrimaryOpensPortal = canOpenBillingPortal && (billingPlan === "standard" || billingPlan === "pro");
+  const canOpenBillingPortal = Boolean(billingDetails?.can_manage_billing);
+  const billingPrimaryOpensPortal = canOpenBillingPortal;
   const billingActionLabel =
     billingPrimaryOpensPortal
-      ? "Manage Billing"
+      ? billingPlan === "free" ? "Manage plan & billing" : "Manage Billing"
       : billingPlan === "free"
         ? hasSubscription
           ? "Upgrade To Standard"
@@ -4998,7 +5001,7 @@ const Settings: React.FC = () => {
           ? "Start Standard Checkout"
           : "Manage Pro Subscription";
 
-  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading";
+  const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading" || !billingDetails?.is_billing_owner;
 
   const billingPaymentNotice = (() => {
     if (!billingDetails || billingDetails.payment_status === "ok") return null;
@@ -6025,11 +6028,12 @@ const Settings: React.FC = () => {
                   </div>
                   <ul className="mt-2 grid gap-1 text-[11px] text-gray-600" style={fontBody}>
                     <li>3 sites included, then $5 per additional site</li>
-                    <li>Historical imports and forever aggregate retention</li>
+                    <li>Historical imports and 1M monthly pageviews pooled across your sites</li>
                     <li>Anomaly alerts for Slack and email</li>
                     <li>All forecast metrics when enough history is available</li>
                     <li>Team/site access management</li>
                   </ul>
+                  <p className="mt-2 text-[11px] text-gray-500">Both Solo and Standard retain aggregate history while subscribed. No automatic overage charges.</p>
                   {billingDetails ? (
                     <div className="mt-3 text-[11px] text-gray-500" style={fontBody}>
                       This owner has {formatNumber(billingDetails.owned_site_count)} site
@@ -6043,6 +6047,9 @@ const Settings: React.FC = () => {
                   ) : null}
                 </div>
               </div>
+              {activeSettingsPanel === "billing" && billingDetails?.is_billing_owner && (
+                <BillingUsagePanel key={siteId} siteId={siteId} token={token ?? undefined} />
+              )}
             </section>
 
             <section id="imports" className={`${activeSettingsPanel === "imports" ? "" : "hidden"} scroll-mt-6 border border-gray-200 bg-white p-5`}>
