@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import zlib from "node:zlib";
+const fs = require("node:fs");
+const zlib = require("node:zlib");
 
 const [, , bundlePath] = process.argv;
 

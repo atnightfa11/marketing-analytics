@@ -7,11 +7,11 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import require_dashboard_auth
-from ..dependencies import require_site_access
-from ..entitlements import effective_plan_for_record
+from ..dependencies import get_site_plan, require_site_access
 from ..forecast_freshness import forecast_is_fresh
 from ..forecast_status import latest_forecasts_by_metric
-from ..models import DpWindow, RawReport, ReducerWatermark, SiteApiKey, SitePlan, get_session
+from ..report_history import published_plan_clause
+from ..models import DpWindow, RawReport, ReducerWatermark, SiteApiKey, get_session
 from ..schemas import SiteHealthCheck, SiteHealthResponse
 
 router = APIRouter(prefix="/site-health", tags=["site-health"])
@@ -29,8 +29,7 @@ async def get_site_health(
     now = dt.datetime.now(dt.timezone.utc)
     cutoff = now - dt.timedelta(minutes=lookback_minutes)
 
-    plan_record = await session.get(SitePlan, site_id)
-    plan = effective_plan_for_record(plan_record)
+    plan = await get_site_plan(site_id, session)
 
     active_site_keys = int(
         (
@@ -84,7 +83,7 @@ async def get_site_health(
     latest_watermark = (
         await session.execute(
             select(ReducerWatermark)
-            .where(ReducerWatermark.site_id == site_id, ReducerWatermark.plan == plan)
+            .where(ReducerWatermark.site_id == site_id, published_plan_clause(ReducerWatermark, plan))
             .order_by(desc(ReducerWatermark.day), desc(ReducerWatermark.reduced_at))
             .limit(1)
         )
@@ -93,7 +92,7 @@ async def get_site_health(
     latest_window = (
         await session.execute(
             select(DpWindow)
-            .where(DpWindow.site_id == site_id, DpWindow.plan == plan)
+            .where(DpWindow.site_id == site_id, published_plan_clause(DpWindow, plan))
             .order_by(desc(DpWindow.window_start), desc(DpWindow.published_at))
             .limit(1)
         )

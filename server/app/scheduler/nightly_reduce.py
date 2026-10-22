@@ -34,7 +34,6 @@ from ..models import (
     ReducerRun,
     SegmentRollup,
     SiteEpsilonLog,
-    SitePlan,
 )
 from ..segment_rollups import aggregate_reports_for_segments
 
@@ -535,11 +534,6 @@ async def purge_reduced_raw_reports(
     if not settings.FREE_RAW_PURGE_ENABLED:
         watermarks = [watermark for watermark in watermarks if watermark.plan == "standard"]
 
-    plan_map = {
-        rec.site_id: rec.plan
-        for rec in (await session.execute(select(SitePlan))).scalars().all()
-    }
-
     deleted_total = 0
     for watermark in watermarks:
         await _lock_site_day(session, watermark.site_id, watermark.day)
@@ -548,12 +542,18 @@ async def purge_reduced_raw_reports(
             continue
         if watermark.plan == "pro":
             continue
-        if plan_map.get(watermark.site_id, "free") != watermark.plan:
-            continue
         current_count = await session.scalar(select(func.count()).select_from(RawReport).where(
             RawReport.site_id == watermark.site_id, RawReport.day == watermark.day,
         ))
         if current_count != watermark.raw_report_count:
+            continue
+        stored_windows = await _count_dp_windows_for_day(session, site_id=watermark.site_id,
+                                                       plan=watermark.plan, day=watermark.day)
+        stored_breakdowns = await session.scalar(select(func.count()).select_from(BreakdownRollup).where(
+            BreakdownRollup.site_id == watermark.site_id, BreakdownRollup.plan == watermark.plan,
+            BreakdownRollup.day == watermark.day,
+        ))
+        if stored_windows != watermark.dp_window_count or stored_breakdowns != watermark.breakdown_rollup_count:
             continue
         late_raw = (
             await session.execute(
@@ -607,10 +607,6 @@ async def unreduced_recent_raw_days(
     if not raw_site_day_rows:
         return []
 
-    plan_map = {
-        rec.site_id: rec.plan
-        for rec in (await session.execute(select(SitePlan))).scalars().all()
-    }
     success_rows = (
         await session.execute(
             select(
@@ -625,17 +621,17 @@ async def unreduced_recent_raw_days(
                 ReducerWatermark.day >= start,
                 ReducerWatermark.day <= end,
             )
+            .order_by(ReducerWatermark.reduced_at, ReducerWatermark.id)
         )
     ).all()
     success_map = {
-        (site_id, plan, day): (reduced_at, raw_purged_at)
+        (site_id, day): (reduced_at, raw_purged_at)
         for site_id, plan, day, reduced_at, raw_purged_at in success_rows
     }
 
     missing_days: set[dt.date] = set()
     for site_id, day, latest_raw_received_at in raw_site_day_rows:
-        plan = plan_map.get(site_id, "free")
-        watermark_state = success_map.get((site_id, plan, day))
+        watermark_state = success_map.get((site_id, day))
         if watermark_state is None:
             missing_days.add(day)
             continue
@@ -655,9 +651,15 @@ async def _reduce_site_day(
     # A conservative receipt cutoff prevents purge from deleting concurrent arrivals.
     reduced_at = dt.datetime.now(dt.timezone.utc)
     noise_secret = settings.AGGREGATE_DP_NOISE_SECRET or settings.SESSION_HMAC_SECRET
-    plan_record = await session.get(SitePlan, site_id)
     site_record = await session.get(DashboardSite, site_id)
-    plan_map = {site_id: plan_record.plan if plan_record else "free"}
+    from ..dependencies import get_site_plan
+    published_plan = await session.scalar(
+        select(ReducerWatermark.plan).where(
+            ReducerWatermark.site_id == site_id, ReducerWatermark.day == day,
+            ReducerWatermark.status == "success",
+        ).order_by(ReducerWatermark.reduced_at.desc(), ReducerWatermark.id.desc()).limit(1)
+    )
+    plan_map = {site_id: published_plan or await get_site_plan(site_id, session)}
     site_timezones = {site_id: site_record.timezone if site_record else "UTC"}
 
     # Solo/internal free + Standard raw path
@@ -675,7 +677,7 @@ async def _reduce_site_day(
         ReducerWatermark.site_id == site_id, ReducerWatermark.day == day,
         ReducerWatermark.raw_purged_at.is_not(None),
     ).limit(1))
-    if purged and any(not report.payload.get("historical_import") for report in raw_reports):
+    if purged and raw_reports:
         raise RuntimeError("Cannot rebuild a purged day from partial raw history; outputs preserved")
     affected_site_plans = {
         (report.site_id, plan_map.get(report.site_id, "free"))
@@ -900,13 +902,16 @@ async def reduce_reports(
     days: int = 1,
     start_day: dt.date | None = None,
     end_day: dt.date | None = None,
+    site_id: str | None = None,
 ):
     start, end = _resolve_day_window(days=days, start_day=start_day, end_day=end_day)
     # Keyset discovery avoids holding either all events or all jobs in memory.
-    jobs = union(
-        select(RawReport.site_id, RawReport.day).where(RawReport.day.between(start, end)),
-        select(LdpReport.site_id, LdpReport.day).where(LdpReport.day.between(start, end)),
-    ).subquery()
+    raw_jobs = select(RawReport.site_id, RawReport.day).where(RawReport.day.between(start, end))
+    ldp_jobs = select(LdpReport.site_id, LdpReport.day).where(LdpReport.day.between(start, end))
+    if site_id is not None:
+        raw_jobs = raw_jobs.where(RawReport.site_id == site_id)
+        ldp_jobs = ldp_jobs.where(LdpReport.site_id == site_id)
+    jobs = union(raw_jobs, ldp_jobs).subquery()
     cursor = None
     while True:
         query = select(jobs.c.site_id, jobs.c.day).order_by(jobs.c.site_id, jobs.c.day).limit(1)

@@ -61,7 +61,7 @@ Current breakdown outputs use low-dimensional aggregate rollups. They should not
 2. The reducer wrote KPI windows and breakdown rollups for that day.
 3. The retention window has elapsed.
 4. Only rows received at or before the successful reduction time are deleted.
-5. The site's current plan still matches the watermark plan.
+5. Stored KPI and breakdown row counts match the watermark. The publication plan governs history; later billing changes must not strand raw rows or hide durable history.
 
 This prevents late-arriving rows from being deleted before a later reducer pass can include them.
 
@@ -70,3 +70,11 @@ This prevents late-arriving rows from being deleted before a later reducer pass 
 After raw purge, `dp_windows`, `breakdown_rollups`, `segment_rollups`, `reducer_watermarks`, `forecasts`, `historical_import_batches`, dashboard notes, site goals, and access/billing records are the durable source of truth. They must be covered by database backups before broad commercial launch.
 
 Backup retention is separate from primary-table raw retention. Backups may contain rows that have already been purged from the primary database, so privacy language must describe the backup retention window and limit backup restores to operational recovery.
+
+## Account Recovery And Publication Continuity
+
+`password_resets` is security processing material: token digest, username, expiry, and consumption time. Tokens expire after 30 minutes, are single-use, and expired records are deleted during token maintenance. Plaintext secrets/passwords must not enter analytics or logs. Password changes increment `dashboard_users.auth_version` to invalidate earlier dashboard sessions.
+
+`site_provisioning` is account/billing administration: owner, site/domain, subscription reference, approved slot quantity, operation state, and timestamps. It contains no visitor analytics or plaintext installation keys. Retain with billing records for reconciliation and account-deletion handling.
+
+Solo/Standard reads choose one published version per site/day. Upgrading does not retroactively privatize Solo history; downgrading does not de-noise Standard history. A purged day cannot be rebuilt from a partial import. This preserves aggregates, not deleted raw history.

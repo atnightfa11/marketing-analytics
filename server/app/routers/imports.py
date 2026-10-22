@@ -9,10 +9,11 @@ from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dashboard_auth import _normalize_username, enforce_site_access_with_db, require_dashboard_auth
-from ..entitlements import effective_plan_for_record, require_historical_imports
-from ..models import BreakdownRollup, DpWindow, HistoricalImportBatch, RawReport, SegmentRollup, SitePlan, get_session
-from ..scheduler.nightly_reduce import reduce_reports
+from ..entitlements import billing_record_for_site, effective_plan_for_record, require_historical_imports
+from ..models import BreakdownRollup, DpWindow, HistoricalImportBatch, RawReport, ReducerWatermark, SegmentRollup, get_session
+from ..scheduler.nightly_reduce import _lock_site_day, reduce_reports
 from ..scheduler.prophet_job import refresh_site_metric_forecast
+from ..sql_dates import utc_report_day
 from ..schemas import (
     HistoricalCsvImportRequest,
     HistoricalImportBatchResponse,
@@ -34,7 +35,7 @@ async def _require_standard_import_access(
     session: AsyncSession,
 ) -> str:
     await enforce_site_access_with_db(site_id=site_id, claims=claims, session=session)
-    plan_record = await session.get(SitePlan, site_id)
+    plan_record = await billing_record_for_site(session, site_id)
     target_plan = effective_plan_for_record(plan_record)
     require_historical_imports(target_plan)
     return target_plan
@@ -84,29 +85,49 @@ async def _find_existing_import_overlaps(
         return [], []
 
     touched_days = {day for day, _metric in rows_by_key}
-    touched_metrics = {metric for _day, metric in rows_by_key}
-    existing_reports = (
+    historical = RawReport.payload["historical_import"].as_boolean().is_(True)
+    existing_counts = (
         await session.execute(
-            select(RawReport)
+            select(RawReport.day, RawReport.kind, historical, func.count(RawReport.id))
             .where(
                 RawReport.site_id == site_id,
-                RawReport.day >= min(touched_days),
-                RawReport.day <= max(touched_days),
-                RawReport.kind.in_(touched_metrics),
+                RawReport.day.in_(touched_days),
             )
-            .order_by(RawReport.day, RawReport.kind, RawReport.id)
+            .group_by(RawReport.day, RawReport.kind, historical)
         )
-    ).scalars().all()
+    ).all()
 
     live_counts: dict[tuple[dt.date, str], int] = {}
     historical_counts: dict[tuple[dt.date, str], int] = {}
-    for report in existing_reports:
-        key = (report.day, report.kind)
-        if key not in rows_by_key:
-            continue
-        report_payload = report.payload if isinstance(report.payload, dict) else {}
-        target = historical_counts if report_payload.get("historical_import") else live_counts
-        target[key] = target.get(key, 0) + 1
+    retained_counts: dict[dt.date, int] = {}
+    for day, kind, is_historical, count in existing_counts:
+        key = (day, kind)
+        target = historical_counts if is_historical else live_counts
+        target[key] = count
+        retained_counts[day] = retained_counts.get(day, 0) + count
+    live_days = {day for day, _kind in live_counts}
+
+    # Reduction replaces an entire day's outputs. Even a different metric on an
+    # occupied day must block an import; raw-only checks miss purged history.
+    durable_days = {str(day) for day in (await session.execute(select(utc_report_day(DpWindow.window_start)).where(
+        DpWindow.site_id == site_id,
+        utc_report_day(DpWindow.window_start).in_(touched_days),
+    ))).scalars().all()}
+    watermarks = (await session.execute(select(ReducerWatermark).where(
+        ReducerWatermark.site_id == site_id, ReducerWatermark.day.in_(touched_days),
+    ).order_by(ReducerWatermark.reduced_at, ReducerWatermark.id))).scalars().all()
+    latest = {row.day: row for row in watermarks}
+    for day in touched_days:
+        watermark = latest.get(day)
+        complete = (watermark and watermark.status == "success" and not watermark.raw_purged_at
+                    and watermark.raw_report_count == retained_counts.get(day, 0))
+        blocked = day in live_days
+        blocked = blocked or (watermark is not None and watermark.raw_purged_at is not None)
+        blocked = blocked or (day.isoformat() in durable_days and not complete)
+        if blocked:
+            for key in rows_by_key:
+                if key[0] == day:
+                    live_counts[key] = max(1, live_counts.get(key, 0))
 
     def serialize(counts: dict[tuple[dt.date, str], int], source: str) -> list[HistoricalImportPreviewOverlap]:
         return [
@@ -143,6 +164,8 @@ async def _import_rows(
         return HistoricalImportResponse(site_id=payload.site_id, imported_rows=0, reduced_days=0, batch_id=None)
 
     if touched_days:
+        for day in sorted(touched_days):
+            await _lock_site_day(session, payload.site_id, day)
         live_overlaps, _replaceable_import_overlaps = await _find_existing_import_overlaps(
             session=session,
             site_id=payload.site_id,
@@ -158,7 +181,7 @@ async def _import_rows(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    "Import overlaps existing Valid-collected data. "
+                    "Import overlaps existing Valid-collected or retained aggregate data. "
                     f"Remove those dates from the CSV before importing. Overlap: {overlap_preview}{suffix}"
                 ),
             )
@@ -214,7 +237,7 @@ async def _import_rows(
     start_day = min(touched_days)
     end_day = max(touched_days)
     try:
-        await reduce_reports(session, start_day=start_day, end_day=end_day)
+        await reduce_reports(session, start_day=start_day, end_day=end_day, site_id=payload.site_id)
         await _refresh_forecasts(session, site_id=payload.site_id, plan=target_plan)
     except Exception as exc:
         batch = await session.get(HistoricalImportBatch, batch.id)
@@ -289,7 +312,7 @@ async def preview_historical_csv(
     warnings: list[str] = []
     if live_overlaps:
         warnings.append(
-            "Some rows overlap Valid-collected data. Remove those dates before importing to avoid double-counting."
+            "Some dates already contain Valid data or retained aggregates that cannot safely be replaced. Remove those dates before importing."
         )
     if replaceable_import_overlaps:
         warnings.append(
@@ -359,49 +382,53 @@ async def rollback_import_batch(
             .order_by(RawReport.day.asc(), RawReport.kind.asc(), RawReport.id.asc())
         )
     ).scalars().all()
-    if not rows:
+    if not rows or len(rows) != batch.imported_rows:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Rollback is no longer available because the batch's raw import rows are not retained.",
+            detail="Rollback is no longer available because the complete batch is not retained.",
         )
 
     deleted_rows = len(rows)
     start_day = min(row.day for row in rows)
     end_day = max(row.day for row in rows)
+    days = {row.day for row in rows}
+    for day in sorted(days):
+        await _lock_site_day(session, site_id, day)
+    purged = await session.scalar(select(ReducerWatermark.id).where(
+        ReducerWatermark.site_id == site_id, ReducerWatermark.day.in_(days),
+        ReducerWatermark.raw_purged_at.is_not(None),
+    ).limit(1))
+    if purged:
+        raise HTTPException(409, "Rollback is unavailable after raw history has been purged.")
     for row in rows:
         await session.delete(row)
     batch.status = "rolled_back"
     batch.rolled_back_at = dt.datetime.now(dt.timezone.utc)
     batch.error = None
     await session.flush()
-    rebuild_start = dt.datetime.combine(start_day, dt.time.min, tzinfo=dt.timezone.utc)
-    rebuild_end = dt.datetime.combine(end_day + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc)
     await session.execute(
         delete(DpWindow).where(
             DpWindow.site_id == site_id,
-            DpWindow.plan == target_plan,
-            DpWindow.window_start >= rebuild_start,
-            DpWindow.window_start < rebuild_end,
+            DpWindow.plan.in_(("free", "standard")),
+            utc_report_day(DpWindow.window_start).in_(days),
         )
     )
     await session.execute(
         delete(BreakdownRollup).where(
             BreakdownRollup.site_id == site_id,
-            BreakdownRollup.plan == target_plan,
-            BreakdownRollup.day >= start_day,
-            BreakdownRollup.day <= end_day,
+            BreakdownRollup.plan.in_(("free", "standard")),
+            BreakdownRollup.day.in_(days),
         )
     )
     await session.execute(
         delete(SegmentRollup).where(
             SegmentRollup.site_id == site_id,
-            SegmentRollup.plan == target_plan,
-            SegmentRollup.day >= start_day,
-            SegmentRollup.day <= end_day,
+            SegmentRollup.plan.in_(("free", "standard")),
+            SegmentRollup.day.in_(days),
         )
     )
 
-    await reduce_reports(session, start_day=start_day, end_day=end_day)
+    await reduce_reports(session, start_day=start_day, end_day=end_day, site_id=site_id)
     await _refresh_forecasts(session, site_id=site_id, plan=target_plan)
 
     return HistoricalImportRollbackResponse(
@@ -440,7 +467,7 @@ async def _batch_response(session: AsyncSession, batch: HistoricalImportBatch) -
         completed_at=batch.completed_at,
         rolled_back_at=batch.rolled_back_at,
         error=batch.error,
-        rollback_available=batch.status in {"completed", "failed"} and retained_rows > 0,
+        rollback_available=batch.status in {"completed", "failed"} and retained_rows > 0 and retained_rows == batch.imported_rows,
     )
 
 

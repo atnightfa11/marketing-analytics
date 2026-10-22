@@ -1,6 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BillingUsagePanel } from "./components/BillingUsagePanel";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Area,
   CartesianGrid,
@@ -94,6 +94,8 @@ import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
 import { BillingCancel, BillingSuccess } from "./routes/BillingStatusRoutes";
 import { LoginGate } from "./routes/LoginGate";
+import { PasswordRecovery } from "./routes/PasswordRecovery";
+import { AddWebsite } from "./routes/AddWebsite";
 import { fontBody, fontHeading, fontMeta, fontMetric } from "./styles/typography";
 import type {
   ActiveFilter,
@@ -5004,6 +5006,9 @@ const Settings: React.FC = () => {
   const billingActionDisabled = billingStatus === "redirecting" || billingStatus === "loading" || !billingDetails?.is_billing_owner;
 
   const billingPaymentNotice = (() => {
+    if (billingDetails?.collection_active === false) {
+      return "Collection is paused until your subscription is active. Your existing reports remain available.";
+    }
     if (!billingDetails || billingDetails.payment_status === "ok") return null;
     if (billingDetails.payment_status === "grace") {
       return billingDetails.billing_grace_ends_at
@@ -5131,6 +5136,7 @@ const Settings: React.FC = () => {
                 </button>
               ))}
             </nav>
+            <Link to="/sites" className="mt-5 inline-block text-sm underline" style={fontBody}>Manage websites</Link>
           </aside>
 
           <div className="space-y-5">
@@ -6375,7 +6381,7 @@ const Settings: React.FC = () => {
   );
 };
 
-const HomeRoute: React.FC = () => {
+const HomeRoute: React.FC<{ alwaysShowPicker?: boolean }> = ({ alwaysShowPicker = false }) => {
   const { token, authEnabled } = useAuth();
   const [searchParams] = useSearchParams();
   const querySiteId = searchParams.get("site_id")?.trim();
@@ -6413,7 +6419,7 @@ const HomeRoute: React.FC = () => {
   if (availableSites === null) {
     return <DashboardLoadingSkeleton label={en.loading} />;
   }
-  if (availableSites.length === 1) {
+  if (availableSites.length === 1 && !alwaysShowPicker) {
     return <Navigate to={`/site/${encodeURIComponent(availableSites[0].site_id)}`} replace />;
   }
   return <SitePicker sites={availableSites} error={siteLoadError} />;
@@ -6422,6 +6428,10 @@ const HomeRoute: React.FC = () => {
 export const App: React.FC = () => {
   const { token, authEnabled, ready } = useAuth();
   useTheme();
+
+  if (["/forgot-password", "/reset-password"].includes(window.location.pathname)) {
+    return <PasswordRecovery />;
+  }
 
   if (!ready) {
     return <DashboardLoadingSkeleton label={en.loading} />;
@@ -6436,6 +6446,8 @@ export const App: React.FC = () => {
         <Suspense fallback={<DashboardLoadingSkeleton label={en.loading} />}>
           <Routes>
             <Route path="/" element={<HomeRoute />} />
+            <Route path="/sites" element={<HomeRoute alwaysShowPicker />} />
+            <Route path="/sites/new" element={<AddWebsite />} />
             <Route path="/site/:siteId" element={<Overview />} />
             <Route path="/site/:siteId/charts" element={<SiteDashboardRedirect />} />
             <Route path="/site/:siteId/alerts" element={<SiteDashboardRedirect />} />

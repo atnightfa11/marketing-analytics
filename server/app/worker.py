@@ -10,10 +10,12 @@ from sqlalchemy import select
 
 from .config import Settings, get_settings
 from .entitlements import forecast_metrics_for_plan
+from .dependencies import get_site_plan
 from .geoip_db import ensure_geoip_database
 from .maintenance import purge_expired_upload_tokens
 from .models import Base, DpWindow, async_engine, async_session_factory, init_db
 from .ops_alerts import notify_ops_alert
+from .release import release_identity, schema_is_current
 from .scheduler.nightly_reduce import reduce_reports, unreduced_recent_raw_days
 from .scheduler.prophet_job import refresh_site_metric_forecast
 
@@ -29,6 +31,10 @@ async def initialize_worker() -> None:
             await conn.run_sync(Base.metadata.create_all)
     else:
         logger.info("Skipping create_all; database schema is managed by Alembic migrations")
+        async with async_session_factory() as session:
+            if not await schema_is_current(session):
+                raise RuntimeError("Apply Alembic migrations before starting this worker release")
+    logger.info("Worker release: %s", release_identity())
     await init_db()
 
 
@@ -63,10 +69,11 @@ async def run_forecast_training_once() -> None:
     had_error = False
     async with async_session_factory() as session:
         site_plan_rows = (
-            await session.execute(select(DpWindow.site_id, DpWindow.plan).distinct())
+            await session.execute(select(DpWindow.site_id).distinct())
         ).all()
 
-        for site_id, plan in site_plan_rows:
+        for (site_id,) in site_plan_rows:
+            plan = await get_site_plan(site_id, session)
             for metric in forecast_metrics_for_plan(plan):
                 try:
                     await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)

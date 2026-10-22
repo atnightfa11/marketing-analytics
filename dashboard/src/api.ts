@@ -105,6 +105,7 @@ export interface SiteSettings {
 }
 
 export interface BillingStatus {
+  collection_active: boolean;
   site_id: string;
   plan: "free" | "standard" | "pro";
   display_plan: string;
@@ -364,6 +365,33 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? fallbackApiBase,
   withCredentials: true,
 });
+
+export async function requestPasswordReset(email: string): Promise<{ message: string }> {
+  return (await api.post("/api/auth/password-reset/request", { email })).data;
+}
+
+export async function confirmPasswordReset(token: string, password: string): Promise<{ message: string }> {
+  return (await api.post("/api/auth/password-reset/confirm", { token, password })).data;
+}
+
+export interface SiteProvisioning {
+  request_id: string;
+  site_id: string;
+  site_name: string;
+  site_domain: string;
+  status: "pending" | "complete";
+  site_key?: string;
+}
+
+export async function pendingSiteSetup(): Promise<SiteProvisioning | null> {
+  return (await api.get("/api/sites/provisioning")).data;
+}
+
+export async function addWebsite(payload: {
+  request_id: string; site_name: string; site_domain: string; approved_monthly_increase_usd: number;
+}): Promise<SiteProvisioning> {
+  return (await api.post("/api/sites", payload)).data;
+}
 
 const defaultSiteId = import.meta.env.VITE_SITE_ID ?? "demo";
 

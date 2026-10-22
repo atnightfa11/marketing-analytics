@@ -19,10 +19,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import TokenClaims, get_settings
-from ..entitlements import effective_plan_for_record, normalize_plan
+from ..entitlements import billing_record_for_site, effective_plan_for_record, normalize_plan, require_active_collection
 from ..hostnames import hostname_from_request_headers
 from ..maintenance import maybe_purge_expired_upload_tokens
-from ..models import LdpReport, RawReport, SiteIpBlock, SitePlan, TokenNonce, UploadToken, get_session
+from ..models import LdpReport, RawReport, SiteIpBlock, TokenNonce, UploadToken, get_session
 from ..usage_accounting import claim_event, insert_for, record_pageviews
 from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import CollectRequest, ShuffleRequest
@@ -111,7 +111,8 @@ async def validate_token(claims: TokenClaims, session: AsyncSession):
 
 
 async def resolve_plan(site_id: str, claims_plan: str, session: AsyncSession) -> str:
-    record = await session.get(SitePlan, site_id)
+    await require_active_collection(session, site_id)
+    record = await billing_record_for_site(session, site_id)
     db_plan = effective_plan_for_record(record)
     token_plan = normalize_plan(claims_plan or db_plan)
     if token_plan != db_plan:
@@ -607,9 +608,10 @@ async def ingest_reports(
     client_ip: str | None = None,
 ):
     counters = request.app.state.prometheus_counters
+    await require_active_collection(session, collect.site_id)
     effective_plan = plan
     if effective_plan is None:
-        record = await session.get(SitePlan, collect.site_id)
+        record = await billing_record_for_site(session, collect.site_id)
         effective_plan = effective_plan_for_record(record)
     if effective_plan == "pro" and not settings.ENABLE_PRO_INGEST:
         effective_plan = "standard"

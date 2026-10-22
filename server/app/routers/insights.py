@@ -15,6 +15,7 @@ from ..entitlements import enforce_aggregate_retention
 from ..models import BreakdownRollup, DashboardNote, DashboardSite, DpWindow, RawReport, ReducerWatermark, get_session
 from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import InsightItem, InsightsResponse
+from ..sql_dates import utc_report_day
 
 router = APIRouter(tags=["metrics"])
 
@@ -367,7 +368,7 @@ async def _daily_metric_totals(
 ) -> dict[dt.date, float]:
     rows = (
         await session.execute(
-            select(func.date(DpWindow.window_start), func.sum(DpWindow.value))
+            select(utc_report_day(DpWindow.window_start), func.sum(DpWindow.value))
             .where(
                 DpWindow.site_id == site_id,
                 DpWindow.plan == plan,
@@ -375,7 +376,7 @@ async def _daily_metric_totals(
                 DpWindow.window_start >= _day_start(start_day),
                 DpWindow.window_start < _day_start(end_day + dt.timedelta(days=1)),
             )
-            .group_by(func.date(DpWindow.window_start))
+            .group_by(utc_report_day(DpWindow.window_start))
         )
     ).all()
     daily = {day: 0.0 for day in _enumerate_days(start_day, end_day)}

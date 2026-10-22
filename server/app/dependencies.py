@@ -4,12 +4,12 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .dashboard_auth import enforce_site_access_with_db, require_dashboard_auth
-from .entitlements import effective_plan_for_record
-from .models import SitePlan, get_session
+from .entitlements import billing_record_for_site, effective_plan_for_record
+from .models import get_session
 
 
 async def get_site_plan(site_id: str, session: AsyncSession = Depends(get_session)) -> str:
-    record = await session.get(SitePlan, site_id)
+    record = await billing_record_for_site(session, site_id)
     return effective_plan_for_record(record)
 
 

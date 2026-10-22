@@ -14,7 +14,7 @@ from sqlalchemy import select
 # Ensure `app` imports work regardless of current working directory.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.models import SiteApiKey, async_session_factory
+from app.models import SiteApiKey, async_session_factory  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

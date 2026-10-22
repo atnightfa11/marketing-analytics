@@ -27,6 +27,8 @@ reports/
 # Cypress
 cypress/videos
 cypress/screenshots
+dashboard/cypress/videos/
+dashboard/cypress/screenshots/
 
 # Env & secrets
 .env

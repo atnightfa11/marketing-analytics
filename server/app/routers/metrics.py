@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import math
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -14,6 +13,7 @@ from ..forecast_freshness import forecast_is_fresh
 from ..forecast_status import latest_forecasts_by_metric
 from ..ldp.rr_decoder import confidence_interval, standard_error
 from ..models import DpWindow, get_session
+from ..report_history import published_plan_clause
 from ..schemas import MetricsResponse, MetricStatistic
 
 router = APIRouter(tags=["metrics"])
@@ -30,7 +30,7 @@ async def get_metrics(
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.plan == plan)
+    stmt = select(DpWindow).where(DpWindow.site_id == site_id, published_plan_clause(DpWindow, plan))
     cutoff_day = retention_cutoff_day(plan)
     if cutoff_day is not None:
         cutoff_start = dt.datetime.combine(cutoff_day, dt.time.min, tzinfo=dt.timezone.utc)

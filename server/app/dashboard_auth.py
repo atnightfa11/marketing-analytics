@@ -10,12 +10,12 @@ from functools import lru_cache
 from typing import Any
 
 from argon2 import PasswordHasher, exceptions as argon_exceptions
-from fastapi import Header, HTTPException, Request, Response, status
+from fastapi import Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import Settings, get_settings
-from .models import DashboardSite, DashboardSiteAccess, DashboardUser
+from .models import DashboardSite, DashboardSiteAccess, DashboardUser, get_session
 
 settings: Settings = get_settings()
 password_hasher = PasswordHasher()
@@ -72,13 +72,14 @@ def clear_dashboard_auth_cookie(response: Response) -> None:
     )
 
 
-def create_access_token(username: str) -> tuple[str, dt.datetime]:
+def create_access_token(username: str, auth_version: int = 0) -> tuple[str, dt.datetime]:
     _require_auth_config()
     now = dt.datetime.now(dt.timezone.utc)
     expires_at = now + dt.timedelta(seconds=max(60, settings.DASHBOARD_AUTH_TTL_SECONDS))
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": username,
+        "ver": auth_version,
         "iat": int(now.timestamp()),
         "exp": int(expires_at.timestamp()),
     }
@@ -140,20 +141,26 @@ async def validate_credentials_async(username: str, password: str, session: Asyn
     return True
 
 
-def require_dashboard_auth(
+async def require_dashboard_auth(
     request: Request,
     authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any] | None:
     if not settings.DASHBOARD_AUTH_ENABLED:
         return None
+    token = request.cookies.get(settings.DASHBOARD_AUTH_COOKIE_NAME)
     if authorization:
         parts = authorization.split(" ", 1)
         if len(parts) == 2 and parts[0].lower() == "bearer":
-            return _decode_access_token(parts[1])
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization scheme")
-    token = request.cookies.get(settings.DASHBOARD_AUTH_COOKIE_NAME)
+            token = parts[1]
+        else:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization scheme")
     if token:
-        return _decode_access_token(token)
+        claims = _decode_access_token(token)
+        user = await session.get(DashboardUser, claims.get("sub", ""))
+        if user and claims.get("ver", 0) != user.auth_version:
+            raise HTTPException(401, "Session expired. Sign in again.")
+        return claims
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Dashboard session required")
 
 

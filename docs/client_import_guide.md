@@ -81,7 +81,9 @@ Headers:
 
 - Browser dashboard requests use the `HttpOnly` login cookie. Manual API calls can use `Authorization: Bearer <dashboard_token>`.
 
-Rollback deletes the retained raw import rows for that batch, re-runs the reducer for the affected days, and refreshes forecasts. Rollback is available for completed or failed batches only while the batch's raw import rows are still retained. After raw processing rows are purged, the batch remains in history as an audit record but cannot be rolled back automatically.
+Rollback deletes the retained rows for that batch, re-runs reduction for affected days on that site, and refreshes forecasts. The entire batch must remain retained. After purge or partial replacement by a later import, automatic rollback is unavailable; the audit record remains visible.
+
+Imports cannot replace days containing live traffic, even for a different metric. They also cannot replace durable aggregate days without complete underlying processing history. Both preview and submission enforce this: an empty raw table does not mean an empty date. Retained import-only days can be replaced while their complete processing history remains available. Values must be finite and non-negative.
 
 ## Safety behavior
 

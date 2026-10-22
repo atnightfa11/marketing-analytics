@@ -33,6 +33,10 @@ Backups may contain `raw_reports` rows that have already been purged from the pr
 
 ## Restore drill
 
+Use a **separate temporary PostgreSQL database**, not the production service. It can be a staging database on Railway once the outage ends; no second permanently running production database is required. For provider-level resilience, also keep an encrypted logical backup in storage independent of the production Railway project/provider, with a documented deletion schedule and access limited to operators.
+
+Before starting any restored application, disable scheduled jobs and outbound side effects. Do not copy production Stripe/SMTP/Slack credentials into staging; leave billing disabled and production workers stopped. A restore must not charge customers, send alerts, or ingest real traffic.
+
 ```bash
 createdb restore_test
 pg_restore --no-owner --dbname=restore_test backup_YYYY-MM-DD.dump
@@ -41,7 +45,12 @@ pg_restore --no-owner --dbname=restore_test backup_YYYY-MM-DD.dump
 Validate:
 
 1. `alembic_version` table exists.
-2. `dp_windows`, `breakdown_rollups`, `reducer_watermarks`, `forecasts`, `site_plan`, `site_api_keys` row counts are sane for the restored environment.
+2. Compare `dp_windows`, `breakdown_rollups`, `segment_rollups`, `reducer_watermarks`, `forecasts`, `historical_import_batches`, `dashboard_notes`, `site_goals`, `dashboard_users`, access and billing records against counts captured at backup time. Include `site_provisioning` for this release.
+3. Compare per-site/day/metric aggregate totals for sampled recent and old dates against backup-time totals. Verify chart reads and site authorization with staging-only credentials.
+4. Record backup identifier, timestamp, restore duration, counts/totals checked, and exceptions. Confirm recovery-point and recovery-time expectations rather than assuming that the existence of a backup proves recoverability.
+5. Delete the temporary restore and copies according to the backup policy. Treat backup files as sensitive: they include password hashes, credentials, and possibly already-purged processing material. Never commit them or attach them to tickets.
+
+October 21 status: no production backup configuration or restore drill was verified during the outage. This remains a launch prerequisite, not a completed checkbox.
 
 ## Incident basics
 

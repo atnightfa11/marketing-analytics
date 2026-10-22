@@ -6,7 +6,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
-from .models import IngestReceipt, UploadToken
+from .models import IngestReceipt, PasswordReset, UploadToken
 
 settings = get_settings()
 _last_upload_token_purge_at: dt.datetime | None = None
@@ -22,6 +22,7 @@ async def purge_expired_upload_tokens(
     cutoff = effective_now - dt.timedelta(seconds=grace_seconds)
     result = await session.execute(delete(UploadToken).where(UploadToken.exp < cutoff))
     await session.execute(delete(IngestReceipt).where(IngestReceipt.expires_at < effective_now))
+    await session.execute(delete(PasswordReset).where(PasswordReset.expires_at < effective_now))
     await session.commit()
     rowcount = result.rowcount
     return int(rowcount) if rowcount and rowcount > 0 else 0

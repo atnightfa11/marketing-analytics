@@ -37,6 +37,8 @@ from .routers import (
     metrics as metrics_router,
     notes,
     public_signup,
+    password_recovery,
+    sites,
     site_settings,
     site_access,
     site_alerts,
@@ -118,12 +120,14 @@ async def run_forecast_training_once():
     async with async_session_factory() as session:
         from sqlalchemy import select
         from .models import DpWindow
+        from .dependencies import get_site_plan
 
         site_plan_rows = (
-            await session.execute(select(DpWindow.site_id, DpWindow.plan).distinct())
+            await session.execute(select(DpWindow.site_id).distinct())
         ).all()
 
-        for site_id, plan in site_plan_rows:
+        for (site_id,) in site_plan_rows:
+            plan = await get_site_plan(site_id, session)
             for metric in forecast_metrics_for_plan(plan):
                 try:
                     await refresh_site_metric_forecast(session, site_id=site_id, metric=metric, plan=plan)
@@ -284,6 +288,8 @@ app.include_router(imports.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
 app.include_router(stripe_billing.router, prefix="/api")
 app.include_router(public_signup.router, prefix="/api")
+app.include_router(password_recovery.router, prefix="/api")
+app.include_router(sites.router, prefix="/api")
 app.include_router(site_settings.router, prefix="/api")
 app.include_router(site_access.router, prefix="/api")
 app.include_router(site_alerts.router, prefix="/api")

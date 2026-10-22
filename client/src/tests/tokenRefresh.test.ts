@@ -23,12 +23,17 @@ function makeEvent(): EventEnvelope {
 }
 
 describe("collector token refresh", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   it("refreshes once on 401 and retries", async () => {
     const fetchMock = jest.fn()
       .mockResolvedValueOnce({ ok: false, status: 401 })
       .mockResolvedValueOnce({ ok: true, status: 202 });
-    // @ts-ignore
-    global.fetch = fetchMock;
+    globalThis.fetch = fetchMock;
 
     const refresh = jest.fn().mockResolvedValue("token-2");
     const collector = new EventCollector(

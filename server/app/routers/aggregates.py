@@ -10,11 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..report_history import published_plan_clause
 from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..ldp.rr_decoder import confidence_interval, standard_error
 from ..models import BreakdownRollup, DpWindow, RawReport, ReducerWatermark, SegmentRollup, get_session
-from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import AggregateResponse, WindowAggregate
 from ..segment_rollups import (
     SEGMENT_DIMENSIONS,
@@ -140,7 +140,7 @@ async def _aggregate_segment_rollups(
     key = segment_key_from_filters(normalized_filters, grain)
     stmt = select(SegmentRollup).where(
         SegmentRollup.site_id == site_id,
-        SegmentRollup.plan == plan,
+        published_plan_clause(SegmentRollup, plan),
         SegmentRollup.metric == metric,
         SegmentRollup.grain == grain,
         SegmentRollup.day.in_(reduced_days),
@@ -344,8 +344,7 @@ async def _successful_reduced_days(
         await session.execute(
             select(ReducerWatermark.day).where(
                 ReducerWatermark.site_id == site_id,
-                ReducerWatermark.plan == plan,
-                ReducerWatermark.reducer_version == REDUCER_VERSION,
+                published_plan_clause(ReducerWatermark, plan),
                 ReducerWatermark.status == "success",
                 ReducerWatermark.day >= start_day,
                 ReducerWatermark.day <= end_day,
@@ -370,7 +369,7 @@ async def _aggregate_hostname_rollups(
         await session.execute(
             select(BreakdownRollup).where(
                 BreakdownRollup.site_id == site_id,
-                BreakdownRollup.plan == plan,
+                published_plan_clause(BreakdownRollup, plan),
                 BreakdownRollup.dimension == "hostnames",
                 BreakdownRollup.hostname == "",
                 BreakdownRollup.day_type == "all",
@@ -460,7 +459,7 @@ async def aggregate(
         windows.sort(key=lambda entry: entry.window_start)
         return AggregateResponse(site_id=site_id, metric=metric, windows=windows)
 
-    stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.metric == metric, DpWindow.plan == plan)
+    stmt = select(DpWindow).where(DpWindow.site_id == site_id, DpWindow.metric == metric, published_plan_clause(DpWindow, plan))
     stmt = stmt.where(
         DpWindow.window_start >= _day_start(start_day),
         DpWindow.window_start < _day_start(end_day + dt.timedelta(days=1)),

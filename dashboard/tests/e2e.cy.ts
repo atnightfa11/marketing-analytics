@@ -2,6 +2,8 @@ describe("Marketing Analytics Dashboard", () => {
   const baseUrl = Cypress.env("DASHBOARD_URL") || "http://127.0.0.1:4173";
 
   beforeEach(() => {
+    cy.intercept("**/api/auth/status", { enabled: true });
+    cy.intercept("**/api/auth/me", { statusCode: 401, body: { detail: "Sign in" } });
     cy.visit(baseUrl);
   });
 

@@ -12,9 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .access_control import require_admin_api_token
 from .dashboard_auth import require_dashboard_auth, require_site_owner_with_db
 from .entitlements import (
-    ACTIVE_SUBSCRIPTION_STATUSES, ENDED_SUBSCRIPTION_STATUSES,
-    PAGEVIEW_CAPACITY_BLOCK, PAGEVIEW_CAPACITY_PRICE_USD,
-    SOLO_MONTHLY_PAGEVIEWS, STANDARD_MONTHLY_PAGEVIEWS, effective_plan_for_record,
+    ACTIVE_SUBSCRIPTION_STATUSES, PAGEVIEW_CAPACITY_BLOCK, PAGEVIEW_CAPACITY_PRICE_USD,
+    SOLO_MONTHLY_PAGEVIEWS, STANDARD_MONTHLY_PAGEVIEWS, effective_plan_for_record, account_subscription,
 )
 from .models import CapacityRequest, DashboardSite, SitePlan, get_session
 from .ops_alerts import notify_ops_alert
@@ -25,15 +24,7 @@ router = APIRouter(tags=["billing"])
 
 
 async def account_billing_record(session: AsyncSession, site: DashboardSite):
-    records = (await session.execute(select(SitePlan).join(
-        DashboardSite, DashboardSite.site_id == SitePlan.site_id,
-    ).where(DashboardSite.owner_username == site.owner_username))).scalars().all()
-    subscribed = [row for row in records if row.stripe_subscription_id
-                  and row.stripe_subscription_status not in ENDED_SUBSCRIPTION_STATUSES]
-    subscriptions = {row.stripe_subscription_id for row in subscribed}
-    if len(subscriptions) > 1:
-        return None, True
-    return (subscribed[0] if subscribed else None), False
+    return await account_subscription(session, site.owner_username)
 
 
 def capacity_policy(record: SitePlan | None, fallback: SitePlan | None, ambiguous: bool) -> dict:

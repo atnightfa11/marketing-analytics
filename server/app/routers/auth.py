@@ -17,7 +17,8 @@ from ..dashboard_auth import (
     validate_credentials_async,
 )
 from ..entitlements import effective_plan_for_record
-from ..models import DashboardSite, DashboardSiteAccess, SitePlan, get_session
+from ..dependencies import get_site_plan
+from ..models import DashboardSite, DashboardSiteAccess, DashboardUser, SitePlan, get_session
 from ..schemas import AuthLoginRequest, AuthLoginResponse, AuthMeResponse, AuthStatusResponse, DashboardSiteSummary, DashboardSitesResponse
 
 router = APIRouter(tags=["auth"])
@@ -60,7 +61,8 @@ async def auth_login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not await validate_credentials_async(username, payload.password, session):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token, expires_at = create_access_token(username)
+    user = await session.get(DashboardUser, username)
+    token, expires_at = create_access_token(username, user.auth_version if user else 0)
     set_dashboard_auth_cookie(response, token, expires_at)
     return AuthLoginResponse(access_token=token, expires_at=expires_at)
 
@@ -175,7 +177,7 @@ async def list_dashboard_sites(
             site_id=site.site_id,
             site_name=site.site_name,
             allowed_origin=site.allowed_origin,
-            plan=effective_plan_for_record(plan_record),
+            plan=await get_site_plan(site.site_id, session),
         )
         for site, plan_record in rows
     ]

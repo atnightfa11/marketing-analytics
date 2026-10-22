@@ -63,17 +63,7 @@ async def update_site_settings(
         await session.execute(select(DashboardSite).where(DashboardSite.site_id == site_id))
     ).scalar_one_or_none()
     if site is None:
-        owner_username = claims.get("sub") if isinstance(claims, dict) else None
-        if not isinstance(owner_username, str) or not owner_username.strip():
-            raise HTTPException(status_code=400, detail="Unable to determine site owner for settings update")
-        site = DashboardSite(
-            site_id=site_id,
-            owner_username=owner_username.strip(),
-            site_name=site_name or site_id,
-            allowed_origin="https://pending.invalid",
-            timezone=payload.timezone or "UTC",
-        )
-        session.add(site)
+        raise HTTPException(404, "Site not found. Add a website from your account first.")
     if payload.timezone is not None:
         site.timezone = payload.timezone
     if site_name is not None:

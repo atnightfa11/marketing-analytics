@@ -12,8 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
-from .entitlements import effective_plan_for_record, has_standard_entitlements
-from .models import Forecast, SiteAlertDelivery, SiteAlertSettings, SitePlan
+from .entitlements import billing_record_for_site, effective_plan_for_record, has_standard_entitlements
+from .models import Forecast, SiteAlertDelivery, SiteAlertSettings
 
 settings = get_settings()
 logger = logging.getLogger("marketing-analytics.alerts")
@@ -28,7 +28,7 @@ async def notify_anomaly_if_needed(
 ) -> None:
     if not forecast.has_anomaly:
         return
-    plan_record = await session.get(SitePlan, site_id)
+    plan_record = await billing_record_for_site(session, site_id)
     plan = effective_plan_for_record(plan_record)
     if not has_standard_entitlements(plan):
         return

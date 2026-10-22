@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pydantic import BaseModel, Field, model_validator
+from urllib.parse import urlsplit
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
   OPS_ALERT_EMAIL_RECIPIENTS_CSV: str | None = None
   OPS_ALERT_DEDUP_SECONDS: int = Field(default=300)
   LOGIN_RATE_LIMIT_PER_MINUTE: int = Field(default=10)
+  PASSWORD_RESET_URL: str = "https://app.validanalytics.io/reset-password"
   # In production the schema is owned by Alembic migrations. Leave this False so the
   # service never silently diverges from migrations via create_all; enable only for
   # local/dev/test bootstrapping.
@@ -204,6 +206,12 @@ class Settings(BaseSettings):
         dashboard_normalized.append(origin)
         dashboard_seen.add(origin)
     self.DASHBOARD_CORS_ORIGINS = dashboard_normalized
+    reset_url = urlsplit(self.PASSWORD_RESET_URL)
+    reset_origin = f"{reset_url.scheme}://{reset_url.netloc}"
+    if (reset_origin not in self.DASHBOARD_CORS_ORIGINS or reset_url.fragment or reset_url.query
+        or reset_url.username or reset_url.password
+        or (production_like and reset_url.scheme != "https")):
+      raise ValueError("PASSWORD_RESET_URL must be a trusted dashboard URL without query or fragment (HTTPS in production)")
     return self
 
   def billing_configured(self) -> bool:

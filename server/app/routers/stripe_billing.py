@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from functools import lru_cache
@@ -27,8 +28,9 @@ from ..entitlements import (
     entitlements_for_plan,
     normalize_plan,
     owned_site_count,
+    collection_is_active,
 )
-from ..models import AccountUsage, DashboardSite, SitePlan, StripeEvent, get_session
+from ..models import AccountUsage, DashboardSite, DashboardUser, SitePlan, StripeEvent, get_session
 from ..schemas import (
     BillingPortalSessionRequest,
     BillingPortalSessionResponse,
@@ -353,7 +355,7 @@ async def _find_site_plan_for_billing_event(
 
 async def _record_stripe_event_once(session: AsyncSession, event_id: str | None, event_type: str | None) -> bool:
     if not event_id:
-        return True
+        raise HTTPException(400, "Stripe event ID is required")
     existing = await session.get(StripeEvent, event_id)
     if existing:
         return False
@@ -364,6 +366,123 @@ async def _record_stripe_event_once(session: AsyncSession, event_id: str | None,
         await session.rollback()
         return False
     return True
+
+
+SUBSCRIPTION_EVENTS = {
+    "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted",
+    "customer.subscription.paused", "customer.subscription.resumed",
+}
+CHECKOUT_EVENTS = {
+    "checkout.session.completed", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed",
+}
+INVOICE_EVENTS = {"invoice.payment_failed", "invoice.payment_succeeded", "invoice.paid"}
+
+
+def _resource_id(value) -> str | None:
+    return value if isinstance(value, str) else _object_get(value, "id")
+
+
+def _event_subscription_id(event_type: str, obj) -> str | None:
+    if event_type in SUBSCRIPTION_EVENTS:
+        return _resource_id(obj)
+    subscription = _resource_id(_object_get(obj, "subscription"))
+    if not subscription and event_type in INVOICE_EVENTS:
+        # Newer Stripe invoice versions nest the subscription under parent.
+        parent = _object_get(obj, "parent", {}) or {}
+        details = _object_get(parent, "subscription_details", {}) or {}
+        subscription = _resource_id(_object_get(details, "subscription"))
+    return subscription
+
+
+async def _retrieve_current_subscription(subscription_id: str):
+    client = stripe.StripeClient(
+        settings.STRIPE_SECRET_KEY,
+        http_client=stripe.http_client.RequestsClient(timeout=10),
+        max_network_retries=0,
+    )
+    try:
+        return await asyncio.to_thread(client.subscriptions.retrieve, subscription_id)
+    except stripe.error.StripeError as exc:
+        # The event receipt rolls back with the transaction so Stripe can retry.
+        logger.warning("Stripe subscription reconciliation unavailable", extra={"subscription_id": subscription_id})
+        raise HTTPException(503, "Subscription state could not be verified. Retry the webhook.") from exc
+
+
+async def _reconcile_subscription(session: AsyncSession, event_type: str, obj) -> str:
+    subscription_id = _event_subscription_id(event_type, obj)
+    if not subscription_id:
+        if event_type in INVOICE_EVENTS:
+            return "ignored"  # A one-off invoice must never change a subscription.
+        raise HTTPException(400, "Subscription event is missing its subscription ID")
+    linked = await session.scalar(select(SitePlan).where(SitePlan.stripe_subscription_id == subscription_id))
+    metadata = _object_get(obj, "metadata", {}) or {}
+    site_id = linked.site_id if linked else metadata.get("site_id")
+    if not site_id:
+        # Discovery only. Fetch again after acquiring the billing row lock.
+        discovered = await _retrieve_current_subscription(subscription_id)
+        site_id = (_object_get(discovered, "metadata", {}) or {}).get("site_id")
+    if not site_id:
+        raise HTTPException(409, "Subscription has no registered site")
+    site = await session.get(DashboardSite, site_id)
+    if site:
+        # Match additional-site setup's owner -> plan lock order.
+        await session.scalar(select(DashboardUser).where(
+            DashboardUser.username == site.owner_username,
+        ).with_for_update())
+    record = await session.scalar(select(SitePlan).where(SitePlan.site_id == site_id)
+                                  .with_for_update().execution_options(populate_existing=True))
+    if record is None:
+        if site is None:
+            raise HTTPException(409, "Subscription has no registered site")
+        record = SitePlan(site_id=site_id, plan="free")
+        session.add(record)
+        await session.flush()
+
+    # Do not apply webhook snapshots or compare second-resolution event times:
+    # Stripe can deliver them out of order, including different events in one second.
+    subscription = await _retrieve_current_subscription(subscription_id)
+    if _resource_id(subscription) != subscription_id:
+        raise HTTPException(409, "Subscription identity could not be verified")
+    current_metadata = _object_get(subscription, "metadata", {}) or {}
+    if current_metadata.get("site_id") not in {None, site_id}:
+        raise HTTPException(409, "Subscription site does not match the billing record")
+    incoming_state = _object_get(subscription, "status")
+    if not incoming_state:
+        raise HTTPException(409, "Subscription status is missing")
+    customer_id = _resource_id(_object_get(subscription, "customer"))
+    if not customer_id:
+        raise HTTPException(409, "Subscription customer is missing")
+    if record.stripe_subscription_id and record.stripe_subscription_id != subscription_id:
+        # A late event for a replaced subscription cannot rebind the account.
+        if incoming_state in ENDED_SUBSCRIPTION_STATUSES:
+            return "superseded"
+        current = await _retrieve_current_subscription(record.stripe_subscription_id)
+        if _object_get(current, "status") not in ENDED_SUBSCRIPTION_STATUSES:
+            raise HTTPException(409, "Another subscription is already linked; billing reconciliation required")
+        incoming_created = _timestamp_to_datetime(_object_get(subscription, "created"))
+        current_created = _timestamp_to_datetime(_object_get(current, "created"))
+        if not incoming_created or not current_created or incoming_created <= current_created:
+            raise HTTPException(409, "Replacement subscription order needs billing review")
+    elif record.stripe_customer_id and record.stripe_customer_id != customer_id:
+        raise HTTPException(409, "Subscription customer does not match the billing record")
+
+    price_id = _base_subscription_price_id(subscription)
+    if not price_id and incoming_state not in ENDED_SUBSCRIPTION_STATUSES:
+        raise HTTPException(409, "Subscription has no recognized plan price")
+    now = dt.datetime.now(dt.timezone.utc)
+    record.plan = _plan_for_price_id(price_id)
+    record.stripe_customer_id = customer_id
+    record.stripe_subscription_id = subscription_id
+    fields = _subscription_status_fields(subscription)
+    record.stripe_current_period_start = fields["current_period_start"]
+    record.stripe_current_period_end = fields["current_period_end"]
+    record.stripe_cancel_at_period_end = fields["cancel_at_period_end"]
+    record.extra_site_subscription_item_id = fields["extra_site_subscription_item_id"]
+    record.extra_site_quantity = fields["extra_site_quantity"]
+    record.extra_pageview_quantity = fields["extra_pageview_quantity"]
+    _apply_subscription_status(record, incoming_state, now=now)
+    record.updated_at = now
+    return "ok"
 
 
 async def _owner_site_count(session: AsyncSession, site_id: str) -> int:
@@ -458,7 +577,7 @@ async def create_checkout_session(
     _require_stripe_settings()
     stripe.api_key = settings.STRIPE_SECRET_KEY
     existing_subscription, ambiguous = await account_billing_record(session, site)
-    if existing_subscription or ambiguous:
+    if ambiguous or (existing_subscription and existing_subscription.stripe_subscription_status not in ENDED_SUBSCRIPTION_STATUSES):
         raise HTTPException(409, "Use Manage billing to change an existing subscription; a second subscription will not be created")
     checkout_plan = payload.plan
     stored_plan = _stored_plan_for_checkout_plan(checkout_plan)
@@ -554,6 +673,7 @@ async def billing_status(
                              (auth_claims or {}).get("sub", "").strip().lower() == site.owner_username.strip().lower()))
     billing_record, ambiguous = await account_billing_record(session, site) if site else (None, False)
     portal_record = billing_record or record
+    record = portal_record
     plan = effective_plan_for_record(record)
     entitlements = entitlements_for_plan(plan)
     has_subscription = bool(record and record.stripe_subscription_id)
@@ -561,6 +681,7 @@ async def billing_status(
     site_count = max(1, await owned_site_count(session, site.owner_username if site else None))
     billable_additional_sites = additional_site_count(plan, site_count) if plan in {"standard", "pro"} else 0
     return BillingStatusResponse(
+        collection_active=collection_is_active(record),
         site_id=site_id,
         plan=entitlements.plan,  # type: ignore[arg-type]
         display_plan=entitlements.display_name,
@@ -636,86 +757,8 @@ async def stripe_webhook(request: Request, session: AsyncSession = Depends(get_s
     if not await _record_stripe_event_once(session, event.get("id"), event_type):
         return {"status": "duplicate"}
 
-    if event_type == "checkout.session.completed":
-        metadata = data_object.get("metadata") or {}
-        record = await _upsert_site_plan(
-            session,
-            site_id=metadata.get("site_id") or data_object.get("client_reference_id"),
-            customer_id=data_object.get("customer"),
-            subscription_id=data_object.get("subscription"),
-            plan=metadata.get("plan") or "free",
-            subscription_status="active",
-            commit=False,
-        )
-        await _sync_extra_site_subscription_item(session, record)
-    elif event_type in {"customer.subscription.created", "customer.subscription.updated"}:
-        price_id = _base_subscription_price_id(data_object)
-        metadata = data_object.get("metadata") or {}
-        plan_from_metadata = _normalize_plan(metadata.get("plan"))
-        # Portal upgrades retain old subscription metadata; the purchased price is authoritative.
-        resolved_plan = _plan_for_price_id(price_id) if price_id else plan_from_metadata
-        if resolved_plan is None:
-            raise HTTPException(409, "Subscription has no recognized plan price")
-        status_fields = _subscription_status_fields(data_object)
-        record = await _upsert_site_plan(
-            session,
-            site_id=metadata.get("site_id"),
-            customer_id=data_object.get("customer"),
-            subscription_id=data_object.get("id"),
-            plan=resolved_plan,
-            subscription_status=status_fields["subscription_status"],
-            current_period_end=status_fields["current_period_end"],
-            current_period_start=status_fields["current_period_start"],
-            cancel_at_period_end=status_fields["cancel_at_period_end"],
-            extra_site_subscription_item_id=status_fields["extra_site_subscription_item_id"],
-            extra_site_quantity=status_fields["extra_site_quantity"],
-            extra_pageview_quantity=status_fields["extra_pageview_quantity"],
-            commit=False,
-        )
-        await _sync_extra_site_subscription_item(session, record)
-    elif event_type == "customer.subscription.deleted":
-        metadata = data_object.get("metadata") or {}
-        await _upsert_site_plan(
-            session,
-            site_id=metadata.get("site_id"),
-            customer_id=data_object.get("customer"),
-            subscription_id=data_object.get("id"),
-            plan="free",
-            subscription_status="canceled",
-            current_period_end=_timestamp_to_datetime(data_object.get("current_period_end")),
-            cancel_at_period_end=bool(data_object.get("cancel_at_period_end", False)),
-            extra_site_subscription_item_id=None,
-            extra_site_quantity=0,
-            commit=False,
-        )
-    elif event_type == "invoice.payment_failed":
-        subscription_id = data_object.get("subscription")
-        customer_id = data_object.get("customer")
-        record = await _find_site_plan_for_billing_event(
-            session,
-            customer_id=customer_id,
-            subscription_id=subscription_id,
-        )
-        if record:
-            now = dt.datetime.now(dt.timezone.utc)
-            record.stripe_subscription_status = "past_due"
-            record.billing_past_due_at = now
-            record.billing_grace_ends_at = now + dt.timedelta(days=settings.STRIPE_PAYMENT_FAILURE_GRACE_DAYS)
-            record.updated_at = now
-        logger.warning("Invoice payment failed", extra={"invoice_id": data_object.get("id"), "site_id": record.site_id if record else None})
-    elif event_type in {"invoice.payment_succeeded", "invoice.paid"}:
-        subscription_id = data_object.get("subscription")
-        customer_id = data_object.get("customer")
-        record = await _find_site_plan_for_billing_event(
-            session,
-            customer_id=customer_id,
-            subscription_id=subscription_id,
-        )
-        if record:
-            record.stripe_subscription_status = "active"
-            record.billing_past_due_at = None
-            record.billing_grace_ends_at = None
-            record.updated_at = dt.datetime.now(dt.timezone.utc)
-
+    outcome = "ignored"
+    if event_type in SUBSCRIPTION_EVENTS | CHECKOUT_EVENTS | INVOICE_EVENTS:
+        outcome = await _reconcile_subscription(session, event_type, data_object)
     await session.commit()
-    return {"status": "ok"}
+    return {"status": outcome}

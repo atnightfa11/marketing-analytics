@@ -54,10 +54,12 @@ Operational policy:
 - Early Adopter Standard checkout uses `STRIPE_EARLY_ADOPTER_STANDARD_PRICE_ID` when configured and also stores the site as backend plan `standard`.
 - Standard entitlements are enforced server-side for historical imports, anomaly alerts, advanced forecast metrics, and site access management.
 - Solo and Standard no longer have a plan-specific aggregate age cutoff. Per-request date-range bounds remain; customers can query older bounded intervals. This does not restore deleted data, extend raw retention, or implement post-cancellation deletion.
-- Standard includes 3 sites. When a subscribed Standard owner has additional sites, Stripe is synced with `STRIPE_ADDITIONAL_SITE_PRICE_ID` at $5/site/month.
+- Standard includes 3 sites. Owners add sites through Manage websites / `POST /api/sites`. Each extra slot requires explicit $5/month approval. Durable pending operations and Stripe idempotency keys support retries. Recurring quantity increases start on the next invoice without immediate proration. Reads/webhooks do not silently buy slots; already-purchased slots can be reused.
 - The dashboard Plan & billing panel opens Stripe Customer Portal for self-serve payment-method updates and cancellation when a Stripe customer is linked.
 - Stripe webhook events are persisted by `event.id` before processing so retries/replays do not re-run plan mutations.
-- Payment failures keep paid entitlements during the configured grace period (`STRIPE_PAYMENT_FAILURE_GRACE_DAYS`, default 7), then the effective plan falls back to Solo until payment recovers.
+- Payment failures preserve paid features and collection during `STRIPE_PAYMENT_FAILURE_GRACE_DAYS` (default 7). Retries do not extend the deadline. After grace, paid features fall back to Solo and collection pauses for both tiers; existing reports remain readable. Cancellation pauses collection. New signups start `incomplete`; existing unbilled beta records remain complimentary.
+- Owner sites inherit the account's unambiguous subscription across ingestion, reporting features, imports, alerts, and access management. Published historical days retain their original mechanism through plan changes. Multiple subscriptions require support reconciliation.
+- Site removal, multi-site downgrades, and reducing purchased slots are not yet a complete self-serve workflow. Review these cases with support and configure the portal accordingly.
 
 ## Capacity Rollout
 

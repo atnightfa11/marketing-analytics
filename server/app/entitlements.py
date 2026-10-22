@@ -8,7 +8,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import DashboardSite
+from .models import DashboardSite, SitePlan
 
 SOLO_PLANS = {"free", "solo"}
 STANDARD_PLANS = {"standard", "pro"}
@@ -79,7 +79,50 @@ def effective_plan_for_record(record: Any | None, now: dt.datetime | None = None
         return "free"
     if subscription_status in ENDED_SUBSCRIPTION_STATUSES:
         return "free"
-    return normalized
+    return "free"
+
+
+def collection_is_active(record: Any | None, now: dt.datetime | None = None) -> bool:
+    """Legacy unbilled beta sites stay complimentary; new signups start incomplete."""
+    if record is None:
+        return True
+    state = (record.stripe_subscription_status or "").lower()
+    if not state:
+        return not bool(record.stripe_subscription_id)
+    if state in ACTIVE_SUBSCRIPTION_STATUSES:
+        return True
+    grace_end = _as_aware_utc(record.billing_grace_ends_at)
+    return bool(state in GRACE_SUBSCRIPTION_STATUSES and grace_end
+                and (now or dt.datetime.now(dt.timezone.utc)) <= grace_end)
+
+
+async def account_subscription(session: AsyncSession, owner_username: str):
+    records = (await session.execute(select(SitePlan).join(
+        DashboardSite, DashboardSite.site_id == SitePlan.site_id,
+    ).where(DashboardSite.owner_username == owner_username,
+            SitePlan.stripe_subscription_id.is_not(None))
+      .order_by(SitePlan.updated_at.desc(), SitePlan.site_id))).scalars().all()
+    current = [row for row in records if row.stripe_subscription_status not in ENDED_SUBSCRIPTION_STATUSES]
+    if len({row.stripe_subscription_id for row in current}) > 1:
+        return None, True
+    return (current[0] if current else records[0] if records else None), False
+
+
+async def billing_record_for_site(session: AsyncSession, site_id: str):
+    local = await session.get(SitePlan, site_id)
+    site = await session.get(DashboardSite, site_id)
+    if not site:
+        return local
+    account, ambiguous = await account_subscription(session, site.owner_username)
+    if ambiguous:
+        # Do not silently choose another subscription's privileges.
+        return local
+    return account or local
+
+
+async def require_active_collection(session: AsyncSession, site_id: str) -> None:
+    if not collection_is_active(await billing_record_for_site(session, site_id)):
+        raise HTTPException(403, "Collection requires an active subscription. Existing reports remain available.")
 
 
 def display_plan_name(plan: str | None) -> str:

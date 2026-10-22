@@ -76,6 +76,7 @@ export const LoginGate: FC = () => {
               {isSubmitting ? "Signing in..." : "Sign In"}
             </button>
           </form>
+          <a href="/forgot-password" className="mt-4 inline-block text-sm underline" style={fontBody}>Forgot password?</a>
         </section>
       </main>
     </div>

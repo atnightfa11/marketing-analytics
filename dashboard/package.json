@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.cypress.json",
     "test": "vitest",
     "test:e2e": "start-server-and-test preview http://127.0.0.1:4173 \"cypress run --e2e\""
   },

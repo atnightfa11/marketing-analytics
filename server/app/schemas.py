@@ -59,6 +59,7 @@ class BillingPortalSessionResponse(BaseModel):
 
 
 class BillingStatusResponse(BaseModel):
+    collection_active: bool = True
     site_id: str
     plan: Literal["free", "standard", "pro"]
     display_plan: str = "Solo"
@@ -197,7 +198,7 @@ class CollectRequest(BaseModel):
 class HistoricalImportRow(BaseModel):
     day: dt.date
     metric: Literal["uniques", "pageviews", "sessions", "conversions", "revenue"]
-    value: float = Field(ge=0)
+    value: float = Field(ge=0, allow_inf_nan=False)
 
 
 class HistoricalImportRequest(BaseModel):

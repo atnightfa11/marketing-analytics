@@ -1,6 +1,22 @@
-# V1 Readiness Checklist (Updated April 29, 2026)
+# V1 Readiness Checklist (Reviewed October 22, 2026)
 
-This checklist reflects what is live in production and what remains before broader public launch.
+Implementation status is not deployment evidence. October 21 changes remain local; Railway is available again and the owner will perform deployment. Local tests were rerun October 22, including PostgreSQL 17. See [the release runbook](release_2026_10_21.md) for rollout order, read-only preflight evidence, and remaining verification. Older production checkmarks below are historical observations, not verification of this release.
+
+## October 21 Code Pass
+
+- [x] Protect purged aggregate days from partial imports; require complete retained batches for rollback.
+- [x] Preserve published Solo/Standard history across plan changes, including forecast training.
+- [x] Account entitlements and retry-safe additional-site setup with explicit $5/month approval.
+- [x] Gate unpaid/canceled collection, preserve complimentary beta sites, and prevent grace extension on payment retries.
+- [x] Password reset with hashed single-use links, session revocation, and SMTP delivery.
+- [x] Cookie-authenticated marketing signup, Solo checkout resume, backend-confirmed completion.
+- [x] Read-only deployment checks, schema readiness, release fingerprints, and regression tests.
+- [x] Validate the full migration chain and concurrent workflows on isolated local PostgreSQL; fix import date typing and UTC day selection.
+- [x] Reconcile current Stripe subscription state under database locks; test delayed/replaced events, retries, and duplicate delivery.
+- [x] Repeat local migration/concurrency checks on PostgreSQL 17, matching production's major version; verify SDK lint/tests/build/bundle budget and frontend tests/builds.
+- [ ] Rehearse against a production staging copy; owner deploys API, matching worker, dashboard, and marketing site.
+- [ ] Complete production payment, signup, password-recovery, and retained-history smoke checks.
+- [ ] Complete an isolated backup restore drill and document retention evidence.
 
 ## Verified working now
 
@@ -35,8 +51,7 @@ This checklist reflects what is live in production and what remains before broad
 - [x] Apply a 7-day payment-failure grace policy before paid entitlements fall back to Solo.
 - [ ] Finalize beta-user onboarding policy. Prefer DB-backed site access for ongoing sharing; use `DASHBOARD_SITE_ACCESS_JSON` only for temporary overrides.
 - [ ] Verify production Postgres backups/PITR and run a restore drill into staging. Aggregate tables are the durable source of truth after raw purge.
-- [ ] Decide whether to expose Pro in UI now or keep hidden behind `ENABLE_PRO_INGEST=false`.
-- [ ] Keep Pro/Enterprise local-DP claims hidden until the Pro path is enabled, tested, and supported commercially.
+- [x] Keep Pro/Enterprise hidden behind `ENABLE_PRO_INGEST=false`; full LDP is explicitly deferred.
 - [ ] Run a full launch smoke in production from clean browser:
   - Solo signup -> checkout -> return -> dashboard access
   - standard signup -> checkout -> return -> upgraded plan
@@ -67,7 +82,7 @@ This checklist reflects what is live in production and what remains before broad
 
 ## Nice-to-have immediately after launch
 
-- [ ] Alerting for failed reducer/forecast jobs (separate from customer-facing anomaly alerts).
+- [x] Internal reducer/forecast alert code and previously tested email delivery; recheck after deployment.
 - [x] Expanded migration import docs for history and rollback.
 - [ ] Pro/Enterprise v2 privacy docs for zero-access local/hybrid DP.
 - [ ] Blog/FAQ explainer for why privacy-first analytics may differ from GA4. Keep this out of onboarding and import settings.

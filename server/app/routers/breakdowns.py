@@ -14,11 +14,11 @@ from .. import breakdown_logic
 from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
+from ..report_history import published_plan_clause
 from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..models import BreakdownRollup, DashboardSite, RawReport, ReducerWatermark, get_session
-from ..scheduler.nightly_reduce import REDUCER_VERSION
-from ..schemas import BreakdownResponse, BreakdownRow
+from ..schemas import BreakdownResponse
 
 router = APIRouter(tags=["metrics"])
 BreakdownDimension = Literal[
@@ -448,8 +448,7 @@ async def _successful_reduced_days(
         await session.execute(
             select(ReducerWatermark.day).where(
                 ReducerWatermark.site_id == site_id,
-                ReducerWatermark.plan == plan,
-                ReducerWatermark.reducer_version == REDUCER_VERSION,
+                published_plan_clause(ReducerWatermark, plan),
                 ReducerWatermark.status == "success",
                 ReducerWatermark.day >= start_day,
                 ReducerWatermark.day <= end_day,
@@ -478,7 +477,7 @@ async def _breakdown_buckets_from_rollups(
         select(BreakdownRollup)
         .where(
             BreakdownRollup.site_id == site_id,
-            BreakdownRollup.plan == plan,
+            published_plan_clause(BreakdownRollup, plan),
             BreakdownRollup.dimension == dimension,
             BreakdownRollup.day >= start_day,
             BreakdownRollup.day <= end_day,

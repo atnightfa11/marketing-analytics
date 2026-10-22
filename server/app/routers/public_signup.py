@@ -192,7 +192,7 @@ async def public_signup(
         site_name=site_name,
         allowed_origin=allowed_origin,
     )
-    plan = SitePlan(site_id=site_id, plan="free")
+    plan = SitePlan(site_id=site_id, plan="free", stripe_subscription_status="incomplete")
     site_key = SiteApiKey(
         site_id=site_id,
         key_id=key_id,

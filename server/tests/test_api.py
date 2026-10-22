@@ -65,6 +65,509 @@ from app.usage_accounting import record_pageviews, usage_context  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
 
+def test_readiness_fails_on_schema_drift(client, monkeypatch):
+    from app.routers import health
+
+    async def outdated_schema(session):
+        return False
+
+    monkeypatch.setattr(health.settings, "AUTO_CREATE_DB_SCHEMA", False)
+    monkeypatch.setattr(health, "schema_is_current", outdated_schema)
+    response = client.get("/health/readiness")
+    assert response.status_code == 503
+    assert response.json()["detail"]["checks"]["schema_current"] is False
+
+
+@pytest.mark.asyncio
+async def test_unpaid_checkout_does_not_collect_and_late_checkout_cannot_revive_cancel(client, monkeypatch):
+    from app.routers import stripe_billing
+    from app.entitlements import collection_is_active
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_WEBHOOK_SECRET", "whsec_test_only")
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_STANDARD_PRICE_ID", "price_current_standard")
+    snapshot = {"id": "sub_checkout_gate", "customer": "cus_checkout_gate", "status": "incomplete",
+                "items": {"data": [{"price": {"id": "price_current_standard"}}]}}
+
+    async def retrieve(_):
+        return snapshot
+
+    monkeypatch.setattr(stripe_billing, "_retrieve_current_subscription", retrieve)
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id="checkout-payment-gate", plan="free"))
+        await session.commit()
+    event = {"id": "evt_checkout_unpaid", "type": "checkout.session.completed", "data": {"object": {
+        "metadata": {"site_id": "checkout-payment-gate", "plan": "standard"},
+        "customer": "cus_checkout_gate", "subscription": "sub_checkout_gate", "payment_status": "unpaid",
+    }}}
+    monkeypatch.setattr(stripe_billing.stripe.Webhook, "construct_event", lambda **_: event)
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "sig"}, content=b"{}").status_code == 200
+    async with async_session_factory() as session:
+        record = await session.get(SitePlan, "checkout-payment-gate")
+        assert not collection_is_active(record)
+        record.stripe_subscription_status = "canceled"
+        record.plan = "free"
+        await session.commit()
+    event["id"] = "evt_checkout_late_paid"
+    event["data"]["object"]["payment_status"] = "paid"
+    snapshot["status"] = "canceled"
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "sig"}, content=b"{}").status_code == 200
+    async with async_session_factory() as session:
+        record = await session.get(SitePlan, "checkout-payment-gate")
+        assert record.stripe_subscription_status == "canceled"
+        assert not collection_is_active(record)
+
+
+@pytest.mark.asyncio
+async def test_password_recovery_is_single_use_and_revokes_old_sessions(client, monkeypatch):
+    import hashlib
+    from app.models import PasswordReset
+    from app.routers import password_recovery as recovery
+    recovery.attempts.clear()
+    monkeypatch.setattr(dashboard_auth_settings, "DASHBOARD_AUTH_ENABLED", True)
+    monkeypatch.setattr(recovery.settings, "ALERT_EMAIL_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setattr(recovery.settings, "ALERT_EMAIL_FROM", "support@example.test")
+    sent = []
+
+    async def capture_email(recipients, subject, body):
+        sent.append((recipients, body))
+
+    monkeypatch.setattr(recovery, "send_email", capture_email)
+    async with async_session_factory() as session:
+        session.add(DashboardUser(username="reset-owner", email="reset@example.test",
+                                  password_hash=PasswordHasher().hash("old-password")))
+        await session.commit()
+    old_token = dashboard_auth_module.create_access_token("reset-owner")[0]
+    old_headers = {"Authorization": f"Bearer {old_token}"}
+    assert client.get("/api/auth/me", headers=old_headers).status_code == 200
+    response = client.post("/api/auth/password-reset/request", json={"email": " RESET@example.test "})
+    unknown = client.post("/api/auth/password-reset/request", json={"email": "absent@example.test"})
+    assert response.status_code == unknown.status_code == 200
+    assert response.json() == unknown.json()
+    assert len(sent) == 1
+    token = sent[0][1].split("#token=", 1)[1].split()[0]
+    async with async_session_factory() as session:
+        row = await session.get(PasswordReset, hashlib.sha256(token.encode()).hexdigest())
+        assert row and row.token_hash != token
+        session.add(PasswordReset(token_hash=hashlib.sha256(b"x"*32).hexdigest(), username="reset-owner",
+                                  expires_at=datetime.now(timezone.utc)-timedelta(minutes=1)))
+        await session.commit()
+    assert client.post("/api/auth/password-reset/confirm", json={"token": "x"*32, "password": "new-password"}).status_code == 400
+    payload = {"token": token, "password": "new-password"}
+    assert client.post("/api/auth/password-reset/confirm", json=payload).status_code == 200
+    assert client.post("/api/auth/password-reset/confirm", json=payload).status_code == 400
+    assert client.get("/api/auth/me", headers=old_headers).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "reset-owner", "password": "old-password"}).status_code == 401
+    login = client.post("/api/auth/login", json={"username": "reset-owner", "password": "new-password"})
+    assert login.status_code == 200
+    assert client.get("/api/auth/me", headers={"Authorization": f"Bearer {login.json()['access_token']}"}).status_code == 200
+    client.cookies.clear()
+
+
+@pytest.mark.asyncio
+async def test_password_recovery_failed_delivery_removes_token_and_throttles(client, monkeypatch):
+    from app.models import PasswordReset
+    from app.routers import password_recovery as recovery
+    recovery.attempts.clear()
+    monkeypatch.setattr(recovery.settings, "ALERT_EMAIL_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setattr(recovery.settings, "ALERT_EMAIL_FROM", "support@example.test")
+
+    async def fail_email(*args):
+        raise RuntimeError("SMTP unavailable")
+
+    monkeypatch.setattr(recovery, "send_email", fail_email)
+    async with async_session_factory() as session:
+        session.add(DashboardUser(username="reset-failure", email="reset-failure@example.test", password_hash="unused"))
+        await session.commit()
+    for _ in range(3):
+        assert client.post("/api/auth/password-reset/request", json={"email": "reset-failure@example.test"}).status_code == 200
+    assert client.post("/api/auth/password-reset/request", json={"email": "reset-failure@example.test"}).status_code == 429
+    async with async_session_factory() as session:
+        assert not (await session.execute(select(PasswordReset).where(PasswordReset.username == "reset-failure"))).scalars().all()
+
+
+@pytest.mark.asyncio
+async def test_standard_add_sites_inherits_account_and_retry_never_duplicates(client, monkeypatch):
+    from uuid import uuid4
+    from app.models import SiteProvisioning
+    from app.routers import sites
+    from app.dependencies import get_site_plan
+    from app.entitlements import require_active_collection
+    from fastapi import HTTPException
+    monkeypatch.setattr(dashboard_auth_settings, "DASHBOARD_AUTH_ENABLED", True)
+    monkeypatch.setattr(sites.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(sites.settings, "STRIPE_ADDITIONAL_SITE_PRICE_ID", "price_extra_test")
+    owner = "provision-owner"
+    async with async_session_factory() as session:
+        session.add(DashboardUser(username=owner, email="provision@example.test", password_hash="unused"))
+        session.add(DashboardSite(site_id="provision-first", owner_username=owner, site_name="First", allowed_origin="https://first.test"))
+        session.add(SitePlan(site_id="provision-first", plan="standard", stripe_subscription_id="sub_provision",
+                             stripe_subscription_status="active"))
+        await session.commit()
+    headers = {"Authorization": f"Bearer {dashboard_auth_module.create_access_token(owner)[0]}"}
+    charges = []
+    subscription = {"status": "active", "items": {"data": []}}
+    monkeypatch.setattr(sites.stripe.Subscription, "retrieve", lambda *a, **kw: subscription)
+
+    def create_item(**kwargs):
+        charges.append(kwargs)
+        return {"id": "si_added", "quantity": kwargs["quantity"]}
+
+    monkeypatch.setattr(sites.stripe.SubscriptionItem, "create", create_item)
+    for number in (2, 3):
+        response = client.post("/api/sites", headers=headers, json={"request_id": str(uuid4()),
+                               "site_name": f"Site {number}", "site_domain": f"site{number}.test"})
+        assert response.status_code == 200, response.text
+        async with async_session_factory() as session:
+            assert await get_site_plan(response.json()["site_id"], session) == "standard"
+    assert charges == []
+    payload = {"request_id": str(uuid4()), "site_name": "Fourth", "site_domain": "fourth.test"}
+    approval = client.post("/api/sites", headers=headers, json=payload)
+    assert approval.status_code == 409 and "adds $5/month" in approval.text
+    async with async_session_factory() as session:
+        assert await session.get(SiteProvisioning, payload["request_id"]) is None
+    payload["approved_monthly_increase_usd"] = 5
+    first = client.post("/api/sites", headers=headers, json=payload)
+    assert first.status_code == 200, first.text
+    repeated = client.post("/api/sites", headers=headers, json=payload)
+    assert repeated.json() == first.json()
+    assert len(charges) == 1
+    assert charges[0]["quantity"] == 1
+    assert charges[0]["proration_behavior"] == "none"
+    assert charges[0]["idempotency_key"] == f"valid-site:{payload['request_id']}"
+    async with async_session_factory() as session:
+        assert len((await session.execute(select(DashboardSite).where(DashboardSite.owner_username == owner))).scalars().all()) == 4
+        assert (await session.get(SitePlan, "provision-first")).extra_site_quantity == 1
+        fourth = first.json()["site_id"]
+        assert await get_site_plan(fourth, session) == "standard"
+        account = await session.get(SitePlan, "provision-first")
+        account.stripe_subscription_status = "canceled"
+        await session.commit()
+        assert await get_site_plan(fourth, session) == "free"
+        with pytest.raises(HTTPException, match="Collection requires"):
+            await require_active_collection(session, fourth)
+
+
+@pytest.mark.asyncio
+async def test_add_site_billing_failure_is_resumable_and_owner_scoped(client, monkeypatch):
+    from uuid import uuid4
+    from app.routers import sites
+    monkeypatch.setattr(dashboard_auth_settings, "DASHBOARD_AUTH_ENABLED", True)
+    monkeypatch.setattr(sites.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(sites.settings, "STRIPE_ADDITIONAL_SITE_PRICE_ID", "price_extra_retry")
+    async with async_session_factory() as session:
+        for owner in ("retry-owner", "retry-other"):
+            session.add(DashboardUser(username=owner, email=f"{owner}@example.test", password_hash="unused"))
+        for number in range(3):
+            session.add(DashboardSite(site_id=f"retry-{number}", owner_username="retry-owner", site_name=str(number), allowed_origin=f"https://retry{number}.test"))
+        session.add(SitePlan(site_id="retry-0", plan="standard", stripe_subscription_id="sub_retry", stripe_subscription_status="active"))
+        await session.commit()
+    headers = {"Authorization": f"Bearer {dashboard_auth_module.create_access_token('retry-owner')[0]}"}
+    other = {"Authorization": f"Bearer {dashboard_auth_module.create_access_token('retry-other')[0]}"}
+    payload = {"request_id": str(uuid4()), "site_name": "Retry site", "site_domain": "retry-new.test", "approved_monthly_increase_usd": 5}
+
+    def fail_billing(*args):
+        raise sites.stripe.error.APIConnectionError("ambiguous connection failure")
+
+    monkeypatch.setattr(sites, "purchase_slots", fail_billing)
+    assert client.post("/api/sites", headers=headers, json=payload).status_code == 502
+    assert client.get("/api/sites/provisioning", headers=headers).json()["request_id"] == payload["request_id"]
+    assert client.get("/api/sites/provisioning", headers=other).json() is None
+    assert client.post("/api/sites", headers=other, json=payload).status_code == 409
+    assert client.post("/api/sites", headers=headers, json={**payload, "request_id": str(uuid4())}).status_code == 409
+    monkeypatch.setattr(sites, "purchase_slots", lambda row: ("si_recovered", 1))
+    assert client.post("/api/sites", headers=headers, json=payload).status_code == 200
+    assert client.get("/api/sites/provisioning", headers=headers).json() is None
+
+
+@pytest.mark.asyncio
+async def test_collection_requires_payment_but_preserves_complimentary_beta(client):
+    from fastapi import HTTPException
+    from app.entitlements import require_active_collection, effective_plan_for_record
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as session:
+        for state, allowed in [(None, True), ("incomplete", False), ("active", True), ("canceled", False), ("past_due", True)]:
+            record = SitePlan(site_id=f"collection-state-{state}", plan="free", stripe_subscription_status=state,
+                              stripe_subscription_id="sub_state" if state else None,
+                              billing_grace_ends_at=now+timedelta(days=1) if state == "past_due" else None)
+            session.add(record)
+            await session.flush()
+            if allowed:
+                await require_active_collection(session, record.site_id)
+            else:
+                with pytest.raises(HTTPException):
+                    await require_active_collection(session, record.site_id)
+            if state == "past_due":
+                record.billing_grace_ends_at = now-timedelta(days=1)
+                with pytest.raises(HTTPException):
+                    await require_active_collection(session, record.site_id)
+        assert effective_plan_for_record(SitePlan(plan="standard", stripe_subscription_status="incomplete")) == "free"
+        await session.rollback()
+
+
+def test_account_workflow_migration_preserves_existing_users():
+    import runpy
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE dashboard_users (username VARCHAR(64) PRIMARY KEY)")
+        connection.exec_driver_sql("INSERT INTO dashboard_users VALUES ('existing')")
+        migration = runpy.run_path(str(Path(__file__).parents[1] / "alembic/versions/2026_10_21_account_workflows.py"))
+        with Operations.context(MigrationContext.configure(connection)):
+            migration["upgrade"]()
+            assert connection.exec_driver_sql("SELECT auth_version FROM dashboard_users").scalar() == 0
+            assert {"password_resets", "site_provisioning"}.issubset(sa.inspect(connection).get_table_names())
+            migration["downgrade"]()
+            assert connection.exec_driver_sql("SELECT username FROM dashboard_users").scalar() == "existing"
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type,snapshot_state,snapshot_price", [
+    ("customer.subscription.updated", "canceled", "price_order_standard"),
+    ("customer.subscription.deleted", "active", "price_order_standard"),
+    ("invoice.payment_failed", "active", "price_order_standard"),
+    ("invoice.paid", "past_due", "price_order_standard"),
+    ("checkout.session.completed", "canceled", "price_order_standard"),
+    ("customer.subscription.updated", "active", "price_order_solo"),
+])
+async def test_billing_uses_current_state_not_delayed_snapshots(client, monkeypatch, event_type, snapshot_state, snapshot_price):
+    from app.routers import stripe_billing as billing
+    from app.entitlements import collection_is_active
+    from uuid import uuid4
+    site_id = f"ordered-{uuid4().hex}"
+    monkeypatch.setattr(billing.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_WEBHOOK_SECRET", "whsec_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_STANDARD_PRICE_ID", "price_order_standard")
+    monkeypatch.setattr(billing.settings, "STRIPE_SOLO_PRICE_ID", "price_order_solo")
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id=site_id, plan="standard", stripe_subscription_id=site_id,
+                             stripe_customer_id="cus_order", stripe_subscription_status="active"))
+        await session.commit()
+    snapshot = {"id": site_id, "customer": "cus_order", "status": snapshot_state,
+                "metadata": {"site_id": site_id, "plan": "standard"},
+                "items": {"data": [{"price": {"id": snapshot_price}, "quantity": 1}]}}
+
+    async def retrieve(subscription_id):
+        assert subscription_id == site_id
+        return snapshot
+
+    monkeypatch.setattr(billing, "_retrieve_current_subscription", retrieve)
+    event = {"id": f"evt_{site_id}", "created": 1, "type": event_type, "data": {"object": {
+        "id": site_id, "subscription": site_id, "customer": "cus_order", "status": "active",
+        "metadata": {"site_id": site_id, "plan": "standard"}, "payment_status": "paid",
+    }}}
+    monkeypatch.setattr(billing.stripe.Webhook, "construct_event", lambda **_: event)
+    response = client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}")
+    assert response.status_code == 200, response.text
+    async with async_session_factory() as session:
+        record = await session.get(SitePlan, site_id)
+        assert record.stripe_subscription_status == snapshot_state
+        assert record.plan == ("free" if snapshot_state == "canceled" or snapshot_price.endswith("solo") else "standard")
+        assert collection_is_active(record) == (snapshot_state != "canceled")
+
+
+@pytest.mark.asyncio
+async def test_billing_reconciliation_failure_retries_same_event(client, monkeypatch):
+    from app.routers import stripe_billing as billing
+    from fastapi import HTTPException
+    monkeypatch.setattr(billing.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_WEBHOOK_SECRET", "whsec_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_STANDARD_PRICE_ID", "price_retry_standard")
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id="order-retry", plan="standard", stripe_subscription_id="sub_order_retry",
+                             stripe_subscription_status="active"))
+        await session.commit()
+    fail = True
+
+    async def retrieve(_):
+        if fail:
+            raise HTTPException(503, "Stripe unavailable")
+        return {"id": "sub_order_retry", "customer": "cus_retry", "status": "canceled",
+                "items": {"data": [{"price": {"id": "price_retry_standard"}}]}}
+
+    monkeypatch.setattr(billing, "_retrieve_current_subscription", retrieve)
+    event = {"id": "evt_retry_reconcile", "type": "invoice.payment_failed", "data": {"object": {
+        "parent": {"subscription_details": {"subscription": {"id": "sub_order_retry"}}},
+    }}}
+    monkeypatch.setattr(billing.stripe.Webhook, "construct_event", lambda **_: event)
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}").status_code == 503
+    async with async_session_factory() as session:
+        assert await session.get(StripeEvent, event["id"]) is None
+        assert (await session.get(SitePlan, "order-retry")).stripe_subscription_status == "active"
+    fail = False
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}").status_code == 200
+    async with async_session_factory() as session:
+        assert (await session.get(SitePlan, "order-retry")).stripe_subscription_status == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_old_subscription_cannot_replace_new_subscription(client, monkeypatch):
+    from app.routers import stripe_billing as billing
+    monkeypatch.setattr(billing.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_WEBHOOK_SECRET", "whsec_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_STANDARD_PRICE_ID", "price_replace_standard")
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id="replaced-account", plan="standard", stripe_subscription_id="sub_replaced_old",
+                             stripe_subscription_status="canceled", stripe_customer_id="cus_old"))
+        await session.commit()
+    snapshots = {
+        "sub_replaced_old": {"id": "sub_replaced_old", "customer": "cus_old", "status": "canceled", "created": 100,
+                             "metadata": {"site_id": "replaced-account"}},
+        "sub_replaced_new": {"id": "sub_replaced_new", "customer": "cus_new", "status": "active", "created": 200,
+                             "metadata": {"site_id": "replaced-account"},
+                             "items": {"data": [{"price": {"id": "price_replace_standard"}}]}},
+    }
+
+    async def retrieve(subscription_id):
+        return snapshots[subscription_id]
+
+    monkeypatch.setattr(billing, "_retrieve_current_subscription", retrieve)
+    event = {"id": "evt_replaced_new", "type": "customer.subscription.created",
+             "data": {"object": snapshots["sub_replaced_new"]}}
+    monkeypatch.setattr(billing.stripe.Webhook, "construct_event", lambda **_: event)
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}").status_code == 200
+    for event_type in ("customer.subscription.deleted", "checkout.session.completed", "invoice.payment_failed"):
+        event.update(id=f"evt_old_{event_type}", type=event_type,
+                     data={"object": {"id": "sub_replaced_old", "subscription": "sub_replaced_old", "customer": "cus_old",
+                                      "metadata": {"site_id": "replaced-account"}}})
+        response = client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}")
+        assert response.status_code == 200 and response.json()["status"] == "superseded"
+    async with async_session_factory() as session:
+        record = await session.get(SitePlan, "replaced-account")
+        assert record.stripe_subscription_id == "sub_replaced_new"
+        assert record.stripe_subscription_status == "active"
+        assert record.stripe_customer_id == "cus_new"
+
+
+@pytest.mark.asyncio
+async def test_one_off_invoice_and_unrecognized_price_cannot_change_plan(client, monkeypatch):
+    from app.routers import stripe_billing as billing
+    monkeypatch.setattr(billing.settings, "STRIPE_SECRET_KEY", "sk_test_only")
+    monkeypatch.setattr(billing.settings, "STRIPE_WEBHOOK_SECRET", "whsec_test_only")
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id="price-unknown", plan="standard", stripe_subscription_id="sub_unknown",
+                             stripe_customer_id="cus_unknown", stripe_subscription_status="active"))
+        await session.commit()
+
+    snapshot = {"id": "sub_unknown", "customer": "cus_unknown", "status": "past_due",
+                "items": {"data": [{"price": {"id": "price_unconfigured"}}]}}
+
+    async def retrieve(_):
+        return snapshot
+
+    monkeypatch.setattr(billing, "_retrieve_current_subscription", retrieve)
+    event = {"id": "evt_one_off", "type": "invoice.payment_failed", "data": {"object": {"customer": "cus_unknown"}}}
+    monkeypatch.setattr(billing.stripe.Webhook, "construct_event", lambda **_: event)
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}").json()["status"] == "ignored"
+    event["id"] = "evt_unknown_price"
+    event["data"]["object"]["subscription"] = "sub_unknown"
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}").status_code == 409
+    async with async_session_factory() as session:
+        assert (await session.get(SitePlan, "price-unknown")).plan == "standard"
+        assert await session.get(StripeEvent, "evt_unknown_price") is None
+    # Cancellation must still revoke collection for an archived/unconfigured price.
+    snapshot["status"] = "canceled"
+    assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "test"}, content=b"{}").status_code == 200
+    async with async_session_factory() as session:
+        assert (await session.get(SitePlan, "price-unknown")).stripe_subscription_status == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_current_subscription_lookup_has_bounded_timeout_and_retries_via_webhook(monkeypatch):
+    from app.routers import stripe_billing as billing
+    from fastapi import HTTPException
+
+    def fail_retrieve(subscription_id):
+        assert subscription_id == "sub_network_failure"
+        raise billing.stripe.error.APIConnectionError("unavailable")
+
+    def fake_client(api_key, **kwargs):
+        assert kwargs["max_network_retries"] == 0
+        assert kwargs["http_client"]._timeout == 10
+        assert "stripe_version" not in kwargs
+        return SimpleNamespace(subscriptions=SimpleNamespace(retrieve=fail_retrieve))
+
+    monkeypatch.setattr(billing.stripe, "StripeClient", fake_client)
+    with pytest.raises(HTTPException) as error:
+        await billing._retrieve_current_subscription("sub_network_failure")
+    assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_history_survives_upgrade_downgrade_without_double_counting(client):
+    day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=10)
+    site_id = "history-plan-continuity"
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id=site_id, plan="free"))
+        for plan, value in [("free", 100), ("standard", 999)]:
+            session.add(DpWindow(site_id=site_id, plan=plan, metric="pageviews", window_start=day,
+                                 window_end=day+timedelta(days=1), value=value, variance=1,
+                                 ci80_low=value, ci80_high=value, ci95_low=value, ci95_high=value))
+        session.add(ReducerWatermark(site_id=site_id, plan="free", day=day.date(), reducer_version=REDUCER_VERSION,
+                                    status="success", raw_report_count=100, dp_window_count=1, breakdown_rollup_count=1,
+                                    reduced_at=day+timedelta(days=1), raw_purged_at=day+timedelta(days=4)))
+        session.add(BreakdownRollup(site_id=site_id, plan="free", day=day.date(), dimension="sources",
+                                    hostname="", day_type="all", label="Direct", metric="sessions", value=50))
+        await session.commit()
+    for plan in ["free", "standard", "free"]:
+        await _set_site_plan(site_id, plan)
+        response = client.get("/api/aggregate", params={"site_id": site_id, "metric": "pageviews",
+                              "start": day.date().isoformat(), "end": day.date().isoformat()})
+        assert response.status_code == 200, response.text
+        assert [row["value"] for row in response.json()["windows"]] == [100]
+        breakdown = client.get("/api/breakdown", params={"site_id": site_id, "dimension": "sources",
+                               "start": day.date().isoformat(), "end": day.date().isoformat()})
+        assert breakdown.status_code == 200, breakdown.text
+        assert breakdown.json()["totals"]["sessions"] == 50
+
+
+@pytest.mark.asyncio
+async def test_import_cannot_replace_purged_day_or_remove_other_metrics(client):
+    day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=20)
+    site_id = "purged-import-protection"
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id=site_id, plan="standard"))
+        for metric, value in [("pageviews", 100), ("sessions", 50)]:
+            session.add(DpWindow(site_id=site_id, plan="standard", metric=metric, window_start=day,
+                                 window_end=day+timedelta(days=1), value=value, variance=1,
+                                 ci80_low=value, ci80_high=value, ci95_low=value, ci95_high=value))
+        session.add(ReducerWatermark(site_id=site_id, plan="standard", day=day.date(), reducer_version=REDUCER_VERSION,
+                                    status="success", raw_report_count=150, dp_window_count=2, breakdown_rollup_count=1,
+                                    reduced_at=day+timedelta(days=1), raw_purged_at=day+timedelta(days=4)))
+        await session.commit()
+    payload = {"site_id": site_id, "csv_text": f"day,metric,value\n{day.date()},pageviews,200\n"}
+    preview = client.post("/api/import/historical-csv/preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    assert not preview.json()["valid"]
+    assert preview.json()["live_overlaps"]
+    assert client.post("/api/import/historical-csv", json=payload).status_code == 409
+    async with async_session_factory() as session:
+        rows = (await session.execute(select(DpWindow).where(DpWindow.site_id == site_id))).scalars().all()
+        assert {row.metric: row.value for row in rows} == {"pageviews": 100, "sessions": 50}
+        # A late historical row must not bypass reducer's purged-day guard either.
+        session.add(RawReport(site_id=site_id, kind="pageviews", day=day.date(), payload={"historical_import": True, "value": 200},
+                              epsilon_used=0, sampling_rate=1, server_received_at=day))
+        await session.commit()
+        with pytest.raises(RuntimeError, match="Cannot rebuild a purged day"):
+            await reduce_reports(session, start_day=day.date(), end_day=day.date(), site_id=site_id)
+        rows = (await session.execute(select(DpWindow).where(DpWindow.site_id == site_id))).scalars().all()
+        assert {row.metric: row.value for row in rows} == {"pageviews": 100, "sessions": 50}
+
+
+@pytest.mark.asyncio
+async def test_import_blocks_live_day_even_when_import_metric_is_different(client):
+    day = datetime.now(timezone.utc).date() - timedelta(days=5)
+    site_id = "import-other-metric"
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id=site_id, plan="standard"))
+        session.add(RawReport(site_id=site_id, kind="sessions", day=day, payload={}, epsilon_used=0, sampling_rate=1))
+        await session.commit()
+    assert client.post("/api/import/historical-csv", json={"site_id": site_id,
+                       "csv_text": f"day,metric,value\n{day},pageviews,10\n"}).status_code == 409
+
+
 @pytest.mark.asyncio
 async def test_capacity_request_is_owner_only_durable_and_never_charges(client, monkeypatch):
     from app import billing_capacity
@@ -195,6 +698,12 @@ async def test_subscription_price_overrides_old_metadata_and_recognizes_capacity
              "current_period_start": 1790812800, "current_period_end": 1793491200},
         ]},
     }}}
+    async def retrieve(_):
+        return event["data"]["object"]
+    monkeypatch.setattr(stripe_billing, "_retrieve_current_subscription", retrieve)
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id="new-standard-capacity", plan="free"))
+        await session.commit()
     async def no_sync(*args):
         pass
     monkeypatch.setattr(stripe_billing, "_sync_extra_site_subscription_item", no_sync)
@@ -2708,7 +3217,7 @@ async def test_unreduced_recent_raw_days_skips_successful_watermarks(client):
     reduced_site_id = "site-catchup-success-watermark"
     late_site_id = "site-catchup-late-raw"
     partially_purged_site_id = "site-catchup-partially-purged"
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     missing_day = today - timedelta(days=2)
     reduced_day = today - timedelta(days=1)
     late_day = today - timedelta(days=3)
@@ -2807,7 +3316,7 @@ async def test_unreduced_recent_raw_days_skips_successful_watermarks(client):
 
 
 @pytest.mark.asyncio
-async def test_raw_purge_skips_watermark_when_site_plan_changed(client):
+async def test_raw_purge_skips_watermark_without_actual_outputs_after_plan_change(client):
     site_id = "site-purge-plan-change"
     day = date(2026, 5, 11)
     reduced_at = datetime(2026, 5, 11, 23, 0, tzinfo=timezone.utc)
@@ -3156,7 +3665,7 @@ async def test_historical_csv_import_is_idempotent_and_rejects_live_overlap(clie
             headers=headers,
         )
         assert overlap.status_code == 409
-        assert "overlaps existing Valid-collected data" in overlap.json()["detail"]
+        assert "overlaps existing Valid-collected or retained aggregate data" in overlap.json()["detail"]
     finally:
         dashboard_auth_module._parse_auth_users.cache_clear()
         dashboard_auth_module._parse_site_access_map.cache_clear()
@@ -3960,7 +4469,7 @@ async def test_sdk_verify_install_returns_recent_raw_activity(client):
 
 
 @pytest.mark.asyncio
-async def test_metrics_and_aggregate_follow_site_plan(client):
+async def test_legacy_history_uses_one_published_version_independent_of_site_plan(client):
     site_id = "site-plan-serving-contract"
     base_start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
         hour=12,
@@ -4020,15 +4529,15 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
     assert free_aggregate.status_code == 200
     free_windows = free_aggregate.json()["windows"]
     assert free_windows
-    assert free_windows[0]["value"] == 10.0
+    assert free_windows[0]["value"] == 100.0
 
     free_metrics_resp = client.get("/api/metrics", params={"site_id": site_id})
     assert free_metrics_resp.status_code == 200
     free_metrics = {row["metric"]: row for row in free_metrics_resp.json()["metrics"]}
-    assert free_metrics["pageviews"]["value"] == 10.0
-    assert free_metrics["sessions"]["value"] == 5.0
-    assert free_metrics["conversions"]["value"] == 2.0
-    assert free_metrics["conversion_rate"]["value"] == 0.4
+    assert free_metrics["pageviews"]["value"] == 100.0
+    assert free_metrics["sessions"]["value"] == 50.0
+    assert free_metrics["conversions"]["value"] == 25.0
+    assert free_metrics["conversion_rate"]["value"] == 0.5
 
     await _set_site_plan(site_id, "standard")
     standard_aggregate = client.get(
@@ -4050,7 +4559,7 @@ async def test_metrics_and_aggregate_follow_site_plan(client):
 
 
 @pytest.mark.asyncio
-async def test_missing_site_plan_defaults_to_free_for_serving(client):
+async def test_missing_site_plan_does_not_hide_legacy_history(client):
     site_id = "site-default-plan-free"
     base_start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
         hour=14,
@@ -4059,7 +4568,7 @@ async def test_missing_site_plan_defaults_to_free_for_serving(client):
         microsecond=0,
     )
 
-    # No site_plan row for this site on purpose: serving should fall back to free.
+    # Access defaults to Solo; retained history still uses its published version.
     await _insert_dp_window(
         site_id=site_id,
         plan="free",
@@ -4082,12 +4591,12 @@ async def test_missing_site_plan_defaults_to_free_for_serving(client):
     assert aggregate_resp.status_code == 200
     windows = aggregate_resp.json()["windows"]
     assert windows
-    assert windows[0]["value"] == 7.0
+    assert windows[0]["value"] == 70.0
 
     metrics_resp = client.get("/api/metrics", params={"site_id": site_id})
     assert metrics_resp.status_code == 200
     metrics_map = {row["metric"]: row for row in metrics_resp.json()["metrics"]}
-    assert metrics_map["pageviews"]["value"] == 7.0
+    assert metrics_map["pageviews"]["value"] == 70.0
 
 
 @pytest.mark.asyncio
@@ -5497,7 +6006,7 @@ async def test_dashboard_auth_unclaimed_sites_require_explicit_opt_in(client):
 
 
 @pytest.mark.asyncio
-async def test_site_settings_update_claims_unclaimed_site_for_authed_user(client):
+async def test_site_settings_cannot_bypass_site_creation_limits(client):
     site_id = "site-settings-unclaimed"
     await _set_site_plan(site_id, "free")
 
@@ -5535,21 +6044,10 @@ async def test_site_settings_update_claims_unclaimed_site_for_authed_user(client
             json={"timezone": "America/Chicago", "site_name": "Settings Test Site"},
             headers=headers,
         )
-        assert update.status_code == 200, update.text
-        assert update.json()["timezone"] == "America/Chicago"
-        assert update.json()["site_name"] == "Settings Test Site"
-
-        fetched = client.get("/api/site-settings", params={"site_id": site_id}, headers=headers)
-        assert fetched.status_code == 200
-        assert fetched.json()["timezone"] == "America/Chicago"
-        assert fetched.json()["site_name"] == "Settings Test Site"
-
+        assert update.status_code == 404, update.text
         async with async_session_factory() as session:
             row = await session.get(DashboardSite, site_id)
-            assert row is not None
-            assert row.owner_username == "alice"
-            assert row.timezone == "America/Chicago"
-            assert row.site_name == "Settings Test Site"
+            assert row is None
     finally:
         dashboard_auth_module._parse_auth_users.cache_clear()
         dashboard_auth_module._parse_site_access_map.cache_clear()
@@ -6437,6 +6935,16 @@ async def test_stripe_webhook_event_idempotency_prevents_replay(client, monkeypa
     )
     stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
     stripe_billing.settings.STRIPE_WEBHOOK_SECRET = "whsec_mock"
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_STANDARD_PRICE_ID", "price_current_standard")
+    async with async_session_factory() as session:
+        session.add(SitePlan(site_id="site-stripe-idempotent", plan="free"))
+        await session.commit()
+
+    async def retrieve(_):
+        return {"id": "sub_idempotent", "customer": "cus_idempotent", "status": "active",
+                "items": {"data": [{"price": {"id": "price_current_standard"}}]}}
+
+    monkeypatch.setattr(stripe_billing, "_retrieve_current_subscription", retrieve)
 
     async def _no_extra_site_sync(session, record):
         return None
@@ -6450,6 +6958,7 @@ async def test_stripe_webhook_event_idempotency_prevents_replay(client, monkeypa
                 "client_reference_id": "site-stripe-idempotent",
                 "customer": "cus_idempotent",
                 "subscription": "sub_idempotent",
+                "payment_status": "no_payment_required",
             }
         },
     }
@@ -6522,6 +7031,13 @@ async def test_payment_failed_grace_then_effective_plan_downgrades(client, monke
     stripe_billing.settings.STRIPE_SECRET_KEY = "sk_test_mock"
     stripe_billing.settings.STRIPE_WEBHOOK_SECRET = "whsec_mock"
     stripe_billing.settings.STRIPE_PAYMENT_FAILURE_GRACE_DAYS = 7
+    monkeypatch.setattr(stripe_billing.settings, "STRIPE_STANDARD_PRICE_ID", "price_current_standard")
+
+    async def retrieve(_):
+        return {"id": "sub_payment", "customer": "cus_payment", "status": "past_due",
+                "items": {"data": [{"price": {"id": "price_current_standard"}}]}}
+
+    monkeypatch.setattr(stripe_billing, "_retrieve_current_subscription", retrieve)
     event = {
         "id": "evt_payment_failed",
         "type": "invoice.payment_failed",
@@ -6552,6 +7068,12 @@ async def test_payment_failed_grace_then_effective_plan_downgrades(client, monke
         assert downgraded_body["display_plan"] == "Solo"
         assert downgraded_body["payment_status"] == "downgraded"
         assert downgraded_body["can_import_historical_data"] is False
+        assert downgraded_body["collection_active"] is False
+        event["id"] = "evt_payment_retry_after_grace"
+        assert client.post("/api/stripe/webhook", headers={"Stripe-Signature": "sig"}, content=b"{}").status_code == 200
+        retry_body = client.get("/api/billing/status", params={"site_id": site_id}).json()
+        assert retry_body["collection_active"] is False
+        assert retry_body["billing_grace_ends_at"] == downgraded_body["billing_grace_ends_at"]
     finally:
         (
             stripe_billing.settings.STRIPE_SECRET_KEY,

@@ -1,4 +1,5 @@
 import type { FC } from "react";
+import { Link } from "react-router-dom";
 
 import type { DashboardSiteSummary } from "../api";
 import { LAST_SITE_ID_STORAGE_KEY } from "../constants";
@@ -30,7 +31,7 @@ export const SitePicker: FC<{ sites: DashboardSiteSummary[]; error?: string | nu
               Select a site
             </div>
           </div>
-          <LogoutButton />
+          <div className="flex items-center gap-4"><Link to="/sites/new" className="rounded border border-[var(--border-default)] px-3 py-2 text-sm">Add website</Link><LogoutButton /></div>
         </header>
 
         <section className="rounded-lg border border-[#DDE1E7] bg-white p-5 shadow-sm">

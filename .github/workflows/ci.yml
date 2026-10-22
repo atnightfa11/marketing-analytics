@@ -40,7 +40,13 @@ jobs:
         run: npm run lint
         working-directory: dashboard
       - name: Test dashboard
-        run: npm test -- --runInBand
+        run: npm test -- --run
+        working-directory: dashboard
+      - name: Typecheck dashboard and browser tests
+        run: npm run typecheck
+        working-directory: dashboard
+      - name: Build dashboard
+        run: npm run build
         working-directory: dashboard
       - name: Cypress end-to-end
         run: npm run test:e2e
@@ -61,6 +67,13 @@ jobs:
       - name: Test server
         run: pytest
         working-directory: server
+      - name: Install PostgreSQL test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          echo "$(pg_config --bindir)" >> "$GITHUB_PATH"
+      - name: PostgreSQL migrations and concurrent workflows
+        run: python scripts/verify_local_postgres.py
       - name: Build server image
         run: docker build -t marketing-analytics-server:ci .
         working-directory: server

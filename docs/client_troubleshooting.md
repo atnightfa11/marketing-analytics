@@ -1,5 +1,9 @@
 # Client Troubleshooting
 
+## Forgotten Password
+
+Use **Forgot password?** on sign-in and enter the signup email. The email link lasts 30 minutes and works once. Resetting signs out existing sessions. Check spam and confirm SMTP configuration on the API, not just the worker. Accounts without a reachable email need owner-verified support assistance. Password hashes cannot be reversed.
+
 ## CORS errors
 
 **Symptom:** `No 'Access-Control-Allow-Origin' header`

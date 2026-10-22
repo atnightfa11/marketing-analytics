@@ -24,7 +24,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from .config import get_settings
 
 settings = get_settings()
-async_engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
+async_engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True, pool_pre_ping=True)
 async_session_factory = async_sessionmaker(async_engine, expire_on_commit=False)
 IS_POSTGRES = async_engine.url.get_backend_name().startswith("postgresql")
 IDENTITY_ARGS = (Identity(),) if IS_POSTGRES else ()
@@ -425,12 +425,38 @@ class DashboardUser(Base):
     username: Mapped[str] = mapped_column(String(64), primary_key=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
+
+
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), ForeignKey("dashboard_users.username"), nullable=False, index=True)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SiteProvisioning(Base):
+    __tablename__ = "site_provisioning"
+    __table_args__ = (Index("ix_site_provisioning_pending", "owner_username", unique=True,
+                           postgresql_where=text("status = 'pending'"), sqlite_where=text("status = 'pending'")),)
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_username: Mapped[str] = mapped_column(String(64), ForeignKey("dashboard_users.username"), nullable=False)
+    site_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    site_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    allowed_origin: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    extra_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
 
 
 class DashboardSite(Base):

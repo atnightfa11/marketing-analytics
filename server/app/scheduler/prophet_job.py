@@ -18,6 +18,7 @@ from ..alert_delivery import notify_anomaly_if_needed
 from ..config import get_settings
 from ..entitlements import forecast_metric_allowed
 from ..models import DpWindow, Forecast, ModelStore
+from ..report_history import published_plan_clause
 from .ewma import ewma
 
 settings = get_settings()
@@ -41,7 +42,7 @@ async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: 
         .where(
             DpWindow.site_id == site_id,
             DpWindow.metric == metric,
-            DpWindow.plan == plan,
+            published_plan_clause(DpWindow, plan),
             DpWindow.window_start < today_start,
         )
         .order_by(DpWindow.window_start.asc())
