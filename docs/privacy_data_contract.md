@@ -31,6 +31,8 @@ This contract defines what each analytics table is allowed to contain and how it
 
 ## Dashboard Output Rules
 
+The server-stamped reporting timezone and per-event timestamp are short-lived processing fields in `raw_reports`, under the same purge policy as the rest of the row. They support site-local dayparting and measured engagement. Browser timezone hints do not choose the reporting clock. Daily identity keys rotate on the active reporting-day boundary; no persistent visitor identifier is introduced. Site timezone changes preserve existing aggregate date labels and take effect prospectively, with a recorded cutover in `dashboard_sites`.
+
 - KPI trend endpoints read from `dp_windows`.
 - Breakdown endpoints read from `breakdown_rollups` for days with successful reducer watermarks, falling back to bounded `raw_reports` only for unreduced days.
 - Filtered KPI/trend endpoints read from `segment_rollups` for supported segment combinations, falling back to bounded `raw_reports` only for unreduced days.

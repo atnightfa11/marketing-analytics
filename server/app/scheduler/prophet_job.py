@@ -19,6 +19,7 @@ from ..config import get_settings
 from ..entitlements import forecast_metric_allowed
 from ..models import DpWindow, Forecast, ModelStore
 from ..report_history import published_plan_clause
+from ..reporting_time import site_today
 from .ewma import ewma
 
 settings = get_settings()
@@ -36,7 +37,7 @@ RECENT_SCORE_DAYS = 60
 
 
 async def train_prophet(session: AsyncSession, site_id: str, metric: str, plan: str = "free"):
-    today_start = dt.datetime.combine(dt.datetime.now(dt.timezone.utc).date(), dt.time.min, tzinfo=dt.timezone.utc)
+    today_start = dt.datetime.combine(await site_today(session, site_id), dt.time.min, tzinfo=dt.timezone.utc)
     stmt = (
         select(DpWindow)
         .where(

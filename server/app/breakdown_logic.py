@@ -139,6 +139,7 @@ COMMON_SOURCE_HOST_MAP = {
     "perplexity.ai": "Perplexity",
     "pinterest.com": "Pinterest",
     "reddit.com": "Reddit",
+    "com.reddit.frontpage": "Reddit",
     "threads.net": "Threads",
     "tiktok.com": "TikTok",
     "twitter.com": "X",
@@ -249,7 +250,7 @@ def _event_timestamp(report) -> dt.datetime:
     return timestamp.astimezone(dt.timezone.utc)
 
 
-def _rolling_session_markers(reports: list) -> dict[int, tuple[object, ...]]:
+def _rolling_session_markers(reports: list, *, max_gap_seconds: int | None = None) -> dict[int, tuple[object, ...]]:
     grouped: defaultdict[tuple[dt.date, str], list] = defaultdict(list)
     markers: dict[int, tuple[object, ...]] = {}
     for report in reports:
@@ -262,7 +263,8 @@ def _rolling_session_markers(reports: list) -> dict[int, tuple[object, ...]]:
         if fallback:
             markers[id(report)] = ("legacy", *fallback)
 
-    max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
+    if max_gap_seconds is None:
+        max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
     for visitor, visitor_reports in grouped.items():
         ordered = sorted(visitor_reports, key=_event_timestamp)
         session_index = 0
@@ -650,7 +652,7 @@ def as_utc(timestamp: dt.datetime) -> dt.datetime:
 
 
 def time_parting_timestamp(timestamp: dt.datetime, payload: dict, site_timezone: str) -> dt.datetime:
-    timezone_name = payload.get("_timezone_hint")
+    timezone_name = payload.get("_reporting_timezone")
     if not isinstance(timezone_name, str) or not timezone_name:
         timezone_name = site_timezone or "UTC"
     try:
@@ -723,7 +725,7 @@ def aggregate_reports_for_breakdown(
             continue
         label_timestamp = report.server_received_at
         if dimension in TIME_PARTING_DIMENSIONS:
-            label_timestamp = time_parting_timestamp(report.server_received_at, payload, site_timezone)
+            label_timestamp = time_parting_timestamp(_event_timestamp(report), payload, site_timezone)
         if dimension in TIME_PARTING_DIMENSIONS and not matches_time_parting_day_type(label_timestamp, day_type):
             continue
         report_session_marker = session_marker_by_report.get(id(report))

@@ -22,6 +22,7 @@ from ..breakdown_logic import (
     aggregate_reports_for_breakdown,
 )
 from ..config import get_settings
+from ..engagement import engagement_totals
 from ..hostnames import hostname_from_payload
 from ..ldp.rr_decoder import confidence_interval, rr_unbiased_estimate, standard_error
 from ..models import (
@@ -92,9 +93,10 @@ def _resolve_day_window(
         return start_day, start_day
     if end_day:
         return end_day, end_day
-    today = dt.date.today()
+    today = dt.datetime.now(dt.timezone.utc).date()
     window_days = max(1, days)
-    return today - dt.timedelta(days=window_days), today
+    # Include both sides of UTC for sites whose local date is already tomorrow.
+    return today - dt.timedelta(days=window_days), today + dt.timedelta(days=1)
 
 
 def _raw_report_value(report: RawReport) -> float:
@@ -186,35 +188,25 @@ def _rolling_session_count(reports: list[RawReport]) -> float:
 
 
 def _engagement_totals(reports: list[RawReport]) -> tuple[int, float, float]:
-    pageview_times_by_visitor: dict[str, list[dt.datetime]] = defaultdict(list)
+    events_by_visitor: dict[str, list[tuple[dt.datetime, str]]] = defaultdict(list)
     for report in reports:
-        if report.kind != "pageviews":
-            continue
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
             continue
         identity_hmac = payload.get("_visitor_day_hmac") or payload.get("_session_hmac")
         if not isinstance(identity_hmac, str) or not identity_hmac:
             continue
-        pageview_times_by_visitor[identity_hmac].append(_event_timestamp(report))
+        events_by_visitor[identity_hmac].append((_event_timestamp(report), report.kind))
 
     bounced_sessions = 0.0
     visit_duration_seconds = 0.0
     session_count = 0
     max_gap_seconds = max(1, settings.SESSION_WINDOW_MINUTES) * 60
-    for timestamps in pageview_times_by_visitor.values():
-        for session_timestamps in _split_inactivity_sessions(
-            timestamps,
-            max_gap_seconds=max_gap_seconds,
-        ):
-            session_count += 1
-            if len(session_timestamps) == 1:
-                bounced_sessions += 1.0
-                continue
-            for previous, current in zip(session_timestamps, session_timestamps[1:]):
-                gap_seconds = (current - previous).total_seconds()
-                if gap_seconds > 0:
-                    visit_duration_seconds += gap_seconds
+    for events in events_by_visitor.values():
+        count, bounced, duration = engagement_totals(events, max_gap_seconds=max_gap_seconds)
+        session_count += count
+        bounced_sessions += bounced
+        visit_duration_seconds += duration
     return session_count, bounced_sessions, visit_duration_seconds
 
 

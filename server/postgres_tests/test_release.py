@@ -47,6 +47,8 @@ def migrated_database():
         async with models.async_engine.begin() as conn:
             await conn.execute(text("INSERT INTO dashboard_users (username, email, password_hash) "
                                     "VALUES ('existing', 'existing@example.test', 'synthetic')"))
+            await conn.execute(text("INSERT INTO dashboard_sites (site_id, owner_username, site_name, allowed_origin, timezone) "
+                                    "VALUES ('migration-history', 'existing', 'History', 'https://example.test', 'America/Chicago')"))
             await conn.execute(text("INSERT INTO dp_windows (site_id, plan, metric, window_start, window_end, "
                                     "value, variance, ci80_low, ci80_high, ci95_low, ci95_high) VALUES "
                                     "('migration-history', 'free', 'pageviews', '2026-10-01', '2026-10-02', "
@@ -62,9 +64,15 @@ def test_migration_preserves_users_and_analytics(migrated_database):
         async with models.async_engine.connect() as conn:
             assert await conn.scalar(text("SELECT auth_version FROM dashboard_users WHERE username='existing'")) == 0
             assert await conn.scalar(text("SELECT value FROM dp_windows WHERE site_id='migration-history'")) == 123
-            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "2026_10_21_account_workflows"
+            assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == "2026_10_24_reporting_timezone"
             assert await conn.scalar(text("SELECT to_regclass('password_resets')")) is not None
             assert await conn.scalar(text("SELECT to_regclass('site_provisioning')")) is not None
+            previous, cutoff = (await conn.execute(text("SELECT previous_reporting_timezone, reporting_timezone_effective_at "
+                                                        "FROM dashboard_sites WHERE site_id='migration-history'"))).one()
+            from zoneinfo import ZoneInfo
+            assert previous == "UTC"
+            assert cutoff > dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=24)
+            assert cutoff.astimezone(ZoneInfo("America/Chicago")).time() == dt.time.min
     asyncio.run(check())
 
 

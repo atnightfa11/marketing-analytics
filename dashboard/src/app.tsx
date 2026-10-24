@@ -889,15 +889,23 @@ const Overview: React.FC = () => {
   useEffect(() => {
     if (!canQuery || showSeededBreakdowns) return;
     let cancelled = false;
+    let timezoneTimer: ReturnType<typeof setTimeout> | undefined;
     fetchSiteSettings(token ?? undefined, siteId)
       .then((settings) => {
-        if (!cancelled) setSiteTimezone(settings.timezone || "UTC");
+        if (cancelled) return;
+        const cutoff = Date.parse(settings.reporting_timezone_effective_at ?? "");
+        const delay = cutoff - Date.now();
+        setSiteTimezone(delay <= 0 ? settings.timezone : settings.reporting_timezone || settings.timezone || "UTC");
+        if (delay > 0) {
+          timezoneTimer = setTimeout(() => setSiteTimezone(settings.timezone || "UTC"), delay);
+        }
       })
       .catch(() => {
         if (!cancelled) setSiteTimezone("UTC");
       });
     return () => {
       cancelled = true;
+      clearTimeout(timezoneTimer);
     };
   }, [canQuery, showSeededBreakdowns, token, siteId]);
 
@@ -4243,6 +4251,7 @@ const Settings: React.FC = () => {
   const siteDisplayName = useMemo(() => dashboardSiteDisplayName(siteId, siteName), [siteId, siteName]);
   const [timezone, setTimezone] = useState<string>("UTC");
   const [timezoneDraft, setTimezoneDraft] = useState<string>("UTC");
+  const [timezoneEffectiveAt, setTimezoneEffectiveAt] = useState<string | null>(null);
   const [timezoneStatus, setTimezoneStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
   const [timezoneError, setTimezoneError] = useState<string | null>(null);
   const [billingPlan, setBillingPlan] = useState<"free" | "standard" | "pro">("free");
@@ -4379,6 +4388,7 @@ const Settings: React.FC = () => {
         setSiteNameError(null);
         setTimezone(resolvedTimezone);
         setTimezoneDraft(resolvedTimezone);
+        setTimezoneEffectiveAt(settings.reporting_timezone_effective_at ?? null);
         setTimezoneStatus("idle");
         setTimezoneError(null);
       })
@@ -4640,6 +4650,7 @@ const Settings: React.FC = () => {
       const resolvedTimezone = updated.timezone || timezoneDraft;
       setTimezone(resolvedTimezone);
       setTimezoneDraft(resolvedTimezone);
+      setTimezoneEffectiveAt(updated.reporting_timezone_effective_at ?? null);
       setTimezoneStatus("saved");
       window.setTimeout(() => {
         setTimezoneStatus((prev) => (prev === "saved" ? "idle" : prev));
@@ -5036,10 +5047,12 @@ const Settings: React.FC = () => {
       : timezoneStatus === "saving"
         ? "Saving timezone..."
         : timezoneStatus === "saved"
-          ? "Timezone updated."
+          ? "Timezone saved."
           : timezoneStatus === "error"
             ? timezoneError ?? "Unable to update timezone right now."
-            : "Used to bucket daily trends and date-range reporting for this site.";
+            : timezoneEffectiveAt && Date.parse(timezoneEffectiveAt) > Date.now()
+              ? `Applies after the current reporting day, on ${new Date(timezoneEffectiveAt).toLocaleString()}. Existing history is unchanged.`
+              : "Daily reporting uses this timezone. Changes apply prospectively; existing history is unchanged.";
 
   const timezoneStatusClassName = timezoneStatus === "error" ? "text-[#8B2635]" : "text-gray-500";
 

@@ -30,6 +30,12 @@ describe("autoconversions helpers", () => {
 });
 
 describe("source classification", () => {
+  it("recognizes the Reddit Android app without treating it as paid traffic", () => {
+    expect(classifyReferrerBucket("https://example.com/", "android-app://com.reddit.frontpage")).toEqual({
+      bucket: "social", source: "reddit.com",
+    });
+    expect(classifyReferrerBucket("https://example.com/", "android-app://com.reddit.frontpage.evil.test").bucket).toBe("referral");
+  });
   it("classifies direct traffic without referrer", () => {
     const result = classifyReferrerBucket("https://example.com/blog", "");
     expect(result.bucket).toBe("direct");

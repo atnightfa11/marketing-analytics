@@ -13,10 +13,10 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 
 - `pageviews`: sum of reduced `pageviews` windows.
 - `sessions`:
-  - Solo/internal `free`: sum of reduced `sessions` events.
+  - Solo/internal `free`: rolling visits split after `SESSION_WINDOW_MINUTES` of inactivity, using the same daily server-derived identity as Standard, without aggregate DP noise.
   - Standard: rolling visits split after `SESSION_WINDOW_MINUTES` of inactivity. Events are joined during short-lived processing with a daily server-derived `standard-id-v3` HMAC, rolled into daily aggregate buckets, then central-DP Laplace noise is added at aggregate publish time.
   - Pro: reduced LDP estimate from `sessions` randomized-response reports.
-- `uniques` / dashboard `Visitors`: reduced estimate from daily presence events. Standard uses a daily `standard-id-v3` HMAC for dedupe. The HMAC input includes site/day, request IP prefix, full User-Agent, and a browser/edge timezone hint when available. Raw IP and raw User-Agent are used transiently and are not persisted.
+- `uniques` / dashboard `Visitors`: reduced estimate from daily presence events. Solo and Standard use a daily `standard-id-v3` HMAC for dedupe. The HMAC input includes site/reporting-day, request IP prefix, full User-Agent, and a browser/edge timezone hint when available. Raw IP and raw User-Agent are used transiently and are not persisted. Multi-day visitor totals sum daily visitors, not deduplicated people over the entire range.
 - `conversions`: sum of reduced `conversions` events.
 - `conversion_rate`: `conversions / sessions` (derived after aggregation; no extra DP noise term).
 - `revenue`: sum of reduced `revenue` events.
@@ -24,8 +24,10 @@ This document defines how API/dashboard metrics are calculated for all plan tier
 Dashboard-derived engagement metrics:
 
 - `avg_pages_per_visit`: `pageviews / sessions`
-- `bounce_rate`: `bounced_sessions / sessions`, where `bounced_sessions` is reduced from sessions with exactly one pageview.
-- `visit_duration`: `visit_duration_seconds / sessions`, where `visit_duration_seconds` is reduced from gaps between consecutive same-session pageviews. Older raw rows without event timestamps fall back to server receipt timestamps.
+- `bounce_rate`: `bounced_sessions / sessions`. A bounce has exactly one pageview and no conversion or revenue interaction within that visit. A form submission on a single page is not a bounce. Bookkeeping presence/session signals do not count as engagement.
+- `visit_duration`: `visit_duration_seconds / sessions`. Duration is the time from the first to the last measured pageview/conversion/revenue interaction in each visit, split after 30 minutes of inactivity by default. There is no inferred time after the final interaction and no heartbeat-based active-time measurement. A single-interaction visit contributes zero seconds. Older raw rows without event timestamps fall back to server receipt timestamps. Site KPI and segment rollups share this calculation.
+
+These engagement corrections apply to newly reduced days and rebuildable retained raw days. Purged history keeps its previously published values; it cannot be recomputed exactly.
 
 ## GA4 comparison reference
 
@@ -77,11 +79,12 @@ Breakdown definitions:
   - Fallback bucket mapping: `direct -> Direct`, `external/referral -> Referral`, `organic -> Organic`, `social -> Social`, `email -> Email`, `paid -> Paid`, `ai -> AI Assistants`
   - Paid Search requires paid UTM medium on a search source, Google/Bing paid click IDs (`gclid`, `gbraid`, `wbraid`, `msclkid`), or known ad-source labels such as `googleads`/`bingads`.
   - `fbclid` is stripped from page URLs but does not by itself classify traffic as Paid Social because Facebook also appends it to ordinary organic shares.
+  - Reddit web referrals and the Android app referrer `android-app://com.reddit.frontpage` normalize to Reddit / Organic Social unless explicit paid attribution is present.
 - `devices`: from coarse server-derived User-Agent bucket (`mobile`, `desktop`, `tablet`).
 - `countries`: from coarse reverse-proxy country headers (for example `CF-IPCountry`) and, when headers are unavailable, optional server-side GeoIP country lookup from request IP. Fallback `Unknown`.
 - `hostnames`: from normalized request hostname (`_hostname`) for subdomain-aware reporting.
-- `hour_of_day`: from captured timezone hint when available, otherwise the site timezone, aggregated across selected date range.
-- `day_of_week`: from captured timezone hint when available, otherwise the site timezone, aggregated across selected date range.
+- `hour_of_day`: from event time in the server-stamped reporting timezone, aggregated across the selected range. The visitor's browser timezone does not set the reporting clock.
+- `day_of_week`: from the same event timestamp and reporting timezone, including weekday/weekend selection.
 
 Current caveats:
 
@@ -110,6 +113,7 @@ Quality notes:
 - Solo and Standard retain aggregate history while subscribed; neither has a 12-month read cutoff. Queries still have bounded date ranges. Raw processing retention is separate and unchanged.
 - Standard aggregate windows publish daily. Independently noised Pageviews, Sessions, and Visitors are projected onto the valid order `Pageviews >= Sessions >= Visitors`; deterministic post-processing preserves the central-DP guarantee while avoiding impossible-looking output on small sites.
 - Dashboard date labels preserve the date stamped on full-day aggregate windows. Shorter free/live windows are grouped into days using the site's reporting timezone.
+- From the October 24 reporting-timezone release onward, new events and daily identity rotation use the site's active reporting day. Forecasts exclude the incomplete site-local day. Historical UTC aggregates retain their existing date labels; neither a settings change nor the migration rebuckets purged history. Timezone changes take effect at a scheduled local midnight after the current reporting day; the transition day can be shorter or longer than 24 hours. The settings API exposes the active timezone and pending effective time.
 - `conversion_rate`, `bounce_rate`, and `visit_duration` are derived from already published aggregates.
 - Standard sessionization is replay-resistant and uses daily, server-derived `standard-id-v3` HMAC keys plus event timestamps to split visits after the configured inactivity timeout.
 - Standard differential privacy claims apply to selected KPI aggregate windows. Breakdown rows use aggregate rollups unless a future dimension-level DP mechanism is added.

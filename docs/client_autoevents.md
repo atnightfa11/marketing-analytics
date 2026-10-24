@@ -5,6 +5,7 @@ Valid autoevents are enabled by default when `init()` is used.
 Tracked automatically:
 
 - Pageview on first load
+- Pageview on a persisted back/forward-cache restore (not on ordinary tab focus or the initial `pageshow`)
 - SPA route changes (`pushState`, `replaceState`, `popstate`, `hashchange`)
 - Session start (30 minute inactivity window)
 - Daily presence ping
@@ -82,3 +83,12 @@ If the visitor had a prior non-direct attribution within the carryover window, V
 
 - A route transition emits at most one pageview per normalized path + route action pair.
 - Auto conversions use a dedupe window (default 10 seconds, bounded to 5–30 seconds).
+
+## Delivery
+
+- The initial visit is flushed immediately after setup. Subsequent events flush after about one second (up to 250ms jitter) or when the batch fills.
+- Hidden-page/pagehide events flush queued events with credential-less `fetch(..., { keepalive: true })`, even if an earlier request is still pending. No `beforeunload` listener is required.
+- Failed requests retry with bounded backoff and an in-memory queue (at most 500 events; retry events older than five minutes are discarded). Request nonces change on retry, while event nonces stay stable so the server can deduplicate already accepted events.
+- Solo/Standard ingestion does not apply the optional Pro shuffle delay. DNT/GPC checks, origin checks, bot filtering, and event expiry remain enforced.
+- Delivery is best effort, not guaranteed: browser shutdown, offline expiry, blockers, and failed token bootstrap can still prevent collection. No browser-persistent event queue or visitor identifier is added.
+- `npm run build` in `client/` also refreshes the hosted bundle in `dashboard/public/`. Build the client before the dashboard so the deployed script includes SDK fixes. Existing installations using that hosted script URL do not need a new snippet.

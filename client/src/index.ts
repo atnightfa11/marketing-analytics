@@ -16,7 +16,7 @@ import { createLogger, Logger } from "./utils/logger";
 
 const CIRCUIT_BREAKER_LIMIT = 10;
 const CIRCUIT_BREAKER_DURATION_MS = 5 * 60 * 1000;
-const THREE_MINUTES_MS = 3 * 60 * 1000;
+const DEFAULT_FLUSH_INTERVAL_MS = 1000;
 const DEFAULT_SESSION_INACTIVITY_MS = 30 * 60 * 1000;
 const DEFAULT_CONVERSION_DEDUPE_MS = 10 * 1000;
 const DEFAULT_ATTRIBUTION_CARRYOVER_MS = 30 * 60 * 1000;
@@ -746,6 +746,10 @@ export function classifyReferrerBucket(
     return directSource();
   }
 
+  if (referrerUrl.protocol === "android-app:" && referrerUrl.hostname === "com.reddit.frontpage") {
+    return { bucket: "social", source: "reddit.com" };
+  }
+
   if (normalizeHost(referrerUrl.hostname) === normalizeHost(currentUrl.hostname)) {
     return resolveCarryoverAttribution(options) ?? directSource();
   }
@@ -811,7 +815,7 @@ function emitPageviewForCurrentRoute(routeAction: string, autoConfig: Autoevents
 
 export function shouldEmitAutoPageview(normalizedPath: string, routeAction: string): boolean {
   const now = Date.now();
-  if (normalizedPath === lastNormalizedPath) {
+  if (normalizedPath === lastNormalizedPath && routeAction !== "pageshow") {
     if (routeAction === lastPageviewRouteAction) {
       return false;
     }
@@ -904,7 +908,7 @@ export async function configure(userConfig: ClientConfig): Promise<void> {
     ...userConfig,
     siteId: resolvedSiteId,
     shuffleUrl: resolvedShuffleUrl,
-    flushIntervalMs: userConfig.flushIntervalMs ?? THREE_MINUTES_MS,
+    flushIntervalMs: userConfig.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS,
     maxBatchSize: userConfig.maxBatchSize ?? 50,
     includeQueryInPath: userConfig.includeQueryInPath ?? false,
     stripHashInPath: userConfig.stripHashInPath ?? true,
@@ -945,6 +949,8 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
   maybeSendSessionStart(sessionInactivityMs);
   emitPageviewForCurrentRoute("initial-load", autoConfig);
   reportPresence();
+  // Send the initial visit together, while the page is still active on mobile.
+  void collector?.flush("initial-load");
 
   const onPopState = () => {
     maybeSendSessionStart(sessionInactivityMs);
@@ -954,10 +960,19 @@ export async function initAutoevents(autoConfig: AutoeventsConfig = {}): Promise
     maybeSendSessionStart(sessionInactivityMs);
     emitPageviewForCurrentRoute("hashchange", autoConfig);
   };
+  const onPageShow = (event: Event & { persisted?: boolean }) => {
+    if (!event.persisted) return;
+    maybeSendSessionStart(sessionInactivityMs);
+    emitPageviewForCurrentRoute("pageshow", autoConfig);
+    reportPresence();
+    void collector?.flush("pageshow");
+  };
   window.addEventListener("popstate", onPopState);
   window.addEventListener("hashchange", onHashChange);
+  window.addEventListener("pageshow", onPageShow);
   autoeventsCleanup.push(() => window.removeEventListener("popstate", onPopState));
   autoeventsCleanup.push(() => window.removeEventListener("hashchange", onHashChange));
+  autoeventsCleanup.push(() => window.removeEventListener("pageshow", onPageShow));
 
   const historyMethods: Array<"pushState" | "replaceState"> = ["pushState", "replaceState"];
   for (const method of historyMethods) {

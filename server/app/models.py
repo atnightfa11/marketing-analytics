@@ -473,6 +473,8 @@ class DashboardSite(Base):
     site_name: Mapped[str] = mapped_column(String(255), nullable=False)
     allowed_origin: Mapped[str] = mapped_column(String(255), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, server_default=text("'UTC'"))
+    previous_reporting_timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reporting_timezone_effective_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )

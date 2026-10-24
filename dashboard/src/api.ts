@@ -102,6 +102,8 @@ export interface SiteSettings {
   site_id: string;
   site_name: string;
   timezone: string;
+  reporting_timezone?: string;
+  reporting_timezone_effective_at?: string | null;
 }
 
 export interface BillingStatus {

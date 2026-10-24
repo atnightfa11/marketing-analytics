@@ -22,8 +22,9 @@ from ..config import TokenClaims, get_settings
 from ..entitlements import billing_record_for_site, effective_plan_for_record, normalize_plan, require_active_collection
 from ..hostnames import hostname_from_request_headers
 from ..maintenance import maybe_purge_expired_upload_tokens
-from ..models import LdpReport, RawReport, SiteIpBlock, TokenNonce, UploadToken, get_session
+from ..models import DashboardSite, LdpReport, RawReport, SiteIpBlock, TokenNonce, UploadToken, get_session
 from ..usage_accounting import claim_event, insert_for, record_pageviews
+from ..reporting_time import reporting_day, reporting_timezone
 from ..origin_policy import origin_matches_allowed_pattern
 from ..schemas import CollectRequest, ShuffleRequest
 
@@ -579,7 +580,9 @@ async def shuffle_ingest(
     plan = await resolve_plan(claims.site_id, claims.plan, session)
     apply_rate_limit(claims.site_id, client_ip, request, plan)
 
-    delay = secrets.randbelow(settings.SHUFFLE_MAX_DELAY_SECONDS + 1) if settings.SHUFFLE_MAX_DELAY_SECONDS > 0 else 0
+    # The shuffle delay belongs to the optional LDP path, not raw Solo/Standard
+    # collection. It can exceed browser keepalive/request deadlines.
+    delay = secrets.randbelow(settings.SHUFFLE_MAX_DELAY_SECONDS + 1) if plan == "pro" and settings.SHUFFLE_MAX_DELAY_SECONDS > 0 else 0
     if delay > 0:
         await asyncio.sleep(delay)
 
@@ -636,6 +639,7 @@ async def ingest_reports(
     device_bucket = _derive_device_bucket(user_agent)
     country_code = _derive_country_code(request, client_ip=resolved_client_ip)
     timezone_hint = _derive_timezone_hint(request)
+    site = await session.get(DashboardSite, collect.site_id)
     standard_session_key = (
         derive_standard_session_key(
             site_id=collect.site_id,
@@ -654,6 +658,7 @@ async def ingest_reports(
         if report.site_id != collect.site_id:
             continue
         payload_time = report.client_timestamp
+        day = reporting_day(site, payload_time)
         delta = (collect.server_received_at - payload_time).total_seconds()
         if delta > settings.MAX_OUT_OF_ORDER_SECONDS or (accepted_at - payload_time).total_seconds() > settings.MAX_OUT_OF_ORDER_SECONDS or delta < -60:
             counters["events_dropped_late_total"].labels(site_id=collect.site_id).inc()
@@ -680,7 +685,7 @@ async def ingest_reports(
                 raw_payload["_session_hmac"] = standard_session_key
             visitor_day_hmac = derive_daily_visitor_key(
                 site_id=collect.site_id,
-                day=payload_time.date(),
+                day=day,
                 ip_value=resolved_client_ip,
                 user_agent=user_agent,
                 timezone_hint=timezone_hint,
@@ -695,11 +700,12 @@ async def ingest_reports(
                 raw_payload.setdefault("_timezone_hint", timezone_hint)
             if request_hostname:
                 raw_payload.setdefault("_hostname", request_hostname)
-            raw_payload.setdefault("_client_timestamp", payload_time.isoformat())
+            raw_payload["_client_timestamp"] = payload_time.isoformat()
+            raw_payload["_reporting_timezone"] = reporting_timezone(site, payload_time)
             record = RawReport(
                 site_id=collect.site_id,
                 kind=report.kind,
-                day=payload_time.date(),
+                day=day,
                 payload=raw_payload,
                 epsilon_used=report.epsilon_used,
                 sampling_rate=report.sampling_rate,

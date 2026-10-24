@@ -11,6 +11,7 @@ from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..report_history import published_plan_clause
+from ..reporting_time import site_today
 from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..ldp.rr_decoder import confidence_interval, standard_error
@@ -35,7 +36,7 @@ def _day_start(day: dt.date) -> dt.datetime:
     return dt.datetime.combine(day, dt.time.min, tzinfo=dt.timezone.utc)
 
 
-def _resolve_date_window(start: dt.date | None, end: dt.date | None) -> tuple[dt.date, dt.date]:
+def _resolve_date_window(start: dt.date | None, end: dt.date | None, today: dt.date | None = None) -> tuple[dt.date, dt.date]:
     if start and end:
         start_day, end_day = (start, end) if start <= end else (end, start)
     elif start:
@@ -43,7 +44,7 @@ def _resolve_date_window(start: dt.date | None, end: dt.date | None) -> tuple[dt
     elif end:
         start_day = end_day = end
     else:
-        end_day = dt.datetime.now(dt.timezone.utc).date()
+        end_day = today or dt.datetime.now(dt.timezone.utc).date()
         start_day = end_day - dt.timedelta(days=DEFAULT_AGGREGATE_DAYS - 1)
 
     days = (end_day - start_day).days + 1
@@ -199,6 +200,12 @@ async def _aggregate_free_hostname(
 ) -> list[WindowAggregate]:
     if not raw_days:
         return []
+    if window != "live" and metric in {"sessions", "bounced_sessions", "visit_duration_seconds"}:
+        filters = (("hostname", hostname_filter),)
+        return await _aggregate_raw_segments(
+            session=session, site_id=site_id, metric=metric, raw_days=raw_days,
+            normalized_filters=filters, grain="hostname",
+        )
     stmt = (
         select(RawReport)
         .where(
@@ -287,7 +294,8 @@ async def segment_aggregate(
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
-    start_day, end_day = _resolve_date_window(start, end)
+    today = await site_today(session, site_id)
+    start_day, end_day = _resolve_date_window(start, end, today)
     enforce_aggregate_retention(plan, start_day, end_day)
     if metric not in SEGMENT_METRICS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="metric is not segment-rollup backed")
@@ -298,7 +306,7 @@ async def segment_aggregate(
     all_days = set(_enumerate_days(start_day, end_day))
     if window == "live":
         reduced_days: set[dt.date] = set()
-        raw_days = {dt.datetime.now(dt.timezone.utc).date()}
+        raw_days = {today}
     else:
         reduced_days = await _successful_reduced_days(
             session=session,
@@ -365,6 +373,11 @@ async def _aggregate_hostname_rollups(
 ) -> list[WindowAggregate]:
     if not reduced_days:
         return []
+    if metric in {"bounced_sessions", "visit_duration_seconds"}:
+        return await _aggregate_segment_rollups(
+            session=session, site_id=site_id, plan=plan, metric=metric, reduced_days=reduced_days,
+            normalized_filters=(("hostname", hostname_filter),), grain="hostname",
+        )
     rollups = (
         await session.execute(
             select(BreakdownRollup).where(
@@ -413,7 +426,8 @@ async def aggregate(
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ):
-    start_day, end_day = _resolve_date_window(start, end)
+    today = await site_today(session, site_id)
+    start_day, end_day = _resolve_date_window(start, end, today)
     enforce_aggregate_retention(plan, start_day, end_day)
     if hostname is not None:
         hostname_filter = normalize_hostname(hostname)
@@ -430,7 +444,7 @@ async def aggregate(
         all_days = set(_enumerate_days(start_day, end_day))
         if window == "live":
             reduced_days: set[dt.date] = set()
-            raw_days = {dt.datetime.now(dt.timezone.utc).date()}
+            raw_days = {today}
         else:
             reduced_days = await _successful_reduced_days(
                 session=session,

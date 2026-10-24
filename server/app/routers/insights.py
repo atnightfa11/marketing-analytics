@@ -13,6 +13,7 @@ from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..entitlements import enforce_aggregate_retention
 from ..models import BreakdownRollup, DashboardNote, DashboardSite, DpWindow, RawReport, ReducerWatermark, get_session
+from ..reporting_time import site_today
 from ..scheduler.nightly_reduce import REDUCER_VERSION
 from ..schemas import InsightItem, InsightsResponse
 from ..sql_dates import utc_report_day
@@ -133,7 +134,7 @@ def _enumerate_days(start_day: dt.date, end_day: dt.date) -> list[dt.date]:
     return [start_day + dt.timedelta(days=offset) for offset in range((end_day - start_day).days + 1)]
 
 
-def _resolve_window(start: dt.date | None, end: dt.date | None) -> tuple[dt.date, dt.date]:
+def _resolve_window(start: dt.date | None, end: dt.date | None, today: dt.date | None = None) -> tuple[dt.date, dt.date]:
     if start and end:
         start_day, end_day = (start, end) if start <= end else (end, start)
     elif start:
@@ -141,7 +142,7 @@ def _resolve_window(start: dt.date | None, end: dt.date | None) -> tuple[dt.date
     elif end:
         start_day = end_day = end
     else:
-        end_day = dt.datetime.now(dt.timezone.utc).date()
+        end_day = today or dt.datetime.now(dt.timezone.utc).date()
         start_day = end_day - dt.timedelta(days=DEFAULT_DAYS - 1)
 
     day_count = (end_day - start_day).days + 1
@@ -731,7 +732,7 @@ async def insights(
     plan: str = Depends(get_site_plan),
     session: AsyncSession = Depends(get_session),
 ) -> InsightsResponse:
-    start_day, end_day = _resolve_window(start, end)
+    start_day, end_day = _resolve_window(start, end, await site_today(session, site_id))
     if compare_start and compare_end:
         compare_start_day, compare_end_day = (
             (compare_start, compare_end) if compare_start <= compare_end else (compare_end, compare_start)

@@ -1,5 +1,8 @@
 import { EventCollector } from "../collector/eventCollector";
 import { ClientConfig, EventEnvelope } from "../types";
+import { webcrypto } from "crypto";
+
+Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
 const config: ClientConfig = {
   siteId: "site-a",

@@ -65,6 +65,189 @@ from app.usage_accounting import record_pageviews, usage_context  # noqa: E402
 from app.routers.upload_token import sign_claims  # noqa: E402
 
 
+@pytest.mark.parametrize("events, expected", [
+    ([(0, "pageviews")], (1, 1, 0)),
+    ([(0, "pageviews"), (120, "conversions")], (1, 0, 120)),
+    ([(0, "pageviews"), (120, "revenue")], (1, 0, 120)),
+    ([(0, "pageviews"), (0, "pageviews")], (1, 0, 0)),
+    ([(0, "pageviews"), (120, "uniques"), (240, "sessions")], (1, 1, 0)),
+    ([(0, "pageviews"), (1801, "conversions")], (2, 1, 0)),
+    ([(0, "pageviews"), (1800, "conversions")], (1, 0, 1800)),
+])
+def test_interactive_engagement_semantics(events, expected):
+    from app.engagement import engagement_totals
+    start = datetime(2026, 5, 7, tzinfo=timezone.utc)
+    assert engagement_totals([(start + timedelta(seconds=seconds), kind) for seconds, kind in events], max_gap_seconds=1800) == expected
+
+
+@pytest.mark.asyncio
+async def test_conversion_engagement_matches_site_and_segment_rollups(client):
+    site_id = "engagement-interactions"
+    day = date(2026, 5, 7)
+    await _set_site_plan(site_id, "free")
+    for minute, kind in [(25, "sessions"), (25, "pageviews"), (35, "conversions"), (40, "uniques")]:
+        timestamp = datetime(2026, 5, 7, 10, minute, tzinfo=timezone.utc)
+        await _insert_raw_report(site_id=site_id, kind=kind, day=day, server_received_at=timestamp, payload={
+            "url": "/", "conversion_type": "form_submit", "referrer_source": "google.com",
+            "_visitor_day_hmac": "visitor-a", "_session_hmac": f"clock-bucket-{minute // 30}",
+            "_client_timestamp": timestamp.isoformat(), "_device_bucket": "Mobile",
+            "_hostname": "example.com",
+        })
+    params = {"site_id": site_id, "metric": "visit_duration_seconds", "hostname": "example.com",
+              "start": day.isoformat(), "end": day.isoformat()}
+    live_day = client.get("/api/aggregate", params=params)
+    assert live_day.status_code == 200
+    assert sum(row["value"] for row in live_day.json()["windows"]) == 600
+    async with async_session_factory() as session:
+        await reduce_reports(session, start_day=day, end_day=day)
+        windows = (await session.execute(select(DpWindow).where(DpWindow.site_id == site_id))).scalars().all()
+        by_metric = {row.metric: row.value for row in windows}
+        assert by_metric["bounced_sessions"] == 0
+        assert by_metric["visit_duration_seconds"] == 600
+        assert by_metric["sessions"] == 1
+        segments = (await session.execute(select(SegmentRollup).where(
+            SegmentRollup.site_id == site_id, SegmentRollup.grain == "device",
+            SegmentRollup.device == "Mobile",
+        ))).scalars().all()
+        by_metric = {row.metric: row.value for row in segments}
+        assert by_metric.get("bounced_sessions", 0) == 0
+        assert by_metric["visit_duration_seconds"] == 600
+        assert by_metric["sessions"] == 1
+        page_duration = await session.scalar(select(SegmentRollup.value).where(
+            SegmentRollup.site_id == site_id, SegmentRollup.grain == "page",
+            SegmentRollup.page == "/", SegmentRollup.metric == "visit_duration_seconds",
+        ))
+        assert page_duration == 600
+    reduced_day = client.get("/api/aggregate", params=params)
+    assert reduced_day.status_code == 200
+    assert sum(row["value"] for row in reduced_day.json()["windows"]) == 600
+
+
+@pytest.mark.parametrize("source", ["com.reddit.frontpage", "android-app://com.reddit.frontpage", "reddit.com", "www.reddit.com"])
+def test_reddit_app_attribution_is_organic_social(source):
+    from app.breakdown_logic import source_attributes_from_payload
+    result = source_attributes_from_payload({"referrer_source": source, "referrer_bucket": "referral"})
+    assert result.source == "Reddit"
+    assert result.channel == "Organic Social"
+    assert result.source_medium == "Reddit/Organic Social"
+    paid = source_attributes_from_payload({"utm_source": "reddit", "utm_medium": "cpc"})
+    assert paid.channel == "Paid Social"
+
+
+@pytest.mark.parametrize("stamp, zone, expected", [
+    ("2026-05-08T04:59:00+00:00", "America/Chicago", "2026-05-07"),
+    ("2026-05-08T05:00:00+00:00", "America/Chicago", "2026-05-08"),
+    ("2026-03-08T07:59:00+00:00", "America/Chicago", "2026-03-08"),
+    ("2026-03-08T08:01:00+00:00", "America/Chicago", "2026-03-08"),
+    ("2025-11-02T06:30:00+00:00", "America/Chicago", "2025-11-02"),
+    ("2025-11-02T07:30:00+00:00", "America/Chicago", "2025-11-02"),
+    ("2026-05-08T11:00:00+00:00", "Pacific/Kiritimati", "2026-05-09"),
+])
+def test_reporting_dates_follow_site_timezone_and_dst(stamp, zone, expected):
+    from app.reporting_time import reporting_day
+    site = DashboardSite(timezone=zone)
+    assert reporting_day(site, datetime.fromisoformat(stamp)).isoformat() == expected
+
+
+def test_timezone_cutover_preserves_legacy_days_and_does_not_reopen_yesterday():
+    from app.reporting_time import reporting_day, reporting_timezone, schedule_timezone
+    site = DashboardSite(timezone="UTC")
+    now = datetime(2026, 10, 24, 18, tzinfo=timezone.utc)
+    schedule_timezone(site, "America/Chicago", now)
+    assert site.reporting_timezone_effective_at == datetime(2026, 10, 25, 5, tzinfo=timezone.utc)
+    assert reporting_timezone(site, now) == "UTC"
+    assert reporting_day(site, datetime(2026, 10, 24, 2, tzinfo=timezone.utc)) == date(2026, 10, 24)
+    # First reporting day covers the transition; every later day starts at local midnight.
+    assert reporting_day(site, datetime(2026, 10, 25, 2, tzinfo=timezone.utc)) == date(2026, 10, 25)
+    assert reporting_day(site, datetime(2026, 10, 26, 4, 59, tzinfo=timezone.utc)) == date(2026, 10, 25)
+    assert reporting_day(site, datetime(2026, 10, 26, 5, tzinfo=timezone.utc)) == date(2026, 10, 26)
+    schedule_timezone(site, "America/Chicago", datetime(2026, 10, 27, tzinfo=timezone.utc))
+    assert site.previous_reporting_timezone == "UTC"  # Saving unchanged settings preserves lineage.
+
+
+def test_dayparting_uses_event_time_and_site_zone_not_browser_zone():
+    report = SimpleNamespace(
+        kind="pageviews", day=date(2026, 5, 7),
+        server_received_at=datetime(2026, 5, 8, 5, 1, tzinfo=timezone.utc),
+        payload={"_client_timestamp": "2026-05-08T04:59:00+00:00", "_reporting_timezone": "America/Chicago",
+                 "_timezone_hint": "Asia/Tokyo", "_visitor_day_hmac": "v", "url": "/"},
+    )
+    buckets = aggregate_reports_for_breakdown(reports=[report], dimension="hour_of_day", site_timezone="UTC")
+    assert buckets["11 PM"]["pageviews"] == 1
+    assert len(buckets) == 1
+
+
+@pytest.mark.asyncio
+async def test_forecast_excludes_incomplete_local_day_even_after_utc_midnight(client, monkeypatch):
+    from app.scheduler import prophet_job
+    site_id = "forecast-local-day"
+    local_today = date(2026, 5, 7)
+    async def today_for_site(session, queried_site):
+        assert queried_site == site_id
+        return local_today
+    monkeypatch.setattr(prophet_job, "site_today", today_for_site)
+    for offset in range(60):
+        await _insert_dp_window(site_id=site_id, plan="free", metric="pageviews", value=100,
+                                window_start=datetime.combine(local_today - timedelta(days=offset), datetime.min.time(), timezone.utc))
+    async with async_session_factory() as session:
+        # Only 59 completed local days. Today's partial row must not get us
+        # over the training gate just because UTC has already moved on.
+        assert await prophet_job.train_prophet(session, site_id, "pageviews") is None
+
+
+@pytest.mark.asyncio
+async def test_ingestion_stores_local_days_and_rotates_identity_at_local_midnight(client, monkeypatch):
+    site_id = "local-reporting-days"
+    await _set_site_plan(site_id, "free")
+    async with async_session_factory() as session:
+        session.add(DashboardUser(username="timezone-owner", email="timezone@example.test", password_hash="test"))
+        await session.flush()
+        session.add(DashboardSite(site_id=site_id, owner_username="timezone-owner", site_name=site_id,
+                                  allowed_origin="https://example.com", timezone="America/Chicago"))
+        await session.commit()
+    monkeypatch.setattr(shuffle_router.settings, "MAX_OUT_OF_ORDER_SECONDS", 100_000_000)
+    timestamps = ["2026-05-07T23:59:00+00:00", "2026-05-08T00:01:00+00:00", "2026-05-08T05:01:00+00:00"]
+    response = client.post("/api/collect", headers={**COLLECT_HEADERS, "X-Timezone": "Asia/Tokyo"}, json={
+        "site_id": site_id, "server_received_at": datetime.now(timezone.utc).isoformat(),
+        "reports": [{"site_id": site_id, "kind": "pageviews", "client_timestamp": stamp,
+                     "epsilon_used": 1, "sampling_rate": 1, "nonce": f"timezone-{i}",
+                     "payload": {"url": "/", "_reporting_timezone": "fake", "_client_timestamp": "fake"}}
+                    for i, stamp in enumerate(timestamps)],
+    })
+    assert response.status_code == 202
+    async with async_session_factory() as session:
+        rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id).order_by(RawReport.id))).scalars().all()
+        assert [row.day for row in rows] == [date(2026, 5, 7), date(2026, 5, 7), date(2026, 5, 8)]
+        assert rows[0].payload["_visitor_day_hmac"] == rows[1].payload["_visitor_day_hmac"]
+        assert rows[1].payload["_visitor_day_hmac"] != rows[2].payload["_visitor_day_hmac"]
+        assert all(row.payload["_reporting_timezone"] == "America/Chicago" for row in rows)
+        assert [row.payload["_client_timestamp"] for row in rows] == timestamps
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plan", ["free", "standard"])
+async def test_raw_collection_has_no_shuffle_delay_and_retry_is_idempotent(client, monkeypatch, plan):
+    site_id = f"no-shuffle-delay-{plan}"
+    await _set_site_plan(site_id, plan)
+    token = client.post("/api/upload-token", headers=ADMIN_HEADERS, json={
+        "site_id": site_id, "plan": plan, "allowed_origin": "https://example.com", "epsilon_budget": 1, "sampling_rate": 1,
+    }).json()["token"]
+    monkeypatch.setattr(shuffle_router.settings, "SHUFFLE_MAX_DELAY_SECONDS", 120)
+    def unexpected_delay(_):
+        raise AssertionError("Solo/Standard must not enter the random-delay path")
+    monkeypatch.setattr(shuffle_router.secrets, "randbelow", unexpected_delay)
+    batch = [{"site_id": site_id, "kind": "pageviews", "payload": {"url": "/"},
+              "client_timestamp": datetime.now(timezone.utc).isoformat(), "epsilon_used": 1,
+              "sampling_rate": 1, "nonce": "same-event"}]
+    for nonce in ("first-request", "retried-request"):
+        response = client.post("/api/shuffle", headers={"Origin": "https://example.com"},
+                               json={"token": token, "nonce": f"{plan}-{nonce}", "batch": batch})
+        assert response.status_code == 202
+    async with async_session_factory() as session:
+        rows = (await session.execute(select(RawReport).where(RawReport.site_id == site_id))).scalars().all()
+        assert len(rows) == 1
+
+
 def test_readiness_fails_on_schema_drift(client, monkeypatch):
     from app.routers import health
 
@@ -5461,7 +5644,7 @@ async def test_time_parting_hour_of_day_can_filter_weekdays_and_weekends(client)
             kind="sessions",
             payload={
                 "referrer_bucket": "direct",
-                "_timezone_hint": "America/Chicago",
+                "_reporting_timezone": "America/Chicago",
                 "_session_hmac": f"local-weekday-{index}",
                 "_visitor_day_hmac": f"local-weekday-visitor-{index}",
             },

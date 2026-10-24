@@ -52,6 +52,10 @@ export default {
         }
         // eslint-disable-next-line no-console
         console.log(`SDK gzipped size: ${kb.toFixed(2)}KB`);
+        if (options.format === "iife") {
+          fs.copyFileSync(file, "../dashboard/public/validanalytics.global.js");
+          fs.copyFileSync(`${file}.map`, "../dashboard/public/validanalytics.global.js.map");
+        }
       }
     }
   ]

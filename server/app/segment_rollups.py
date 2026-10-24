@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .breakdown_logic import (
+    _rolling_session_markers,
     normalize_conversion_event,
     normalize_country_code,
     normalize_device_bucket,
@@ -15,9 +16,9 @@ from .breakdown_logic import (
     normalize_source_bucket,
     normalize_source_label,
     raw_report_value,
-    session_marker,
     visitor_marker,
 )
+from .engagement import engagement_totals
 from .hostnames import hostname_from_payload, normalize_hostname
 
 SEGMENT_DIMENSIONS = (
@@ -417,9 +418,9 @@ def _event_timestamp(report) -> dt.datetime:
     return timestamp.astimezone(dt.timezone.utc)
 
 
-def _dimensions_for_report(report, source_by_session: dict[tuple[dt.datetime, str], SourceAttributes]) -> dict[str, str]:
+def _dimensions_for_report(report, source_by_session: dict, session_markers: dict) -> dict[str, str]:
     payload = report.payload if isinstance(report.payload, dict) else {}
-    marker = session_marker(report.server_received_at, payload)
+    marker = session_markers.get(id(report))
     source_attributes = source_by_session.get(marker) if marker else None
     if source_attributes is None:
         source_attributes = source_attributes_from_payload(payload)
@@ -440,29 +441,29 @@ def _dimensions_for_report(report, source_by_session: dict[tuple[dt.datetime, st
     }
 
 
-def _build_source_context(reports: list) -> dict[tuple[dt.datetime, str], SourceAttributes]:
-    source_by_session: dict[tuple[dt.datetime, str], SourceAttributes] = {}
-    for report in reports:
+def _build_source_context(reports: list, session_markers: dict) -> dict[tuple[object, ...], SourceAttributes]:
+    source_by_session: dict[tuple[object, ...], SourceAttributes] = {}
+    for report in sorted(reports, key=_event_timestamp):
         if report.kind != "sessions":
             continue
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
             continue
-        marker = session_marker(report.server_received_at, payload)
+        marker = session_markers.get(id(report))
         if marker and marker not in source_by_session:
             source_by_session[marker] = source_attributes_from_payload(payload)
     return source_by_session
 
 
-def _build_session_pages(reports: list) -> dict[tuple[dt.datetime, str], set[str]]:
-    pages_by_session: defaultdict[tuple[dt.datetime, str], set[str]] = defaultdict(set)
+def _build_session_pages(reports: list, session_markers: dict) -> dict[tuple[object, ...], set[str]]:
+    pages_by_session: defaultdict[tuple[object, ...], set[str]] = defaultdict(set)
     for report in reports:
         if report.kind != "pageviews":
             continue
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
             continue
-        marker = session_marker(report.server_received_at, payload)
+        marker = session_markers.get(id(report))
         if marker:
             page = normalize_page_path(payload.get("url"))[:220]
             if page != "Unknown":
@@ -475,9 +476,9 @@ def _report_grain_values(
     report,
     grain: tuple[str, ...],
     dimensions: dict[str, str],
-    pages_by_session: dict[tuple[dt.datetime, str], set[str]],
+    pages_by_session: dict[tuple[object, ...], set[str]],
+    session_markers: dict,
 ) -> list[dict[str, str]]:
-    payload = report.payload if isinstance(report.payload, dict) else {}
     if report.kind == "uniques" and any(dimension in SOURCE_DIMENSIONS for dimension in grain):
         return []
     if any(dimension in {"campaign", "content", "term"} and dimensions.get(dimension) == "Unknown" for dimension in grain):
@@ -490,7 +491,7 @@ def _report_grain_values(
         return [] if dimensions["page"] == "Unknown" else [dimensions]
     if report.kind not in {"conversions", "revenue"}:
         return []
-    marker = session_marker(report.server_received_at, payload)
+    marker = session_markers.get(id(report))
     if not marker:
         return []
     pages = pages_by_session.get(marker)
@@ -500,8 +501,9 @@ def _report_grain_values(
 
 
 def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> dict[SegmentKey, dict[str, float]]:
-    source_by_session = _build_source_context(reports)
-    pages_by_session = _build_session_pages(reports)
+    session_markers = _rolling_session_markers(reports, max_gap_seconds=max_gap_seconds)
+    source_by_session = _build_source_context(reports, session_markers)
+    pages_by_session = _build_session_pages(reports, session_markers)
     metric_sums: defaultdict[SegmentKey, dict[str, float]] = defaultdict(lambda: {metric: 0.0 for metric in SEGMENT_METRICS})
     session_timestamps: defaultdict[
         tuple[SegmentKey, tuple[dt.date, str]], list[dt.datetime]
@@ -509,8 +511,8 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
     session_fallback_counts: defaultdict[SegmentKey, float] = defaultdict(float)
     visitor_markers: defaultdict[SegmentKey, set[tuple[dt.date, str]]] = defaultdict(set)
     visitor_fallback_counts: defaultdict[SegmentKey, float] = defaultdict(float)
-    pageview_times: defaultdict[
-        tuple[SegmentKey, tuple[dt.date, str]], list[dt.datetime]
+    engagement_events: defaultdict[
+        tuple[SegmentKey, tuple[dt.date, str]], list[tuple[dt.datetime, str]]
     ] = defaultdict(list)
     touched_keys: set[SegmentKey] = set()
 
@@ -518,7 +520,7 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
         payload = report.payload if isinstance(report.payload, dict) else {}
         if payload.get("historical_import"):
             continue
-        dimensions = _dimensions_for_report(report, source_by_session)
+        dimensions = _dimensions_for_report(report, source_by_session, session_markers)
         report_visitor_marker = visitor_marker(report.day, payload)
 
         for grain in SUPPORTED_SEGMENT_GRAINS:
@@ -527,6 +529,7 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
                 grain=grain,
                 dimensions=dimensions,
                 pages_by_session=pages_by_session,
+                session_markers=session_markers,
             ):
                 key = SegmentKey(
                     grain=grain_name(grain),
@@ -536,8 +539,6 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
                 metrics = metric_sums[key]
                 if report.kind == "pageviews":
                     metrics["pageviews"] += 1.0
-                    if report_visitor_marker:
-                        pageview_times[(key, report_visitor_marker)].append(_event_timestamp(report))
                 elif report.kind == "conversions":
                     metrics["conversions"] += 1.0
                 elif report.kind == "revenue":
@@ -545,6 +546,7 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
 
                 if report_visitor_marker:
                     session_timestamps[(key, report_visitor_marker)].append(_event_timestamp(report))
+                    engagement_events[(key, report_visitor_marker)].append((_event_timestamp(report), report.kind))
                 elif report.kind == "sessions":
                     session_fallback_counts[key] += 1.0
 
@@ -567,21 +569,10 @@ def aggregate_reports_for_segments(reports: list, *, max_gap_seconds: int) -> di
         metric_sums[key]["sessions"] = float(rolling_sessions_by_key[key]) + session_fallback_counts[key]
         metric_sums[key]["uniques"] = float(len(visitor_markers[key])) + visitor_fallback_counts[key]
 
-    for (key, _visitor), timestamps in pageview_times.items():
-        unique_timestamps = sorted(set(timestamps))
-        current_session: list[dt.datetime] = []
-        for timestamp in unique_timestamps:
-            if current_session and (timestamp - current_session[-1]).total_seconds() > max_gap_seconds:
-                if len(current_session) == 1:
-                    metric_sums[key]["bounced_sessions"] += 1.0
-                current_session = []
-            if current_session:
-                metric_sums[key]["visit_duration_seconds"] += (
-                    timestamp - current_session[-1]
-                ).total_seconds()
-            current_session.append(timestamp)
-        if len(current_session) == 1:
-            metric_sums[key]["bounced_sessions"] += 1.0
+    for (key, _visitor), events in engagement_events.items():
+        _, bounced, duration = engagement_totals(events, max_gap_seconds=max_gap_seconds)
+        metric_sums[key]["bounced_sessions"] += bounced
+        metric_sums[key]["visit_duration_seconds"] += duration
 
     return {
         key: {metric: value for metric, value in metrics.items() if value > 0}

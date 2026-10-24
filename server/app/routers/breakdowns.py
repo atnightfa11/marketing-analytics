@@ -15,6 +15,7 @@ from ..config import get_settings
 from ..dashboard_auth import require_dashboard_auth
 from ..dependencies import get_site_plan, require_site_access
 from ..report_history import published_plan_clause
+from ..reporting_time import site_today
 from ..entitlements import enforce_aggregate_retention
 from ..hostnames import hostname_from_payload, normalize_hostname
 from ..models import BreakdownRollup, DashboardSite, RawReport, ReducerWatermark, get_session
@@ -164,7 +165,7 @@ def _parse_iso_date(value: str, field_name: str) -> dt.date:
         ) from exc
 
 
-def _resolve_window(start: str | None, end: str | None) -> tuple[dt.date, dt.date]:
+def _resolve_window(start: str | None, end: str | None, today: dt.date | None = None) -> tuple[dt.date, dt.date]:
     if start and end:
         start_day = _parse_iso_date(start, "start")
         end_day = _parse_iso_date(end, "end")
@@ -175,7 +176,7 @@ def _resolve_window(start: str | None, end: str | None) -> tuple[dt.date, dt.dat
     if end:
         end_day = _parse_iso_date(end, "end")
         return end_day, end_day
-    end_day = dt.date.today()
+    end_day = today or dt.datetime.now(dt.timezone.utc).date()
     start_day = end_day - dt.timedelta(days=29)
     return start_day, end_day
 
@@ -400,7 +401,7 @@ def _as_utc(timestamp: dt.datetime) -> dt.datetime:
 
 
 def _time_parting_timestamp(timestamp: dt.datetime, payload: dict, site_timezone: str) -> dt.datetime:
-    timezone_name = payload.get("_timezone_hint")
+    timezone_name = payload.get("_reporting_timezone")
     if not isinstance(timezone_name, str) or not timezone_name:
         timezone_name = site_timezone or "UTC"
     try:
@@ -536,7 +537,7 @@ async def breakdown(
             metric_keys=metric_keys,
         )
 
-    start_day, end_day = _resolve_window(start, end)
+    start_day, end_day = _resolve_window(start, end, await site_today(session, site_id))
     enforce_aggregate_retention(plan, start_day, end_day)
     hostname_filter = normalize_hostname(hostname) if hostname is not None else None
     if hostname is not None and not hostname_filter:
